@@ -1,0 +1,122 @@
+<template>
+  <div>
+    <h1 class="text-3xl font-bold mb-6 text-gray-800">Dashboard</h1>
+
+    <div v-if="pending" class="text-center py-10">
+      <div class="animate-spin w-8 h-8 rounded-full border-4 border-blue-500 border-t-transparent mx-auto"></div>
+    </div>
+
+    <template v-else-if="data">
+      <!-- Top metric cards -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+        <!-- Active Mesocycle -->
+        <DashboardMetricCard title="Mesociclo Activo" color="blue">
+          <template v-if="data.activeMesocycle">
+            <p class="font-medium text-gray-900">{{ data.activeMesocycle.name }}</p>
+            <p class="text-sm text-gray-500 mb-3 line-clamp-2">{{ data.activeMesocycle.goal }}</p>
+            <div class="flex justify-between items-center text-sm flex-wrap gap-2">
+              <div class="flex gap-2">
+                <span class="bg-blue-100 text-blue-800 py-0.5 px-2 rounded text-xs">Semana {{ data.currentWeek }}</span>
+                <span v-if="data.daysRemaining !== null" class="bg-gray-100 text-gray-700 py-0.5 px-2 rounded text-xs">
+                  {{ data.daysRemaining }}d restantes
+                </span>
+              </div>
+              <NuxtLink :to="`/mesocycles/${data.activeMesocycle.id}`" class="text-blue-600 hover:underline text-xs">Ver detalle</NuxtLink>
+            </div>
+          </template>
+          <template v-else>
+            <p class="text-gray-500 mb-4">Sin mesociclo activo.</p>
+            <NuxtLink to="/mesocycles/new" class="inline-block bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 text-sm">Crear uno</NuxtLink>
+          </template>
+        </DashboardMetricCard>
+
+        <!-- Weight -->
+        <DashboardMetricCard title="Peso Actual" color="green">
+          <template v-if="data.weight?.current">
+            <div class="flex items-end mb-3">
+              <span class="text-3xl font-bold text-gray-900">{{ data.weight.current }}</span>
+              <span class="text-gray-500 ml-1 mb-1">kg</span>
+              <span v-if="data.weight.diff !== 0" class="ml-3 text-sm flex items-center" :class="data.weight.diff > 0 ? 'text-red-500' : 'text-green-500'">
+                {{ data.weight.diff > 0 ? '▲' : '▼' }} {{ Math.abs(data.weight.diff) }}kg
+              </span>
+            </div>
+            <p class="text-xs text-gray-500">Actualizado: {{ new Date(data.weight.lastUpdated).toLocaleDateString('es-ES') }}</p>
+          </template>
+          <template v-else>
+            <p class="text-gray-500">Sin datos de peso.</p>
+          </template>
+        </DashboardMetricCard>
+
+        <!-- This week -->
+        <DashboardMetricCard title="Esta Semana" color="purple">
+          <div class="flex items-end mb-3">
+            <span class="text-3xl font-bold text-gray-900">{{ data.thisWeekWorkouts.completed }}</span>
+            <span class="text-gray-500 ml-1 mb-1">/ {{ data.thisWeekWorkouts.target }} entrenos</span>
+          </div>
+          <div class="w-full bg-gray-200 rounded-full h-2">
+            <div
+              class="bg-purple-600 h-2 rounded-full transition-all"
+              :style="{ width: Math.min(100, (data.thisWeekWorkouts.completed / data.thisWeekWorkouts.target) * 100) + '%' }"
+            ></div>
+          </div>
+          <p class="text-xs text-gray-500 mt-2">
+            {{ data.thisWeekWorkouts.completed >= data.thisWeekWorkouts.target ? '✅ Objetivo cumplido' : `Faltan ${data.thisWeekWorkouts.target - data.thisWeekWorkouts.completed}` }}
+          </p>
+        </DashboardMetricCard>
+      </div>
+
+      <!-- Mesocycle volume progress -->
+      <div v-if="data.mesocycleWeeklyVolume?.length" class="bg-white rounded-lg shadow p-6 mb-8">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-semibold text-gray-800">Volumen por semana del mesociclo</h2>
+          <span class="text-xs text-gray-500">{{ data.mesocycleWeeklyVolume.length }} semanas</span>
+        </div>
+        <div class="flex items-end gap-2 h-28">
+          <div
+            v-for="week in data.mesocycleWeeklyVolume"
+            :key="week.week"
+            class="flex-1 flex flex-col justify-end items-center group"
+          >
+            <div class="relative w-full">
+              <div
+                class="w-full rounded-t transition-all group-hover:opacity-80"
+                :class="week.week === data.currentWeek ? 'bg-blue-500' : 'bg-blue-200'"
+                :style="{ height: `${Math.max(8, (week.volume / maxWeekVolume) * 96)}px` }"
+              >
+                <span class="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-medium text-gray-600 opacity-0 group-hover:opacity-100 whitespace-nowrap">
+                  {{ (week.volume / 1000).toFixed(1) }}t
+                </span>
+              </div>
+            </div>
+            <span class="text-[10px] mt-1 text-gray-500">S{{ week.week }}</span>
+          </div>
+        </div>
+        <div class="flex items-center gap-4 mt-3 text-xs text-gray-500">
+          <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-blue-500 inline-block"></span> Semana actual</span>
+          <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-blue-200 inline-block"></span> Semanas anteriores</span>
+        </div>
+      </div>
+
+      <!-- Recent workouts + weight chart -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div class="lg:col-span-2">
+          <DashboardRecentWorkouts :workouts="data.recentWorkouts" @sync="refresh" />
+        </div>
+        <div class="bg-white rounded-lg shadow lg:col-span-1">
+          <DashboardWeightChart />
+        </div>
+      </div>
+    </template>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed } from 'vue'
+
+const { data, pending, refresh } = useFetch('/api/dashboard')
+
+const maxWeekVolume = computed(() => {
+  if (!data.value?.mesocycleWeeklyVolume?.length) return 1
+  return Math.max(...data.value.mesocycleWeeklyVolume.map((w: any) => w.volume), 1)
+})
+</script>

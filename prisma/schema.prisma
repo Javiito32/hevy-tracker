@@ -1,0 +1,173 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String    @id @default(uuid())
+  name           String
+  email          String    @unique
+  password_hash  String
+  role           String    @default("user") // admin, user
+  is_active      Boolean   @default(true)
+  hevy_api_key   String?
+  openai_api_key String?   // only used by admin
+  height         Float?
+  sex            String?
+  birth_date     DateTime?
+  last_login_at  DateTime?
+  created_at     DateTime  @default(now())
+  updated_at     DateTime  @updatedAt
+
+  workouts       Workout[]
+  mesocycles     Mesocycle[]
+  macrocycles    Macrocycle[]
+  body_metrics   BodyMetric[]
+  conversations  AiConversation[]
+}
+
+model BodyMetric {
+  id                   String   @id @default(uuid())
+  user_id              String
+  user                 User     @relation(fields: [user_id], references: [id])
+  date                 DateTime
+  weight               Float?
+  body_fat_percentage  Float?
+  neck                 Float?
+  chest                Float?
+  waist                Float?
+  hips                 Float?
+  biceps               Float?
+  thighs               Float?
+  calves               Float?
+  raw_data             String?
+  source               String   @default("hevy")
+  created_at           DateTime @default(now())
+}
+
+model Macrocycle {
+  id          String      @id @default(uuid())
+  user_id     String
+  user        User        @relation(fields: [user_id], references: [id])
+  name        String
+  goal        String?
+  start_date  DateTime
+  end_date    DateTime?
+  notes       String?
+  created_at  DateTime    @default(now())
+  updated_at  DateTime    @updatedAt
+
+  mesocycles  Mesocycle[]
+}
+
+model Mesocycle {
+  id                   String    @id @default(uuid())
+  user_id              String
+  user                 User      @relation(fields: [user_id], references: [id])
+  name                 String
+  start_date           DateTime
+  end_date             DateTime?
+  goal                 String?
+  split_description    String?
+  target_volume_weekly Int?
+  notes                String?
+  status               String    @default("active")
+  final_summary        String?
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
+
+  macrocycle_id        String?
+  macrocycle           Macrocycle? @relation(fields: [macrocycle_id], references: [id])
+
+  workouts             Workout[]
+  evaluations          MesocycleEvaluation[]
+  diary_notes          MesocycleNote[]
+}
+
+model Workout {
+  id                   String    @id @default(uuid())
+  user_id              String
+  user                 User      @relation(fields: [user_id], references: [id])
+  hevy_id              String
+  date                 DateTime
+  start_time           DateTime?
+  end_time             DateTime?
+  duration             Int?
+  name                 String
+  description          String?
+  total_volume         Float?
+  total_tonnage        Float?
+  rpe_avg              Float?
+  exercises_summary    String?
+  raw_data             String?
+  notes                String?
+  ai_analysis          String?
+
+  mesocycle_id         String?
+  mesocycle            Mesocycle? @relation(fields: [mesocycle_id], references: [id])
+
+  session_notes        SessionNote[]
+
+  created_at           DateTime  @default(now())
+  updated_at           DateTime  @updatedAt
+
+  @@unique([user_id, hevy_id])
+}
+
+model SessionNote {
+  id             String   @id @default(uuid())
+  workout_id     String
+  workout        Workout  @relation(fields: [workout_id], references: [id])
+  content        String
+  ai_feedback    String?
+  created_at     DateTime @default(now())
+}
+
+model MesocycleEvaluation {
+  id               String    @id @default(uuid())
+  mesocycle_id     String
+  mesocycle        Mesocycle @relation(fields: [mesocycle_id], references: [id])
+  week_number      Int
+  evaluation_date  DateTime
+  summary          String?
+  volume_trend     String?
+  progress_score   Int?
+  ai_analysis      String?
+  recommendations  String?
+  created_at       DateTime  @default(now())
+}
+
+model MesocycleNote {
+  id           String    @id @default(uuid())
+  mesocycle_id String
+  mesocycle    Mesocycle @relation(fields: [mesocycle_id], references: [id], onDelete: Cascade)
+  date         DateTime
+  content      String
+  tags         String?
+  created_at   DateTime  @default(now())
+}
+
+model AiConversation {
+  id             String    @id @default(uuid())
+  user_id        String
+  user           User      @relation(fields: [user_id], references: [id])
+  context_type   String    @default("general")
+  context_id     String?
+  created_at     DateTime  @default(now())
+
+  messages       AiMessage[]
+}
+
+model AiMessage {
+  id               String         @id @default(uuid())
+  conversation_id  String
+  conversation     AiConversation @relation(fields: [conversation_id], references: [id])
+  role             String
+  content          String
+  tokens_used      Int?
+  created_at       DateTime       @default(now())
+}

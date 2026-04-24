@@ -83,18 +83,6 @@ export const formatWorkoutFull = (w: any): string => {
   return `  [${dateStr}] ${w.name} | Vol: ${w.total_volume || 0}kg | RPE: ${w.rpe_avg || 'N/A'}${w.notes ? ` | Notas: ${w.notes}` : ''}\n${exercisesText}`
 }
 
-const getWorkoutsInWindow = async (userId: string, centerDate: Date, windowDays = 7) => {
-  const from = new Date(centerDate)
-  from.setDate(from.getDate() - Math.floor(windowDays / 2))
-  const to = new Date(centerDate)
-  to.setDate(to.getDate() + Math.ceil(windowDays / 2))
-  return prisma.workout.findMany({
-    where: { user_id: userId, date: { gte: from, lte: to } },
-    orderBy: { date: 'asc' },
-    select: { name: true, date: true, total_volume: true, rpe_avg: true, exercises_summary: true, notes: true }
-  })
-}
-
 interface MetricSnapshot {
   label: string
   metric: any | null
@@ -280,33 +268,23 @@ export async function buildUserProfileAsync(userId: string): Promise<string> {
 
 const DAY_NAMES_ES = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado']
 
-// Max characters per historical window in the chat system prompt (~500 tokens each).
-// Prevents token bloat when the user logged many workouts in those weeks.
-// TODO: longer-term migration path — replace these static windows with a Tool Call
-// (function: "get_historical_workouts") so the model only fetches them when the
-// user explicitly asks about progress comparisons, saving tokens on every other message.
-const MAX_HIST_WINDOW_CHARS = 2000
-
-const truncateHistWindow = (text: string): string =>
-  text.length > MAX_HIST_WINDOW_CHARS
-    ? text.slice(0, MAX_HIST_WINDOW_CHARS) + '\n  ... [resumen truncado — demasiados entrenamientos en esa semana]'
-    : text
-
-export const buildSystemPrompt = async (userId: string): Promise<string> => {
+/**
+ * Lean system prompt for the chat endpoint. Carries only the minimum context
+ * (profile + active mesocycle + last 3 workout summaries). Historical data is
+ * fetched on-demand by the model via tool calls — see server/utils/ai-tools.ts.
+ */
+export const buildLeanSystemPrompt = async (userId: string): Promise<string> => {
   const now = new Date()
-  const twoMonthsAgo = new Date(now); twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2)
-  const threeMonthsAgo = new Date(now); threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3)
-  const tenWeeksAgo = new Date(now); tenWeeksAgo.setDate(tenWeeksAgo.getDate() - 70)
-
   const dAgo = (n: number) => { const d = new Date(now); d.setDate(d.getDate() - n); return d }
+  const tenWeeksAgo = dAgo(70)
 
-  const [user, activeMesocycle, currentMetric, recentBodyMetrics, recentWorkouts, workouts2mAgo, workouts3mAgo, metric1m, metric3m] = await Promise.all([
+  const [user, activeMesocycle, currentMetric, recentBodyMetrics, recentWorkouts, metric1m, metric3m] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId } }),
     prisma.mesocycle.findFirst({
       where: { user_id: userId, status: 'active' },
       include: {
-        evaluations: { orderBy: { week_number: 'desc' }, take: 3, select: { week_number: true, summary: true, volume_trend: true } },
-        diary_notes: { orderBy: { date: 'desc' }, take: 5 }
+        evaluations: { orderBy: { week_number: 'desc' }, take: 2, select: { week_number: true, summary: true, volume_trend: true } },
+        diary_notes: { orderBy: { date: 'desc' }, take: 3 }
       }
     }),
     prisma.bodyMetric.findFirst({ where: { user_id: userId }, orderBy: { date: 'desc' } }),
@@ -317,11 +295,9 @@ export const buildSystemPrompt = async (userId: string): Promise<string> => {
     }),
     prisma.workout.findMany({
       where: { user_id: userId },
-      take: 5, orderBy: { date: 'desc' },
-      select: { name: true, date: true, total_volume: true, rpe_avg: true, exercises_summary: true, notes: true }
+      take: 3, orderBy: { date: 'desc' },
+      select: { name: true, date: true, total_volume: true, rpe_avg: true, notes: true }
     }),
-    getWorkoutsInWindow(userId, twoMonthsAgo),
-    getWorkoutsInWindow(userId, threeMonthsAgo),
     prisma.bodyMetric.findFirst({ where: { user_id: userId, date: { gte: dAgo(42), lte: dAgo(21) } }, orderBy: { date: 'desc' } }),
     prisma.bodyMetric.findFirst({ where: { user_id: userId, date: { gte: dAgo(105), lte: dAgo(70) } }, orderBy: { date: 'desc' } })
   ])
@@ -343,28 +319,24 @@ export const buildSystemPrompt = async (userId: string): Promise<string> => {
           ? activeMesocycle.diary_notes.map(n => `  [${new Date(n.date).toLocaleDateString('es-ES')}] ${n.content}`).join('\n')
           : '  Sin notas de diario.'
         return `- Nombre: ${activeMesocycle.name}
+- ID: ${activeMesocycle.id}
 - Semana actual: ${weekNumber}
 - Objetivo: ${activeMesocycle.goal || 'No especificado'}
 - Split: ${activeMesocycle.split_description || 'No especificado'}
 - Objetivo entrenos/semana: ${activeMesocycle.target_volume_weekly ?? 'No especificado'}
-Evaluaciones previas:
+Últimas evaluaciones:
 ${evalSummary}
-Diario del deportista (últimas notas):
+Diario reciente:
 ${notesSummary}`
       })()
     : '- No hay ningún mesociclo activo.'
 
   const recentText = recentWorkouts.length
-    ? recentWorkouts.map(formatWorkoutFull).join('\n\n')
+    ? recentWorkouts.map(formatWorkoutSummary).join('\n')
     : '- No hay entrenamientos recientes registrados.'
 
-  const twoLabel = twoMonthsAgo.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })
-  const threeLabel = threeMonthsAgo.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })
-  const hist2m = truncateHistWindow(workouts2mAgo.length ? workouts2mAgo.map(formatWorkoutFull).join('\n\n') : '  (Sin datos en esa semana)')
-  const hist3m = truncateHistWindow(workouts3mAgo.length ? workouts3mAgo.map(formatWorkoutFull).join('\n\n') : '  (Sin datos en esa semana)')
-
   const todayStr = `${DAY_NAMES_ES[now.getDay()]}, ${now.toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })}`
-  const daysLeftInWeek = 6 - now.getDay() // 0=dom…6=sáb, días hasta el sábado inclusive
+  const daysLeftInWeek = 6 - now.getDay()
 
   return `Eres "HevyTracker AI", un entrenador personal experto en hipertrofia y powerbuilding integrado en una app que sincroniza datos de Hevy.
 Analiza los entrenamientos del usuario, compara con sus objetivos y da feedback constructivo basado en evidencia científica.
@@ -377,27 +349,21 @@ ${profileBlock}
 ### MESOCICLO ACTIVO
 ${mesoBlock}
 
----
-
-### ÚLTIMOS 5 ENTRENAMIENTOS (series completas)
+### ÚLTIMOS 3 ENTRENAMIENTOS (resumen)
 ${recentText}
 
 ---
 
-### SEMANA DE HACE ~2 MESES (${twoLabel})
-${hist2m}
+### CÓMO RESPONDER
+Tienes acceso a herramientas para consultar más datos bajo demanda. Úsalas solo cuando realmente las necesites:
+- Preguntas que se responden con el contexto anterior → responde directamente sin invocar herramientas.
+- Comparaciones históricas, semanas concretas, progresión de ejercicios, métricas corporales pasadas, mesociclos anteriores → invoca la herramienta apropiada.
+- Para series detalladas de un entreno concreto usa get_workout_detail, no get_workouts_in_range con detail=full.
+- Encadena varias herramientas si la pregunta lo requiere, pero evita llamadas redundantes.
 
----
-
-### SEMANA DE HACE ~3 MESES (${threeLabel})
-${hist3m}
-
----
-
-### REGLAS:
-1. Sé directo y conciso. Responde en Markdown con negritas para valores clave y listas para recomendaciones.
-2. Cuando compares progreso usa los datos históricos como referencia concreta (pesos, reps, RPE).
-3. Si sugieres cambios justifícalos con datos: RPE, volumen o tendencia de carga.
-4. Ten en cuenta las notas del diario del deportista para contextualizar fatiga, sueño o nutrición.
-5. No repitas el contexto que ya tienes. Ve directo a la respuesta o análisis.`
+### REGLAS DE ESTILO
+1. Sé directo y conciso. Markdown con negritas para valores clave y listas para recomendaciones.
+2. Justifica sugerencias con datos concretos (RPE, volumen, 1RM, tendencia).
+3. Ten en cuenta notas del diario para contextualizar fatiga, sueño o nutrición.
+4. No repitas el contexto que ya tienes. Ve directo a la respuesta.`
 }

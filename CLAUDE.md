@@ -71,7 +71,7 @@ Per-workout computed fields stored in DB:
 
 ### AI integration
 
-**Chat** (`POST /api/chat`): takes `{ message, historyContext, conversationId }`. The system prompt is built dynamically in `server/utils/ai-context.ts` — it queries the active mesocycle and last 5 workouts from the DB and formats them as Spanish narrative context. Chat messages are persisted to `AiConversation` / `AiMessage` tables.
+**Chat** (`POST /api/chat`): takes `{ message, historyContext, conversationId }`. Uses a **lean system prompt** (`buildLeanSystemPrompt` in `server/utils/ai-context.ts`) with just profile + active mesocycle + last 3 workout summaries, plus **OpenAI tool calling** (`server/utils/ai-tools.ts`) so the model fetches historical data on demand (`get_workouts_in_range`, `get_workout_detail`, `get_exercise_progression`, `get_body_metrics_range`, `get_mesocycle_evaluations`, `get_previous_mesocycles`, `get_weekly_aggregates`). The tool-call loop is capped at `MAX_TOOL_ITERATIONS = 5` and `historyContext` is trimmed to the last 8 messages. Chat messages are persisted to `AiConversation` / `AiMessage`.
 
 **Workout analysis** (`POST /api/workouts/:id/analyze`): builds a detailed per-workout prompt with all exercise sets, RPE, and mesocycle context. Returns a markdown string.
 

@@ -1,7 +1,11 @@
 import OpenAI from 'openai';
-import { buildSystemPrompt } from '../utils/ai-context';
+import { buildLeanSystemPrompt } from '../utils/ai-context';
+import { OPENAI_TOOLS, executeTool } from '../utils/ai-tools';
 import { prisma } from '../utils/prisma';
 import { getSessionUser } from '../utils/session';
+
+const MAX_TOOL_ITERATIONS = 5;
+const HISTORY_WINDOW = 8;
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig();
@@ -14,7 +18,6 @@ export default defineEventHandler(async (event) => {
   let convoId: string | null = conversationId ?? null;
 
   if (convoId) {
-    // Verify the conversation belongs to the current user
     const owned = await prisma.aiConversation.findFirst({ where: { id: convoId, user_id: userId } })
     if (!owned) throw createError({ statusCode: 403, statusMessage: 'Acceso denegado' })
   } else {
@@ -35,30 +38,78 @@ export default defineEventHandler(async (event) => {
 
   try {
     const openai = new OpenAI({ apiKey: config.openaiApiKey });
-    const systemPrompt = await buildSystemPrompt(userId);
+    const systemPrompt = await buildLeanSystemPrompt(userId);
 
-    const formattedHistory = (historyContext || []).map((msg: any) => ({
-      role: msg.role as 'user' | 'assistant',
-      content: msg.content
-    })).filter((msg: any) => msg.content);
+    const trimmedHistory = (historyContext || [])
+      .filter((m: any) => m?.content && (m.role === 'user' || m.role === 'assistant'))
+      .slice(-HISTORY_WINDOW)
+      .map((m: any) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
 
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-5.4',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        ...formattedHistory,
-        { role: 'user', content: message }
-      ],
-      temperature: 0.7,
-      max_completion_tokens: 3000,
+    const messages: any[] = [
+      { role: 'system', content: systemPrompt },
+      ...trimmedHistory,
+      { role: 'user', content: message }
+    ];
+
+    const toolsInvoked: string[] = [];
+    let totalTokens = 0;
+    let finalReply: string | null = null;
+
+    for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-5.4',
+        messages,
+        tools: OPENAI_TOOLS as any,
+        tool_choice: 'auto',
+        temperature: 0.7,
+        max_completion_tokens: 3000,
+      });
+
+      totalTokens += completion.usage?.total_tokens ?? 0;
+      const choice = completion.choices[0]?.message;
+      if (import.meta.dev) console.log(`[chat] iteration=${i} finish_reason=${completion.choices[0]?.finish_reason} tool_calls=${choice?.tool_calls?.length ?? 0} tokens=${completion.usage?.total_tokens}`);
+      if (!choice) break;
+
+      const toolCalls = choice.tool_calls;
+      if (!toolCalls || toolCalls.length === 0) {
+        finalReply = choice.content || 'Lo siento, no pude generar una respuesta.';
+        break;
+      }
+
+      messages.push(choice);
+
+      for (const call of toolCalls) {
+        const fn = (call as any).function;
+        if (!fn) continue;
+        let args: any = {};
+        try { args = JSON.parse(fn.arguments || '{}') } catch { args = {} }
+        if (import.meta.dev) console.log(`[chat] tool_call: ${fn.name}`, JSON.stringify(args));
+        toolsInvoked.push(fn.name);
+        const result = await executeTool(fn.name, userId, args);
+        if (import.meta.dev) console.log(`[chat] tool_result: ${fn.name} → ${JSON.stringify(result).slice(0, 120)}...`);
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: JSON.stringify(result)
+        });
+      }
+    }
+
+    if (!finalReply) {
+      finalReply = 'No pude completar la consulta — se alcanzó el límite de herramientas encadenadas.';
+    }
+
+    await prisma.aiMessage.create({
+      data: { conversation_id: convoId, role: 'assistant', content: finalReply, tokens_used: totalTokens || null }
     });
 
-    const tokensUsed = completion.usage?.total_tokens ?? null;
-    const reply = completion.choices[0]?.message?.content || 'Lo siento, no pude generar una respuesta.';
-
-    await prisma.aiMessage.create({ data: { conversation_id: convoId, role: 'assistant', content: reply, tokens_used: tokensUsed } });
-
-    return { success: true, role: 'assistant', message: reply, conversationId: convoId };
+    return {
+      success: true,
+      role: 'assistant',
+      message: finalReply,
+      conversationId: convoId,
+      ...(toolsInvoked.length ? { toolsInvoked } : {})
+    };
 
   } catch (error: any) {
     console.error('OpenAI Error:', error);

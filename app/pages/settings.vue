@@ -92,28 +92,6 @@
         </div>
       </div>
 
-      <!-- IA (solo admin) -->
-      <div v-if="isAdmin" class="bg-white rounded-lg shadow p-6">
-        <h2 class="text-xl font-semibold mb-1 border-b pb-2">Configuración IA</h2>
-        <p class="text-xs text-gray-500 mb-4">Clave compartida para todos los usuarios de la app.</p>
-        <div>
-          <label class="block text-sm font-medium text-gray-700 mb-1">API Key de OpenAI</label>
-          <div class="flex gap-2">
-            <input v-model="form.openai_api_key" :type="showOpenAIKey ? 'text' : 'password'"
-              class="flex-grow border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              placeholder="sk-..." />
-            <button type="button" @click="showOpenAIKey = !showOpenAIKey"
-              class="px-3 py-2 border border-gray-300 rounded text-gray-500 hover:bg-gray-50 text-xs">
-              {{ showOpenAIKey ? 'Ocultar' : 'Mostrar' }}
-            </button>
-          </div>
-          <p class="text-xs text-gray-500 mt-1">
-            <span v-if="(settings as any)?.has_openai_key" class="text-green-600 font-medium">✓ Configurada</span>
-            <span v-else>Necesaria para el AI Coach y análisis de entrenamientos.</span>
-          </p>
-        </div>
-      </div>
-
       <!-- AI context preview -->
       <div class="bg-white rounded-lg shadow p-6">
         <div class="flex items-center justify-between mb-3 border-b pb-2">
@@ -144,8 +122,6 @@
 </template>
 
 <script setup lang="ts">
-const { session } = useUserSession()
-const isAdmin = computed(() => (session.value?.user as any)?.role === 'admin')
 
 const { data: settings, refresh } = useFetch('/api/settings')
 const { data: previewData, pending: previewLoading, refresh: refreshPreview } = useFetch('/api/settings/ai-preview')
@@ -159,13 +135,11 @@ const form = ref({
   sex: '',
   birth_date: '',
   hevy_api_key: '',
-  openai_api_key: '',
   current_password: '',
   new_password: '',
   confirm_password: '',
 })
 const showHevyKey = ref(false)
-const showOpenAIKey = ref(false)
 const saving = ref(false)
 const saveSuccess = ref(false)
 const saveError = ref('')
@@ -179,7 +153,6 @@ watch(settings, (val) => {
   form.value.sex = s.sex ?? ''
   form.value.birth_date = s.birth_date ?? ''
   form.value.hevy_api_key = s.hevy_api_key ?? ''
-  form.value.openai_api_key = s.openai_api_key ?? ''
 }, { immediate: true })
 
 const handleSave = async () => {

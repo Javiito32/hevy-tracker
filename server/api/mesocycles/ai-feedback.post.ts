@@ -1,7 +1,7 @@
 import OpenAI from 'openai'
 import { prisma } from '../../utils/prisma'
 import { getSessionUser } from '../../utils/session'
-import { buildUserProfileAsync, formatWorkoutFull } from '../../utils/ai-context'
+import { buildUserProfileAsync, formatWorkoutFull, buildLastCompletedMesocycleSummary } from '../../utils/ai-context'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -14,19 +14,27 @@ export default defineEventHandler(async (event) => {
   const body = await readBody(event)
   const { name, goal, split_description, target_volume_weekly, duration_weeks, notes } = body
 
-  const [profileBlock, recentWorkouts] = await Promise.all([
+  const [profileBlock, recentWorkouts, lastMesocycleSummary] = await Promise.all([
     buildUserProfileAsync(userId),
     prisma.workout.findMany({
       where: { user_id: userId },
       take: 5,
       orderBy: { date: 'desc' },
       select: { name: true, date: true, total_volume: true, rpe_avg: true, exercises_summary: true, notes: true }
-    })
+    }),
+    // Last completed mesocycle as baseline — lets the model judge the new plan
+    // relative to what the athlete actually trained before, not in a vacuum
+    buildLastCompletedMesocycleSummary(userId)
   ])
 
   const recentText = recentWorkouts.length
     ? recentWorkouts.map(formatWorkoutFull).join('\n\n')
     : 'Sin entrenamientos recientes.'
+
+  // Baseline block: last completed mesocycle for comparison
+  const baselineBlock = lastMesocycleSummary
+    ? `\n\n### MESOCICLO ANTERIOR (línea base del deportista)\n${lastMesocycleSummary}`
+    : ''
 
   const prompt = `El deportista ha diseñado el siguiente mesociclo y quiere feedback:
 
@@ -52,7 +60,7 @@ Analiza este plan con rigor y proporciona feedback constructivo en Markdown. Est
     messages: [
       {
         role: 'system',
-        content: `Eres un entrenador personal experto en hipertrofia y powerbuilding. Da feedback honesto, directo y basado en datos científicos. Sé conciso. Responde en español.\n\n### PERFIL DEL DEPORTISTA\n${profileBlock}\n\n### ÚLTIMOS ENTRENAMIENTOS\n${recentText}`
+        content: `Eres un entrenador personal experto en hipertrofia y powerbuilding. Da feedback honesto, directo y basado en datos científicos. Sé conciso. Responde en español.\n\n### PERFIL DEL DEPORTISTA\n${profileBlock}${baselineBlock}\n\n### ÚLTIMOS 5 ENTRENAMIENTOS\n${recentText}`
       },
       { role: 'user', content: prompt }
     ],

@@ -79,7 +79,7 @@ Both endpoints gate on `config.openaiApiKey` and return a graceful error string 
 
 ### Settings & User model
 
-The `User` model in Prisma stores `hevy_api_key` and `openai_api_key`. The app is single-user; `settings.get.ts` and `settings.post.ts` always use `findFirst()` / `create()` with no user auth. Keys are masked before being returned to the frontend (`maskKey` in `settings.get.ts`). The POST endpoint skips updating a field if the submitted value contains `••••` (i.e., the masked placeholder was not changed).
+The `User` model in Prisma stores `hevy_api_key`. The `OPENAI_API_KEY` is read exclusively from `.env` via `config.openaiApiKey` — it is never stored in the database. `settings.get.ts` and `settings.post.ts` handle profile and Hevy API key updates. The Hevy key is masked before being returned to the frontend (`maskKey` in `settings.get.ts`). The POST endpoint skips updating a field if the submitted value contains `••••` (i.e., the masked placeholder was not changed).
 
 ### Mesocycles
 

@@ -15,10 +15,10 @@ model User {
   role           String    @default("user") // admin, user
   is_active      Boolean   @default(true)
   hevy_api_key   String?
-  openai_api_key String?   // only used by admin
   height         Float?
   sex            String?
   birth_date     DateTime?
+  injuries_notes String?   // free-text field for injuries, limitations, contraindications
   last_login_at  DateTime?
   created_at     DateTime  @default(now())
   updated_at     DateTime  @updatedAt

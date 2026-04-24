@@ -14,11 +14,6 @@ export default defineEventHandler(async (event) => {
     birth_date: user.birth_date ? user.birth_date.toISOString().slice(0, 10) : null,
     hevy_api_key: user.hevy_api_key ? maskKey(user.hevy_api_key) : '',
     has_hevy_key: !!user.hevy_api_key,
-    // OpenAI key only visible to admin
-    ...(user.role === 'admin' ? {
-      openai_api_key: user.openai_api_key ? maskKey(user.openai_api_key) : '',
-      has_openai_key: !!user.openai_api_key,
-    } : {})
   }
 })
 

@@ -1,0 +1,16 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      # Override DATABASE_URL to point to the persistent volume
+      DATABASE_URL: "file:/data/prod.db"
+    volumes:
+      - db_data:/data
+
+volumes:
+  db_data:

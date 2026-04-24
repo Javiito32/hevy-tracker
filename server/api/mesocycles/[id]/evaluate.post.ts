@@ -1,7 +1,7 @@
 import OpenAI from 'openai'
 import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
-import { buildUserProfileAsync, formatWorkoutFull } from '../../../utils/ai-context'
+import { buildUserProfileAsync, formatWorkoutFull, formatWorkoutSummary } from '../../../utils/ai-context'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -53,11 +53,12 @@ export default defineEventHandler(async (event) => {
       where: { mesocycle_id: id, date: { gte: historyStart, lt: weekEnd } },
       orderBy: { date: 'asc' }
     }),
+    // Previous weeks: omit exercises_summary — only the summary line is shown to reduce token usage
     ...prevWindows.map(w =>
       prisma.workout.findMany({
         where: { user_id: userId, mesocycle_id: id, date: { gte: w.start, lt: w.end } },
         orderBy: { date: 'asc' },
-        select: { name: true, date: true, total_volume: true, rpe_avg: true, exercises_summary: true, notes: true }
+        select: { name: true, date: true, total_volume: true, rpe_avg: true, notes: true }
       })
     )
   ])
@@ -69,10 +70,15 @@ export default defineEventHandler(async (event) => {
   const formatWorkouts = (ws: any[]) =>
     ws.length ? ws.map(formatWorkoutFull).join('\n\n') : '  (Sin entrenamientos)'
 
+  // Previous weeks: show only summary lines (no set-by-set detail) to reduce token usage.
+  // Full exercise detail is reserved for the current week only.
   const prevWeeksBlock = prevWindows.map((w, i) => {
     const ww = prevWeeksWorkouts[i] ?? []
     const vol = (ww as any[]).reduce((s: number, x: any) => s + (x.total_volume ?? 0), 0)
-    return `SEMANA ${w.weekNum} (${w.start.toLocaleDateString('es-ES')} – ${w.end.toLocaleDateString('es-ES')}) — Vol: ${Math.round(vol).toLocaleString()}kg:\n${formatWorkouts(ww as any[])}`
+    const lines = (ww as any[]).length
+      ? (ww as any[]).map(formatWorkoutSummary).join('\n')
+      : '  (Sin entrenamientos)'
+    return `SEMANA ${w.weekNum} (${w.start.toLocaleDateString('es-ES')} – ${w.end.toLocaleDateString('es-ES')}) — Vol: ${Math.round(vol).toLocaleString()}kg:\n${lines}`
   }).join('\n\n')
 
   const notesBlock = weekNotes.length

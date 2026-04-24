@@ -1,7 +1,7 @@
 import OpenAI from 'openai'
 import { prisma } from '../../utils/prisma'
 import { getSessionUser } from '../../utils/session'
-import { buildUserProfileAsync, formatWorkoutFull } from '../../utils/ai-context'
+import { buildUserProfileAsync, formatWorkoutFull, extractCompoundLifts } from '../../utils/ai-context'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -18,7 +18,7 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: 'Faltan campos requeridos: goal, days_per_week, duration_weeks' })
   }
 
-  const [profileBlock, recentWorkouts, previousMesocycles] = await Promise.all([
+  const [profileBlock, recentWorkouts, previousMesocycles, userRecord] = await Promise.all([
     buildUserProfileAsync(userId),
     prisma.workout.findMany({
       where: { user_id: userId },
@@ -31,7 +31,9 @@ export default defineEventHandler(async (event) => {
       orderBy: { start_date: 'desc' },
       take: 2,
       select: { name: true, goal: true, split_description: true, target_volume_weekly: true }
-    })
+    }),
+    // Fetch injuries/limitations to inject as a hard constraint in the plan design
+    prisma.user.findUnique({ where: { id: userId }, select: { injuries_notes: true } })
   ])
 
   const recentText = recentWorkouts.length
@@ -41,6 +43,15 @@ export default defineEventHandler(async (event) => {
   const prevMesoText = previousMesocycles.length
     ? previousMesocycles.map(m => `- ${m.name}: ${m.goal ?? 'Sin objetivo'} | Split: ${m.split_description ?? 'N/A'} | ${m.target_volume_weekly ?? '?'} sesiones/semana`).join('\n')
     : 'Sin mesociclos anteriores.'
+
+  // 1RM estimates for main compound exercises derived from exercises_summary
+  const compoundLiftsBlock = extractCompoundLifts(recentWorkouts)
+
+  // Injury/limitation block — injected as a hard constraint so the model won't
+  // program movements the athlete cannot safely perform
+  const injuriesBlock = userRecord?.injuries_notes
+    ? `\n\n### ⚠️ LESIONES / LIMITACIONES DEL DEPORTISTA\n${userRecord.injuries_notes}\n(Respeta estas restricciones estrictamente al diseñar el plan — no incluyas ejercicios contraindicados.)`
+    : ''
 
   const prompt = `El deportista quiere crear un nuevo mesociclo con estas especificaciones:
 - Objetivo: ${goal}
@@ -63,7 +74,7 @@ Genera un plan completo. Responde ÚNICAMENTE con un objeto JSON válido con est
     messages: [
       {
         role: 'system',
-        content: `Eres un entrenador personal experto en hipertrofia y powerbuilding. Diseña planes de entrenamiento personalizados basados en evidencia científica. Responde siempre en español.\n\n### PERFIL DEL DEPORTISTA\n${profileBlock}\n\n### ÚLTIMOS ENTRENAMIENTOS\n${recentText}\n\n### MESOCICLOS ANTERIORES\n${prevMesoText}`
+        content: `Eres un entrenador personal experto en hipertrofia y powerbuilding. Diseña planes de entrenamiento personalizados basados en evidencia científica. Responde siempre en español.\n\n### PERFIL DEL DEPORTISTA\n${profileBlock}${injuriesBlock}\n\n### 1RM ESTIMADOS — EJERCICIOS MULTIARTICULARES PRINCIPALES\n${compoundLiftsBlock}\n\n### ÚLTIMOS 5 ENTRENAMIENTOS\n${recentText}\n\n### MESOCICLOS ANTERIORES\n${prevMesoText}`
       },
       { role: 'user', content: prompt }
     ],

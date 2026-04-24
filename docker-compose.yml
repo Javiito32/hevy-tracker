@@ -11,6 +11,3 @@ services:
       DATABASE_URL: "file:/data/prod.db"
     volumes:
       - ./db_data:/data
-
-volumes:
-  db_data:

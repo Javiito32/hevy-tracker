@@ -6,8 +6,5 @@ services:
       - .env
     environment:
       DATABASE_URL: "file:/data/prod.db"
-      # Nuxt only reads NUXT_* vars at runtime to override runtimeConfig
-      NUXT_OPENAI_API_KEY: "${OPENAI_API_KEY}"
-      NUXT_HEVY_API_KEY: "${HEVY_API_KEY}"
     volumes:
       - ./db_data:/data

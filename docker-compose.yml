@@ -10,7 +10,7 @@ services:
       # Override DATABASE_URL to point to the persistent volume
       DATABASE_URL: "file:/data/prod.db"
     volumes:
-      - db_data:/data
+      - ./db_data:/data
 
 volumes:
   db_data:

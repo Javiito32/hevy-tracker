@@ -1,6 +1,6 @@
 <template>
-  <div :class="['bg-white rounded-lg shadow p-6 border-t-4', colorClass]">
-    <h2 class="text-lg font-semibold text-gray-700 mb-2">{{ title }}</h2>
+  <div :class="['bg-slate-900 rounded-xl border border-slate-800 p-6 border-t-4 transition hover:border-slate-700', colorClass]">
+    <h2 class="text-xs font-semibold text-slate-500 mb-3 uppercase tracking-wider">{{ title }}</h2>
     <slot></slot>
   </div>
 </template>
@@ -15,11 +15,11 @@ const props = defineProps<{
 
 const colorClass = computed(() => {
   const colors = {
-    blue: 'border-blue-500',
-    green: 'border-green-500',
-    purple: 'border-purple-500',
-    red: 'border-red-500',
-    yellow: 'border-yellow-500'
+    blue: 'border-t-indigo-500',
+    green: 'border-t-emerald-500',
+    purple: 'border-t-violet-500',
+    red: 'border-t-rose-500',
+    yellow: 'border-t-amber-500'
   }
   return colors[props.color] || colors.blue
 })

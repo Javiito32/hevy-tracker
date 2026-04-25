@@ -3,6 +3,7 @@ import { buildLeanSystemPrompt } from '../utils/ai-context';
 import { OPENAI_TOOLS, executeTool } from '../utils/ai-tools';
 import { prisma } from '../utils/prisma';
 import { getSessionUser } from '../utils/session';
+import { AI_MODEL } from '../utils/ai-config';
 
 const MAX_TOOL_ITERATIONS = 5;
 const HISTORY_WINDOW = 8;
@@ -57,7 +58,7 @@ export default defineEventHandler(async (event) => {
 
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
       const completion = await openai.chat.completions.create({
-        model: 'gpt-5.4',
+        model: AI_MODEL,
         messages,
         tools: OPENAI_TOOLS as any,
         tool_choice: 'auto',
@@ -100,7 +101,7 @@ export default defineEventHandler(async (event) => {
     }
 
     await prisma.aiMessage.create({
-      data: { conversation_id: convoId, role: 'assistant', content: finalReply, tokens_used: totalTokens || null }
+      data: { conversation_id: convoId, role: 'assistant', content: finalReply, tokens_used: totalTokens || null, model_used: AI_MODEL }
     });
 
     return {

@@ -2,6 +2,7 @@ import OpenAI from 'openai'
 import { prisma } from '../../utils/prisma'
 import { getSessionUser } from '../../utils/session'
 import { buildUserProfileAsync, formatWorkoutFull, extractCompoundLifts } from '../../utils/ai-context'
+import { AI_MODEL } from '../../utils/ai-config'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -70,7 +71,7 @@ Genera un plan completo. Responde ÚNICAMENTE con un objeto JSON válido con est
 
   const openai = new OpenAI({ apiKey: config.openaiApiKey })
   const completion = await openai.chat.completions.create({
-    model: 'gpt-5.4',
+    model: AI_MODEL,
     messages: [
       {
         role: 'system',
@@ -95,7 +96,7 @@ Genera un plan completo. Responde ÚNICAMENTE con un objeto JSON válido con est
 
   if (tokensUsed) {
     const convo = await prisma.aiConversation.create({ data: { context_type: 'mesocycle_generate', user_id: userId } })
-    await prisma.aiMessage.create({ data: { conversation_id: convo.id, role: 'assistant', content, tokens_used: tokensUsed } })
+    await prisma.aiMessage.create({ data: { conversation_id: convo.id, role: 'assistant', content, tokens_used: tokensUsed, model_used: AI_MODEL } })
   }
 
   return { success: true, plan }

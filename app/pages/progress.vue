@@ -1,38 +1,38 @@
 <template>
   <div class="max-w-6xl mx-auto">
-    <h1 class="text-3xl font-bold mb-6 text-gray-800">Progresión por Ejercicio</h1>
+    <h1 class="text-3xl font-bold mb-6 text-slate-100">Progresión por Ejercicio</h1>
 
     <div v-if="exercisePending" class="flex justify-center py-12">
-      <div class="animate-spin w-8 h-8 rounded-full border-4 border-blue-500 border-t-transparent"></div>
+      <div class="animate-spin w-8 h-8 rounded-full border-4 border-indigo-500 border-t-transparent"></div>
     </div>
 
     <div v-else class="flex flex-col lg:flex-row gap-6">
       <!-- Sidebar: exercise list -->
       <div class="lg:w-72 flex-shrink-0">
-        <div class="bg-white rounded-lg shadow overflow-hidden">
-          <div class="px-4 py-3 border-b border-gray-200">
+        <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
+          <div class="px-4 py-3 border-b border-slate-800">
             <input
               v-model="search"
               type="text"
               placeholder="Buscar ejercicio..."
-              class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
             />
           </div>
           <div class="overflow-y-auto max-h-[calc(100vh-260px)]">
-            <div v-if="filteredExercises.length === 0" class="p-4 text-gray-500 text-sm text-center">
+            <div v-if="filteredExercises.length === 0" class="p-4 text-slate-500 text-sm text-center">
               No se encontraron ejercicios.
             </div>
             <button
               v-for="ex in filteredExercises"
               :key="ex.name"
               @click="selectExercise(ex.name)"
-              class="w-full text-left px-4 py-3 border-b border-gray-100 hover:bg-blue-50 transition"
-              :class="selectedExercise === ex.name ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''"
+              class="w-full text-left px-4 py-3 border-b border-slate-800 hover:bg-slate-800/70 transition"
+              :class="selectedExercise === ex.name ? 'bg-indigo-950/40 border-l-4 border-l-indigo-500' : ''"
             >
-              <p class="font-medium text-gray-900 text-sm">{{ ex.name }}</p>
+              <p class="font-medium text-slate-200 text-sm">{{ ex.name }}</p>
               <div class="flex items-center justify-between mt-0.5">
-                <span class="text-xs text-gray-500">{{ ex.sessionCount }} sesiones</span>
-                <span v-if="ex.lastEstimated1rm" class="text-xs font-medium text-blue-600">
+                <span class="text-xs text-slate-500">{{ ex.sessionCount }} sesiones</span>
+                <span v-if="ex.lastEstimated1rm" class="text-xs font-medium text-indigo-400">
                   1RM {{ ex.lastEstimated1rm.toFixed(1) }}kg
                 </span>
               </div>
@@ -44,21 +44,21 @@
       <!-- Main chart area -->
       <div class="flex-grow">
         <!-- No exercise selected -->
-        <div v-if="!selectedExercise" class="bg-white rounded-lg shadow p-12 text-center text-gray-400">
+        <div v-if="!selectedExercise" class="bg-slate-900 rounded-xl border border-slate-800 p-12 text-center text-slate-500">
           <p class="text-4xl mb-3">📈</p>
-          <p class="font-medium text-gray-500">Selecciona un ejercicio para ver su progresión</p>
+          <p class="font-medium text-slate-400">Selecciona un ejercicio para ver su progresión</p>
         </div>
 
         <!-- Loading chart data -->
-        <div v-else-if="chartPending" class="bg-white rounded-lg shadow p-12 flex justify-center">
-          <div class="animate-spin w-8 h-8 rounded-full border-4 border-blue-500 border-t-transparent"></div>
+        <div v-else-if="chartPending" class="bg-slate-900 rounded-xl border border-slate-800 p-12 flex justify-center">
+          <div class="animate-spin w-8 h-8 rounded-full border-4 border-indigo-500 border-t-transparent"></div>
         </div>
 
         <!-- Chart -->
         <div v-else-if="chartData" class="space-y-6">
-          <div class="bg-white rounded-lg shadow p-6">
+          <div class="bg-slate-900 rounded-xl border border-slate-800 p-6">
             <div class="flex items-center justify-between mb-4">
-              <h2 class="text-xl font-semibold text-gray-800">{{ selectedExercise }}</h2>
+              <h2 class="text-xl font-semibold text-slate-100">{{ selectedExercise }}</h2>
               <div class="flex gap-2">
                 <button
                   v-for="tab in ['1rm', 'volumen', 'peso']"
@@ -66,8 +66,8 @@
                   @click="activeTab = tab"
                   class="text-xs px-3 py-1.5 rounded-full border transition"
                   :class="activeTab === tab
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'text-gray-600 border-gray-300 hover:bg-gray-50'"
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'text-slate-400 border-slate-700 hover:bg-slate-800'"
                 >
                   {{ tab === '1rm' ? '1RM Est.' : tab === 'volumen' ? 'Volumen' : 'Peso máx.' }}
                 </button>
@@ -76,19 +76,19 @@
 
             <!-- Summary stats -->
             <div class="grid grid-cols-3 gap-4 mb-6">
-              <div class="bg-blue-50 rounded-lg p-3 text-center">
-                <p class="text-xs text-blue-600 font-medium uppercase tracking-wide mb-1">1RM actual</p>
-                <p class="text-2xl font-bold text-blue-800">{{ latestPoint?.estimated_1rm?.toFixed(1) ?? '-' }}<span class="text-sm font-normal ml-1">kg</span></p>
+              <div class="bg-indigo-950/40 border border-indigo-900 rounded-xl p-3 text-center">
+                <p class="text-xs text-indigo-400 font-medium uppercase tracking-wide mb-1">1RM actual</p>
+                <p class="text-2xl font-bold text-indigo-300">{{ latestPoint?.estimated_1rm?.toFixed(1) ?? '-' }}<span class="text-sm font-normal ml-1">kg</span></p>
               </div>
-              <div class="bg-green-50 rounded-lg p-3 text-center">
-                <p class="text-xs text-green-600 font-medium uppercase tracking-wide mb-1">Progreso 1RM</p>
-                <p class="text-2xl font-bold" :class="rmProgress >= 0 ? 'text-green-700' : 'text-red-600'">
+              <div class="bg-emerald-950/40 border border-emerald-900 rounded-xl p-3 text-center">
+                <p class="text-xs text-emerald-400 font-medium uppercase tracking-wide mb-1">Progreso 1RM</p>
+                <p class="text-2xl font-bold" :class="rmProgress >= 0 ? 'text-emerald-400' : 'text-rose-400'">
                   {{ rmProgress >= 0 ? '+' : '' }}{{ rmProgress.toFixed(1) }}<span class="text-sm font-normal ml-1">kg</span>
                 </p>
               </div>
-              <div class="bg-purple-50 rounded-lg p-3 text-center">
-                <p class="text-xs text-purple-600 font-medium uppercase tracking-wide mb-1">Sesiones</p>
-                <p class="text-2xl font-bold text-purple-800">{{ chartData.points.length }}</p>
+              <div class="bg-violet-950/40 border border-violet-900 rounded-xl p-3 text-center">
+                <p class="text-xs text-violet-400 font-medium uppercase tracking-wide mb-1">Sesiones</p>
+                <p class="text-2xl font-bold text-violet-300">{{ chartData.points.length }}</p>
               </div>
             </div>
 
@@ -100,16 +100,16 @@
               :format-y="tabFormatY"
               :H="220"
             />
-            <p v-else class="text-center text-gray-400 py-8 text-sm">Sin datos para esta métrica.</p>
+            <p v-else class="text-center text-slate-500 py-8 text-sm">Sin datos para esta métrica.</p>
           </div>
 
           <!-- Sessions table -->
-          <div class="bg-white rounded-lg shadow overflow-hidden">
-            <div class="px-6 py-4 border-b border-gray-200">
-              <h3 class="font-semibold text-gray-800">Historial de sesiones</h3>
+          <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
+            <div class="px-6 py-4 border-b border-slate-800">
+              <h3 class="font-semibold text-slate-200">Historial de sesiones</h3>
             </div>
             <table class="w-full text-sm">
-              <thead class="bg-gray-50 text-xs text-gray-500 uppercase tracking-wider">
+              <thead class="bg-slate-800 text-xs text-slate-500 uppercase tracking-wider">
                 <tr>
                   <th class="px-4 py-2 text-left">Fecha</th>
                   <th class="px-4 py-2 text-right">1RM Est.</th>
@@ -118,13 +118,13 @@
                   <th class="px-4 py-2 text-right">Sets</th>
                 </tr>
               </thead>
-              <tbody class="divide-y divide-gray-100">
-                <tr v-for="(pt, i) in [...chartData.points].reverse()" :key="i" class="hover:bg-gray-50">
-                  <td class="px-4 py-2 text-gray-700">{{ formatDate(pt.date) }}</td>
-                  <td class="px-4 py-2 text-right font-medium text-blue-700">{{ pt.estimated_1rm?.toFixed(1) ?? '-' }} kg</td>
-                  <td class="px-4 py-2 text-right text-gray-600">{{ pt.max_weight ?? '-' }} kg</td>
-                  <td class="px-4 py-2 text-right text-gray-600">{{ pt.total_volume.toLocaleString() }} kg</td>
-                  <td class="px-4 py-2 text-right text-gray-500">{{ pt.sets }}</td>
+              <tbody class="divide-y divide-slate-800">
+                <tr v-for="(pt, i) in [...chartData.points].reverse()" :key="i" class="hover:bg-slate-800/50 transition">
+                  <td class="px-4 py-2 text-slate-400">{{ formatDate(pt.date) }}</td>
+                  <td class="px-4 py-2 text-right font-medium text-indigo-400">{{ pt.estimated_1rm?.toFixed(1) ?? '-' }} kg</td>
+                  <td class="px-4 py-2 text-right text-slate-400">{{ pt.max_weight ?? '-' }} kg</td>
+                  <td class="px-4 py-2 text-right text-slate-400">{{ pt.total_volume.toLocaleString() }} kg</td>
+                  <td class="px-4 py-2 text-right text-slate-500">{{ pt.sets }}</td>
                 </tr>
               </tbody>
             </table>
@@ -193,7 +193,7 @@ const activePoints = computed(() => {
 })
 
 const tabColor = computed(() =>
-  activeTab.value === '1rm' ? '#3b82f6' : activeTab.value === 'volumen' ? '#8b5cf6' : '#10b981'
+  activeTab.value === '1rm' ? '#6366f1' : activeTab.value === 'volumen' ? '#8b5cf6' : '#10b981'
 )
 
 const tabFormatY = computed(() =>

@@ -1,6 +1,6 @@
 <template>
   <div class="relative w-full select-none">
-    <div v-if="!points.length" class="flex items-center justify-center h-40 text-gray-400 text-sm">
+    <div v-if="!points.length" class="flex items-center justify-center h-40 text-slate-500 text-sm">
       Sin datos suficientes para mostrar la gráfica.
     </div>
     <svg
@@ -16,11 +16,11 @@
         <line
           :x1="PAD_L" :y1="yScale(tick)"
           :x2="W - PAD_R" :y2="yScale(tick)"
-          stroke="#e5e7eb" stroke-width="1"
+          stroke="#334155" stroke-width="1"
         />
         <text
           :x="PAD_L - 6" :y="yScale(tick) + 4"
-          text-anchor="end" font-size="10" fill="#9ca3af"
+          text-anchor="end" font-size="10" fill="#64748b"
         >{{ formatY(tick) }}</text>
       </g>
 
@@ -28,7 +28,7 @@
       <g v-for="(pt, i) in xTickPoints" :key="`x${i}`">
         <text
           :x="xScale(i_to_x(pt.i))" :y="H - 4"
-          text-anchor="middle" font-size="10" fill="#9ca3af"
+          text-anchor="middle" font-size="10" fill="#64748b"
         >{{ formatDate(pt.date) }}</text>
       </g>
 
@@ -58,7 +58,7 @@
       <g v-for="(pt, i) in points" :key="`pt${i}`">
         <circle
           :cx="xScale(i)" :cy="yScale(pt.value)"
-          r="3.5" :fill="color" stroke="white" stroke-width="1.5"
+          r="3.5" :fill="color" stroke="#0f172a" stroke-width="1.5"
           :opacity="hoveredIndex === i ? 1 : 0.7"
           class="cursor-pointer"
         />
@@ -69,18 +69,18 @@
         v-if="hoveredIndex !== null"
         :x1="xScale(hoveredIndex)" y1="0"
         :x2="xScale(hoveredIndex)" :y2="H - PAD_B"
-        stroke="#d1d5db" stroke-width="1" stroke-dasharray="3,2"
+        stroke="#475569" stroke-width="1" stroke-dasharray="3,2"
       />
     </svg>
 
     <!-- Tooltip -->
     <div
       v-if="hoveredIndex !== null && points[hoveredIndex]"
-      class="absolute pointer-events-none bg-gray-800 text-white text-xs px-2.5 py-1.5 rounded shadow-lg z-20 whitespace-nowrap"
+      class="absolute pointer-events-none bg-slate-800 text-slate-100 text-xs px-2.5 py-1.5 rounded shadow-lg z-20 whitespace-nowrap border border-slate-700"
       :style="tooltipStyle"
     >
       <div class="font-semibold">{{ formatY(points[hoveredIndex].value) }}</div>
-      <div class="text-gray-300">{{ formatDate(points[hoveredIndex].date) }}</div>
+      <div class="text-slate-400">{{ formatDate(points[hoveredIndex].date) }}</div>
     </div>
   </div>
 </template>

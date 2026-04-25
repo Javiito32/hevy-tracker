@@ -1,23 +1,23 @@
 <template>
   <div class="max-w-5xl mx-auto">
-    <NuxtLink to="/calendar" class="text-blue-600 hover:underline mb-4 inline-block">← Back to Calendar</NuxtLink>
+    <NuxtLink to="/calendar" class="text-indigo-400 hover:text-indigo-300 mb-4 inline-block transition">← Back to Calendar</NuxtLink>
 
     <div v-if="pending" class="flex justify-center p-12">
-      <div class="animate-spin w-8 h-8 rounded-full border-4 border-blue-500 border-t-transparent"></div>
+      <div class="animate-spin w-8 h-8 rounded-full border-4 border-indigo-500 border-t-transparent"></div>
     </div>
 
     <template v-else-if="workout">
       <div class="flex justify-between items-start mb-6">
         <div>
-          <h1 class="text-3xl font-bold text-gray-800">{{ workout.name }}</h1>
-          <p class="text-gray-500">{{ formattedDate }} • {{ formatDuration(workout.duration) }}</p>
+          <h1 class="text-3xl font-bold text-slate-100">{{ workout.name }}</h1>
+          <p class="text-slate-500">{{ formattedDate }} • {{ formatDuration(workout.duration) }}</p>
         </div>
         <div class="flex items-center gap-2">
-          <span v-if="workout.ai_analysis" class="text-xs text-gray-400">Analizado anteriormente</span>
+          <span v-if="workout.ai_analysis" class="text-xs text-slate-500">Analizado anteriormente</span>
           <button
             @click="analyzeWithAI"
             :disabled="aiStatus === 'loading'"
-            class="bg-purple-600 text-white px-5 py-2.5 rounded shadow hover:bg-purple-700 flex items-center transition disabled:opacity-50"
+            class="bg-violet-600 text-white px-5 py-2.5 rounded-lg hover:bg-violet-500 flex items-center transition disabled:opacity-50"
           >
             <span class="mr-2" v-if="aiStatus !== 'loading'">✨</span>
             <svg v-else class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
@@ -32,69 +32,64 @@
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div class="lg:col-span-2 space-y-6">
           <!-- Exercises -->
-          <div class="bg-white rounded-lg shadow overflow-hidden">
-            <div class="px-6 py-4 border-b border-gray-200">
-              <h2 class="text-xl font-semibold text-gray-800">Ejercicios</h2>
+          <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
+            <div class="px-6 py-4 border-b border-slate-800">
+              <h2 class="text-lg font-semibold text-slate-200">Ejercicios</h2>
             </div>
-            <div class="divide-y divide-gray-100">
-              <div v-if="!workout.exercises_summary || workout.exercises_summary.length === 0" class="p-6 text-gray-500">
+            <div class="divide-y divide-slate-800">
+              <div v-if="!workout.exercises_summary || workout.exercises_summary.length === 0" class="p-6 text-slate-500">
                 No hay ejercicios registrados para este entrenamiento.
               </div>
 
-              <div v-for="(exercise, exIndex) in workout.exercises_summary" :key="exIndex" class="p-6 hover:bg-gray-50 transition">
+              <div v-for="(exercise, exIndex) in workout.exercises_summary" :key="exIndex" class="p-6 hover:bg-slate-800/50 transition">
                 <div class="flex justify-between items-start mb-4">
-                  <h3 class="font-medium text-lg text-gray-900">{{ exercise.name }}</h3>
-                  <div class="text-right text-sm text-gray-500">
-                    <!-- Strength metrics -->
+                  <h3 class="font-medium text-lg text-slate-100">{{ exercise.name }}</h3>
+                  <div class="text-right text-sm text-slate-500">
                     <template v-if="getExerciseType(exercise) === 'strength'">
-                      <span v-if="exercise.estimated_1rm" class="mr-3">1RM: <span class="font-medium text-gray-700">{{ parseFloat(exercise.estimated_1rm).toFixed(1) }}kg</span></span>
-                      <span v-if="exercise.total_volume">Vol: <span class="font-medium text-gray-700">{{ exercise.total_volume.toLocaleString() }}kg</span></span>
+                      <span v-if="exercise.estimated_1rm" class="mr-3">1RM: <span class="font-medium text-slate-300">{{ parseFloat(exercise.estimated_1rm).toFixed(1) }}kg</span></span>
+                      <span v-if="exercise.total_volume">Vol: <span class="font-medium text-slate-300">{{ exercise.total_volume.toLocaleString() }}kg</span></span>
                     </template>
-                    <!-- Cardio/duration metrics -->
                     <template v-else>
-                      <span v-if="exercise.total_distance_meters" class="mr-3">Dist: <span class="font-medium text-gray-700">{{ formatDistance(exercise.total_distance_meters) }}</span></span>
-                      <span v-if="exercise.total_duration_seconds">Tiempo: <span class="font-medium text-gray-700">{{ formatSetDuration(exercise.total_duration_seconds) }}</span></span>
+                      <span v-if="exercise.total_distance_meters" class="mr-3">Dist: <span class="font-medium text-slate-300">{{ formatDistance(exercise.total_distance_meters) }}</span></span>
+                      <span v-if="exercise.total_duration_seconds">Tiempo: <span class="font-medium text-slate-300">{{ formatSetDuration(exercise.total_duration_seconds) }}</span></span>
                     </template>
                   </div>
                 </div>
 
-                <div class="bg-white border rounded" v-if="exercise.sets_details && exercise.sets_details.length > 0">
-                  <!-- Strength table -->
+                <div class="bg-slate-800 border border-slate-700 rounded-lg" v-if="exercise.sets_details && exercise.sets_details.length > 0">
                   <template v-if="getExerciseType(exercise) === 'strength'">
-                    <div class="grid grid-cols-4 gap-2 text-xs font-semibold text-gray-500 text-center py-2 bg-gray-50 uppercase tracking-wider border-b">
+                    <div class="grid grid-cols-4 gap-2 text-xs font-semibold text-slate-500 text-center py-2 bg-slate-800 uppercase tracking-wider border-b border-slate-700">
                       <div>Set</div><div>kg</div><div>Reps</div><div>RPE</div>
                     </div>
                     <div v-for="(set, setIndex) in exercise.sets_details" :key="setIndex"
-                      class="grid grid-cols-4 gap-2 text-sm text-center py-2 border-b last:border-b-0 hover:bg-gray-50">
-                      <div class="text-gray-500">{{ setIndex + 1 }}</div>
-                      <div class="font-medium">{{ set.weight ?? '-' }}</div>
-                      <div class="font-medium">{{ set.reps ?? '-' }}</div>
-                      <div class="text-gray-500">{{ set.rpe || '-' }}</div>
+                      class="grid grid-cols-4 gap-2 text-sm text-center py-2 border-b border-slate-700 last:border-b-0 hover:bg-slate-700/50 transition">
+                      <div class="text-slate-500">{{ setIndex + 1 }}</div>
+                      <div class="font-medium text-slate-200">{{ set.weight ?? '-' }}</div>
+                      <div class="font-medium text-slate-200">{{ set.reps ?? '-' }}</div>
+                      <div class="text-slate-500">{{ set.rpe || '-' }}</div>
                     </div>
                   </template>
-                  <!-- Cardio table (distance + duration) -->
                   <template v-else-if="getExerciseType(exercise) === 'cardio'">
-                    <div class="grid grid-cols-4 gap-2 text-xs font-semibold text-gray-500 text-center py-2 bg-gray-50 uppercase tracking-wider border-b">
+                    <div class="grid grid-cols-4 gap-2 text-xs font-semibold text-slate-500 text-center py-2 bg-slate-800 uppercase tracking-wider border-b border-slate-700">
                       <div>Set</div><div>Distancia</div><div>Tiempo</div><div>RPE</div>
                     </div>
                     <div v-for="(set, setIndex) in exercise.sets_details" :key="setIndex"
-                      class="grid grid-cols-4 gap-2 text-sm text-center py-2 border-b last:border-b-0 hover:bg-gray-50">
-                      <div class="text-gray-500">{{ setIndex + 1 }}</div>
-                      <div class="font-medium">{{ formatDistance(set.distance_meters) }}</div>
-                      <div class="font-medium">{{ formatSetDuration(set.duration_seconds) }}</div>
-                      <div class="text-gray-500">{{ set.rpe || '-' }}</div>
+                      class="grid grid-cols-4 gap-2 text-sm text-center py-2 border-b border-slate-700 last:border-b-0 hover:bg-slate-700/50 transition">
+                      <div class="text-slate-500">{{ setIndex + 1 }}</div>
+                      <div class="font-medium text-slate-200">{{ formatDistance(set.distance_meters) }}</div>
+                      <div class="font-medium text-slate-200">{{ formatSetDuration(set.duration_seconds) }}</div>
+                      <div class="text-slate-500">{{ set.rpe || '-' }}</div>
                     </div>
                   </template>
-                  <!-- Duration-only table (planks, etc.) -->
                   <template v-else>
-                    <div class="grid grid-cols-3 gap-2 text-xs font-semibold text-gray-500 text-center py-2 bg-gray-50 uppercase tracking-wider border-b">
+                    <div class="grid grid-cols-3 gap-2 text-xs font-semibold text-slate-500 text-center py-2 bg-slate-800 uppercase tracking-wider border-b border-slate-700">
                       <div>Set</div><div>Tiempo</div><div>RPE</div>
                     </div>
                     <div v-for="(set, setIndex) in exercise.sets_details" :key="setIndex"
-                      class="grid grid-cols-3 gap-2 text-sm text-center py-2 border-b last:border-b-0 hover:bg-gray-50">
-                      <div class="text-gray-500">{{ setIndex + 1 }}</div>
-                      <div class="font-medium">{{ formatSetDuration(set.duration_seconds) }}</div>
-                      <div class="text-gray-500">{{ set.rpe || '-' }}</div>
+                      class="grid grid-cols-3 gap-2 text-sm text-center py-2 border-b border-slate-700 last:border-b-0 hover:bg-slate-700/50 transition">
+                      <div class="text-slate-500">{{ setIndex + 1 }}</div>
+                      <div class="font-medium text-slate-200">{{ formatSetDuration(set.duration_seconds) }}</div>
+                      <div class="text-slate-500">{{ set.rpe || '-' }}</div>
                     </div>
                   </template>
                 </div>
@@ -105,77 +100,77 @@
 
         <div class="space-y-6">
           <!-- AI Feedback Card -->
-          <div v-if="displayedAnalysis || aiStatus === 'error'" class="bg-gradient-to-br from-purple-50 to-white rounded-lg shadow border border-purple-100 p-6 relative overflow-hidden">
-            <div class="absolute top-0 left-0 w-1 h-full" :class="aiStatus === 'error' ? 'bg-red-400' : 'bg-purple-500'"></div>
-            <h2 class="text-lg font-semibold mb-3 flex items-center" :class="aiStatus === 'error' ? 'text-red-700' : 'text-purple-900'">
+          <div v-if="displayedAnalysis || aiStatus === 'error'" class="bg-violet-950/30 border border-violet-900 rounded-xl p-6 relative overflow-hidden">
+            <div class="absolute top-0 left-0 w-1 h-full" :class="aiStatus === 'error' ? 'bg-rose-500' : 'bg-violet-500'"></div>
+            <h2 class="text-base font-semibold mb-3 flex items-center" :class="aiStatus === 'error' ? 'text-rose-400' : 'text-violet-300'">
               <span class="mr-2">{{ aiStatus === 'error' ? '⚠️' : '✨' }}</span>
               {{ aiStatus === 'error' ? 'Error en análisis' : 'Análisis IA' }}
             </h2>
-            <div v-if="aiStatus === 'error'" class="text-sm text-red-600">{{ aiError }}</div>
-            <div v-else class="prose prose-sm text-gray-700 max-w-none" v-html="renderMarkdown(displayedAnalysis)"></div>
-            <div class="mt-4 pt-3 border-t border-purple-100">
-              <NuxtLink to="/chat" class="text-purple-600 text-sm font-medium hover:text-purple-800">Continuar análisis en el Chat →</NuxtLink>
+            <div v-if="aiStatus === 'error'" class="text-sm text-rose-400">{{ aiError }}</div>
+            <div v-else class="prose prose-sm prose-invert text-slate-300 max-w-none" v-html="renderMarkdown(displayedAnalysis)"></div>
+            <div class="mt-4 pt-3 border-t border-violet-900">
+              <NuxtLink to="/chat" class="text-violet-400 text-sm font-medium hover:text-violet-300 transition">Continuar análisis en el Chat →</NuxtLink>
             </div>
           </div>
 
           <!-- Stats -->
-          <div class="bg-white rounded-lg shadow p-6 border-t-4 border-blue-500">
-            <h2 class="text-lg font-semibold text-gray-800 mb-4">Estadísticas</h2>
+          <div class="bg-slate-900 rounded-xl border border-slate-800 border-t-4 border-t-indigo-500 p-6">
+            <h2 class="text-base font-semibold text-slate-200 mb-4">Estadísticas</h2>
             <div class="space-y-4">
-              <div class="flex justify-between items-end border-b border-gray-100 pb-2">
-                <span class="text-gray-600">Volumen total</span>
-                <span class="font-bold text-lg text-gray-900">{{ workout.total_volume?.toLocaleString() }} <span class="text-sm font-normal text-gray-500">kg</span></span>
+              <div class="flex justify-between items-end border-b border-slate-800 pb-2">
+                <span class="text-slate-500">Volumen total</span>
+                <span class="font-bold text-lg text-slate-100">{{ workout.total_volume?.toLocaleString() }} <span class="text-sm font-normal text-slate-500">kg</span></span>
               </div>
-              <div class="flex justify-between items-end border-b border-gray-100 pb-2">
-                <span class="text-gray-600">Ejercicios</span>
-                <span class="font-bold text-lg text-gray-900">{{ workout.exercises_summary?.length || 0 }}</span>
+              <div class="flex justify-between items-end border-b border-slate-800 pb-2">
+                <span class="text-slate-500">Ejercicios</span>
+                <span class="font-bold text-lg text-slate-100">{{ workout.exercises_summary?.length || 0 }}</span>
               </div>
               <div class="flex justify-between items-end pb-2">
-                <span class="text-gray-600">RPE promedio</span>
-                <span class="font-bold text-lg text-gray-900">{{ workout.rpe_avg || 'N/A' }}</span>
+                <span class="text-slate-500">RPE promedio</span>
+                <span class="font-bold text-lg text-slate-100">{{ workout.rpe_avg || 'N/A' }}</span>
               </div>
             </div>
           </div>
 
           <!-- Our Notes -->
-          <div class="bg-white rounded-lg shadow p-6">
+          <div class="bg-slate-900 rounded-xl border border-slate-800 p-6">
             <div class="flex justify-between items-center mb-3">
-              <h2 class="text-lg font-semibold text-gray-800">Mis notas</h2>
-              <button v-if="!editingNotes" @click="startEditNotes" class="text-xs text-blue-600 hover:text-blue-800">Editar</button>
+              <h2 class="text-base font-semibold text-slate-200">Mis notas</h2>
+              <button v-if="!editingNotes" @click="startEditNotes" class="text-xs text-indigo-400 hover:text-indigo-300 transition">Editar</button>
             </div>
             <template v-if="editingNotes">
               <textarea
                 v-model="localNotes"
                 rows="4"
-                class="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:ring-blue-500 focus:border-blue-500 resize-none"
+                class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none transition"
                 placeholder="Fatiga, ajustes, sensaciones..."
                 autofocus
               ></textarea>
               <div class="mt-2 flex gap-2">
-                <button @click="saveNotes" :disabled="notesSaveStatus === 'saving'" class="text-sm bg-blue-600 text-white px-3 py-1.5 rounded hover:bg-blue-700 disabled:opacity-50 transition">
+                <button @click="saveNotes" :disabled="notesSaveStatus === 'saving'" class="text-sm bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-500 disabled:opacity-50 transition">
                   {{ notesSaveStatus === 'saving' ? 'Guardando...' : 'Guardar' }}
                 </button>
-                <button @click="cancelEditNotes" class="text-sm text-gray-500 hover:text-gray-700 px-3 py-1.5">Cancelar</button>
-                <span v-if="notesSaveStatus === 'error'" class="text-xs text-red-500 self-center">Error al guardar</span>
+                <button @click="cancelEditNotes" class="text-sm text-slate-500 hover:text-slate-300 px-3 py-1.5 transition">Cancelar</button>
+                <span v-if="notesSaveStatus === 'error'" class="text-xs text-rose-400 self-center">Error al guardar</span>
               </div>
             </template>
             <template v-else>
-              <div v-if="localNotes" class="p-3 bg-gray-50 rounded text-sm text-gray-700 whitespace-pre-wrap">{{ localNotes }}</div>
-              <div v-else class="p-3 bg-gray-50 rounded text-sm text-gray-400 italic">Sin notas. Pulsa Editar para añadir.</div>
+              <div v-if="localNotes" class="p-3 bg-slate-800 rounded-lg text-sm text-slate-300 whitespace-pre-wrap">{{ localNotes }}</div>
+              <div v-else class="p-3 bg-slate-800 rounded-lg text-sm text-slate-600 italic">Sin notas. Pulsa Editar para añadir.</div>
             </template>
           </div>
 
           <!-- Hevy Notes -->
-          <div v-if="workout.description" class="bg-white rounded-lg shadow p-6">
-            <h2 class="text-lg font-semibold text-gray-800 mb-3">Notas de Hevy</h2>
-            <div class="p-3 bg-gray-50 rounded text-sm text-gray-700 whitespace-pre-wrap">{{ workout.description }}</div>
+          <div v-if="workout.description" class="bg-slate-900 rounded-xl border border-slate-800 p-6">
+            <h2 class="text-base font-semibold text-slate-200 mb-3">Notas de Hevy</h2>
+            <div class="p-3 bg-slate-800 rounded-lg text-sm text-slate-400 whitespace-pre-wrap">{{ workout.description }}</div>
           </div>
         </div>
       </div>
     </template>
 
     <div v-else class="text-center py-12">
-      <p class="text-gray-500">Entrenamiento no encontrado.</p>
+      <p class="text-slate-500">Entrenamiento no encontrado.</p>
     </div>
   </div>
 </template>
@@ -187,16 +182,15 @@ import { useRoute } from 'vue-router'
 const route = useRoute()
 const workoutId = route.params.id
 
-// Fetch real data
 const { data: workout, pending } = useFetch(`/api/workouts/${workoutId}`)
 
 const formattedDate = computed(() => {
   if (!workout.value) return ''
   const dateStr = workout.value.start_time || workout.value.date
-  return new Date(dateStr).toLocaleString(undefined, { 
-    weekday: 'long', 
-    year: 'numeric', 
-    month: 'long', 
+  return new Date(dateStr).toLocaleString(undefined, {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
     day: 'numeric',
     hour: '2-digit',
     minute: '2-digit'
@@ -235,7 +229,6 @@ const getExerciseType = (ex: any): 'strength' | 'cardio' | 'duration' => {
   return 'strength'
 }
 
-// Our notes (editable, separate from Hevy description)
 const localNotes = ref((workout.value as any)?.notes ?? '')
 const editingNotes = ref(false)
 const notesSaveStatus = ref<'idle' | 'saving' | 'error'>('idle')
@@ -274,7 +267,6 @@ const aiStatus = ref('idle')
 const aiAnalysis = ref('')
 const aiError = ref('')
 
-// Show saved analysis on load, or the freshly generated one
 const displayedAnalysis = computed(() =>
   aiAnalysis.value || (workout.value as any)?.ai_analysis || ''
 )
@@ -295,9 +287,9 @@ const analyzeWithAI = async () => {
 
 const renderMarkdown = (text: string) => {
   return text
-    .replace(/^### (.+)$/gm, '<h3 class="font-bold text-base mt-4 mb-1">$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2 class="font-bold text-lg mt-4 mb-2">$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1 class="font-bold text-xl mt-4 mb-2">$1</h1>')
+    .replace(/^### (.+)$/gm, '<h3 class="font-bold text-base mt-4 mb-1 text-slate-200">$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2 class="font-bold text-lg mt-4 mb-2 text-slate-100">$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1 class="font-bold text-xl mt-4 mb-2 text-slate-100">$1</h1>')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
     .replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>')

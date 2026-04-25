@@ -2,6 +2,7 @@ import OpenAI from 'openai'
 import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
 import { buildUserProfileAsync } from '../../../utils/ai-context'
+import { AI_MODEL } from '../../../utils/ai-config'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -115,7 +116,7 @@ Proporciona:
 
   const openai = new OpenAI({ apiKey: config.openaiApiKey })
   const completion = await openai.chat.completions.create({
-    model: 'gpt-5.4',
+    model: AI_MODEL,
     messages: [
       {
         role: 'system',
@@ -132,10 +133,10 @@ Proporciona:
 
   if (tokensUsed) {
     const convo = await prisma.aiConversation.create({ data: { context_type: 'analyze', user_id: userId } })
-    await prisma.aiMessage.create({ data: { conversation_id: convo.id, role: 'assistant', content: analysis, tokens_used: tokensUsed } })
+    await prisma.aiMessage.create({ data: { conversation_id: convo.id, role: 'assistant', content: analysis, tokens_used: tokensUsed, model_used: AI_MODEL } })
   }
 
-  await prisma.workout.update({ where: { id }, data: { ai_analysis: analysis } })
+  await prisma.workout.update({ where: { id }, data: { ai_analysis: analysis, ai_model: AI_MODEL } })
 
   return { success: true, analysis }
 })

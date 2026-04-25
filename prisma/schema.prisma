@@ -77,6 +77,7 @@ model Mesocycle {
   notes                String?
   status               String    @default("active")
   final_summary        String?
+  final_summary_model  String?
   created_at           DateTime  @default(now())
   updated_at           DateTime  @updatedAt
 
@@ -106,6 +107,7 @@ model Workout {
   raw_data             String?
   notes                String?
   ai_analysis          String?
+  ai_model             String?
 
   mesocycle_id         String?
   mesocycle            Mesocycle? @relation(fields: [mesocycle_id], references: [id])
@@ -137,6 +139,7 @@ model MesocycleEvaluation {
   volume_trend     String?
   progress_score   Int?
   ai_analysis      String?
+  ai_model         String?
   recommendations  String?
   created_at       DateTime  @default(now())
 }
@@ -169,5 +172,6 @@ model AiMessage {
   role             String
   content          String
   tokens_used      Int?
+  model_used       String?
   created_at       DateTime       @default(now())
 }

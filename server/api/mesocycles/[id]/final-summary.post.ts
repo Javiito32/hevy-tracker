@@ -2,6 +2,7 @@ import OpenAI from 'openai'
 import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
 import { buildUserProfileAsync, formatWorkoutFull } from '../../../utils/ai-context'
+import { AI_MODEL } from '../../../utils/ai-config'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -93,7 +94,7 @@ Genera un análisis final con estas secciones:
 
   const openai = new OpenAI({ apiKey: config.openaiApiKey })
   const completion = await openai.chat.completions.create({
-    model: 'gpt-5.4',
+    model: AI_MODEL,
     messages: [
       {
         role: 'system',
@@ -110,10 +111,10 @@ Genera un análisis final con estas secciones:
 
   if (tokensUsed) {
     const convo = await prisma.aiConversation.create({ data: { context_type: 'final_summary', user_id: userId } })
-    await prisma.aiMessage.create({ data: { conversation_id: convo.id, role: 'assistant', content: finalSummary, tokens_used: tokensUsed } })
+    await prisma.aiMessage.create({ data: { conversation_id: convo.id, role: 'assistant', content: finalSummary, tokens_used: tokensUsed, model_used: AI_MODEL } })
   }
 
-  await prisma.mesocycle.update({ where: { id }, data: { final_summary: finalSummary } })
+  await prisma.mesocycle.update({ where: { id }, data: { final_summary: finalSummary, final_summary_model: AI_MODEL } })
 
   return { success: true, final_summary: finalSummary }
 })

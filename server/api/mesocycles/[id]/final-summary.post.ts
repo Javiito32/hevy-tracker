@@ -116,5 +116,5 @@ Genera un análisis final con estas secciones:
 
   await prisma.mesocycle.update({ where: { id }, data: { final_summary: finalSummary, final_summary_model: AI_MODEL } })
 
-  return { success: true, final_summary: finalSummary }
+  return { success: true, final_summary: finalSummary, model: AI_MODEL }
 })

@@ -27,6 +27,7 @@
       >
         {{ formatTime(timestamp) }}
       </div>
+      <p v-if="!isUser && isAdmin && modelUsed" class="text-[10px] font-mono text-slate-600 mt-1">Modelo: {{ modelUsed }}</p>
     </div>
 
     <!-- User Avatar -->
@@ -45,7 +46,11 @@ const props = defineProps<{
   role: 'user' | 'assistant'
   content: string
   timestamp?: Date
+  modelUsed?: string
 }>()
+
+const { session } = useUserSession()
+const isAdmin = computed(() => (session.value?.user as any)?.role === 'admin')
 
 const isUser = computed(() => props.role === 'user')
 

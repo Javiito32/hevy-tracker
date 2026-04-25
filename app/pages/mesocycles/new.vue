@@ -154,6 +154,7 @@
               <button type="button" @click="aiFeedback = ''" class="text-xs text-violet-500 hover:text-violet-300">✕ Cerrar</button>
             </div>
             <div class="text-sm text-slate-300 space-y-1" v-html="renderMarkdown(aiFeedback)"></div>
+            <p v-if="isAdmin && feedbackModel" class="text-[10px] font-mono text-slate-600 mt-2">Modelo: {{ feedbackModel }}</p>
           </div>
           <p v-if="feedbackError" class="text-xs text-rose-400 mt-2">{{ feedbackError }}</p>
         </div>
@@ -190,6 +191,9 @@ import { useRouter } from 'vue-router'
 const router = useRouter()
 const today = new Date().toISOString().split('T')[0]
 
+const { session } = useUserSession()
+const isAdmin = computed(() => (session.value?.user as any)?.role === 'admin')
+
 const form = ref({
   name: '',
   start_date: today,
@@ -212,6 +216,7 @@ const generateError = ref('')
 
 const analyzingFeedback = ref(false)
 const aiFeedback = ref('')
+const feedbackModel = ref('')
 const feedbackError = ref('')
 
 const hasEnoughData = computed(() => !!(form.value.goal && form.value.split_description))
@@ -253,7 +258,7 @@ const analyzeWithAI = async () => {
     const durationWeeks = form.value.end_date
       ? Math.round((new Date(form.value.end_date).getTime() - new Date(form.value.start_date).getTime()) / (7 * 24 * 60 * 60 * 1000))
       : undefined
-    const result = await $fetch<{ feedback: string }>('/api/mesocycles/ai-feedback', {
+    const result = await $fetch<{ feedback: string; model: string }>('/api/mesocycles/ai-feedback', {
       method: 'POST',
       body: {
         name: form.value.name,
@@ -265,6 +270,7 @@ const analyzeWithAI = async () => {
       }
     })
     aiFeedback.value = result.feedback
+    feedbackModel.value = result.model ?? ''
   } catch (err: any) {
     feedbackError.value = err?.data?.statusMessage || 'Error al analizar el plan.'
   } finally {

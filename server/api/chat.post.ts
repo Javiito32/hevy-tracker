@@ -108,6 +108,7 @@ export default defineEventHandler(async (event) => {
       success: true,
       role: 'assistant',
       message: finalReply,
+      model: AI_MODEL,
       conversationId: convoId,
       ...(toolsInvoked.length ? { toolsInvoked } : {})
     };

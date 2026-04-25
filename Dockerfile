@@ -18,5 +18,5 @@ RUN npm run build
 
 EXPOSE 3000
 
-# On each start: sync schema to DB, then serve
-CMD ["sh", "-c", "npx prisma db push --skip-generate && node .output/server/index.mjs"]
+# On each start: apply pending migrations, then serve
+CMD ["sh", "-c", "npx prisma migrate deploy && node .output/server/index.mjs"]

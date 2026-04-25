@@ -138,5 +138,5 @@ Proporciona:
 
   await prisma.workout.update({ where: { id }, data: { ai_analysis: analysis, ai_model: AI_MODEL } })
 
-  return { success: true, analysis }
+  return { success: true, analysis, model: AI_MODEL }
 })

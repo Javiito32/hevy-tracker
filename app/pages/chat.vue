@@ -37,6 +37,7 @@
             :role="message.role"
             :content="message.content"
             :timestamp="message.timestamp"
+            :model-used="message.modelUsed"
           />
 
           <!-- Empty state -->
@@ -123,6 +124,7 @@ interface Message {
   role: 'user' | 'assistant'
   content: string
   timestamp: Date
+  modelUsed?: string
 }
 
 const chatHistory = ref<Message[]>([])
@@ -144,7 +146,8 @@ const loadHistory = async () => {
     chatHistory.value = convo.messages.map(m => ({
       role: m.role as 'user' | 'assistant',
       content: m.content,
-      timestamp: new Date(m.created_at)
+      timestamp: new Date(m.created_at),
+      modelUsed: (m as any).model_used ?? undefined
     }))
     scrollToBottom()
   } catch {
@@ -230,7 +233,8 @@ const sendMessage = async () => {
     chatHistory.value.push({
       role: 'assistant',
       content: res.message,
-      timestamp: new Date()
+      timestamp: new Date(),
+      modelUsed: (res as any).model ?? undefined
     })
   } catch (error: any) {
     console.error(error)

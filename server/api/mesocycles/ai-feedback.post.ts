@@ -77,5 +77,5 @@ Analiza este plan con rigor y proporciona feedback constructivo en Markdown. Est
     await prisma.aiMessage.create({ data: { conversation_id: convo.id, role: 'assistant', content: feedback, tokens_used: tokensUsed, model_used: AI_MODEL } })
   }
 
-  return { success: true, feedback }
+  return { success: true, feedback, model: AI_MODEL }
 })

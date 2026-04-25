@@ -240,6 +240,7 @@
                 class="prose prose-sm prose-invert text-slate-300 max-w-none"
                 v-html="renderMarkdown(ev.ai_analysis ?? '')"
               ></div>
+              <p v-if="isAdmin && (ev as any).ai_model" class="text-[10px] font-mono text-slate-600 mt-2">Modelo: {{ (ev as any).ai_model }}</p>
             </div>
           </div>
         </div>
@@ -346,6 +347,7 @@
 
         <div v-if="mesocycle.final_summary" class="bg-indigo-950/30 border border-indigo-900 rounded-xl p-6">
           <div class="prose prose-sm prose-invert text-slate-300 max-w-none" v-html="renderMarkdown(mesocycle.final_summary)"></div>
+          <p v-if="isAdmin && displayedSummaryModel" class="text-[10px] font-mono text-slate-600 mt-2">Modelo: {{ displayedSummaryModel }}</p>
         </div>
         <div v-else-if="!generatingSummary" class="bg-slate-900 rounded-xl border border-slate-800 p-8 text-center text-slate-500">
           <p class="text-sm">El resumen final se genera automáticamente al completar el mesociclo, o puedes generarlo manualmente con el botón de arriba.</p>
@@ -365,6 +367,9 @@ import { useRoute } from 'vue-router'
 
 const route = useRoute()
 const mesocycleId = route.params.id as string
+
+const { session } = useUserSession()
+const isAdmin = computed(() => (session.value?.user as any)?.role === 'admin')
 
 const { data: mesocycle, pending, refresh } = useFetch(`/api/mesocycles/${mesocycleId}`)
 const { data: evaluations, pending: evalsLoading, refresh: refreshEvals } = useFetch(`/api/mesocycles/${mesocycleId}/evaluations`)
@@ -414,12 +419,17 @@ const savingNote = ref(false)
 const noteForm = ref({ date: new Date().toISOString().slice(0, 10), content: '', tagsRaw: '' })
 const generatingSummary = ref(false)
 const summaryError = ref<string | null>(null)
+const freshSummaryModel = ref('')
+const displayedSummaryModel = computed(() =>
+  freshSummaryModel.value || (mesocycle.value as any)?.final_summary_model || ''
+)
 
 const generateFinalSummary = async () => {
   generatingSummary.value = true
   summaryError.value = null
   try {
-    await $fetch(`/api/mesocycles/${mesocycleId}/final-summary`, { method: 'POST' })
+    const res = await $fetch<{ success: boolean; final_summary: string; model: string }>(`/api/mesocycles/${mesocycleId}/final-summary`, { method: 'POST' })
+    freshSummaryModel.value = res.model ?? ''
     await refresh()
   } catch (err: any) {
     summaryError.value = err?.data?.message ?? err?.message ?? 'Error al generar el resumen final.'

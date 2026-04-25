@@ -108,6 +108,7 @@
             </h2>
             <div v-if="aiStatus === 'error'" class="text-sm text-rose-400">{{ aiError }}</div>
             <div v-else class="prose prose-sm prose-invert text-slate-300 max-w-none" v-html="renderMarkdown(displayedAnalysis)"></div>
+            <p v-if="isAdmin && displayedModel" class="text-[10px] font-mono text-slate-600 mt-2">Modelo: {{ displayedModel }}</p>
             <div class="mt-4 pt-3 border-t border-violet-900">
               <NuxtLink to="/chat" class="text-violet-400 text-sm font-medium hover:text-violet-300 transition">Continuar análisis en el Chat →</NuxtLink>
             </div>
@@ -181,6 +182,9 @@ import { useRoute } from 'vue-router'
 
 const route = useRoute()
 const workoutId = route.params.id
+
+const { session } = useUserSession()
+const isAdmin = computed(() => (session.value?.user as any)?.role === 'admin')
 
 const { data: workout, pending } = useFetch(`/api/workouts/${workoutId}`)
 
@@ -265,10 +269,14 @@ const saveNotes = async () => {
 
 const aiStatus = ref('idle')
 const aiAnalysis = ref('')
+const aiModel = ref('')
 const aiError = ref('')
 
 const displayedAnalysis = computed(() =>
   aiAnalysis.value || (workout.value as any)?.ai_analysis || ''
+)
+const displayedModel = computed(() =>
+  aiModel.value || (workout.value as any)?.ai_model || ''
 )
 
 const analyzeWithAI = async () => {
@@ -276,8 +284,9 @@ const analyzeWithAI = async () => {
   aiError.value = ''
   aiAnalysis.value = ''
   try {
-    const res = await $fetch<{ success: boolean; analysis: string }>(`/api/workouts/${workoutId}/analyze`, { method: 'POST' })
+    const res = await $fetch<{ success: boolean; analysis: string; model: string }>(`/api/workouts/${workoutId}/analyze`, { method: 'POST' })
     aiAnalysis.value = res.analysis
+    aiModel.value = res.model ?? ''
     aiStatus.value = 'completed'
   } catch (err: any) {
     aiError.value = err?.data?.statusMessage || 'Error al conectar con la IA. Verifica tu API key en Ajustes.'

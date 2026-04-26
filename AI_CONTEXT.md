@@ -77,7 +77,7 @@ Consulta el mesociclo más reciente con `status: 'completed'` e incluye nombre, 
 ### 1. Chat general
 **Endpoint:** `POST /api/chat`
 **Función de perfil:** `buildSystemPrompt(userId)` → usa `buildUserProfileAsync` internamente
-**Modelo:** `gpt-5.4` | **Temp:** 0.7 | **Max tokens:** 3000
+**Modelo:** `gpt-5.5` | **Temp:** 0.7 | **Max tokens:** 3000
 
 **System prompt incluye:**
 - Rol: entrenador experto en hipertrofia y powerbuilding integrado en la app
@@ -100,7 +100,7 @@ Consulta el mesociclo más reciente con `status: 'completed'` e incluye nombre, 
 ### 2. Análisis de entreno
 **Endpoint:** `POST /api/workouts/[id]/analyze`
 **Función de perfil:** `buildUserProfileAsync(userId)`
-**Modelo:** `gpt-5.4` | **Temp:** 0.6 | **Max tokens:** 700
+**Modelo:** `gpt-5.5` | **Temp:** 0.6 | **Max tokens:** 700
 
 **System prompt incluye:**
 - Rol: entrenador experto en hipertrofia
@@ -124,7 +124,7 @@ Consulta el mesociclo más reciente con `status: 'completed'` e incluye nombre, 
 ### 3. Evaluación semanal de mesociclo
 **Endpoint:** `POST /api/mesocycles/[id]/evaluate`
 **Función de perfil:** `buildUserProfileAsync(userId)`
-**Modelo:** `gpt-5.4` | **Temp:** 0.6 | **Max tokens:** 700
+**Modelo:** `gpt-5.5` | **Temp:** 0.6 | **Max tokens:** 700
 
 **System prompt incluye:**
 - Rol: entrenador experto en hipertrofia
@@ -152,7 +152,7 @@ Consulta el mesociclo más reciente con `status: 'completed'` e incluye nombre, 
 ### 4. Resumen final de mesociclo
 **Endpoint:** `POST /api/mesocycles/[id]/final-summary`
 **Función de perfil:** `buildUserProfileAsync(userId)`
-**Modelo:** `gpt-5.4` | **Temp:** 0.6 | **Max tokens:** 900
+**Modelo:** `gpt-5.5` | **Temp:** 0.6 | **Max tokens:** 900
 
 **System prompt incluye:**
 - Rol: entrenador experto en hipertrofia
@@ -177,7 +177,7 @@ Consulta el mesociclo más reciente con `status: 'completed'` e incluye nombre, 
 ### 5. Generación de plan de mesociclo con IA
 **Endpoint:** `POST /api/mesocycles/ai-generate`
 **Función de perfil:** `buildUserProfileAsync(userId)`
-**Modelo:** `gpt-5.4` | **Temp:** 0.7 | **Max tokens:** 1200
+**Modelo:** `gpt-5.5` | **Temp:** 0.7 | **Max tokens:** 1200
 **Output format:** `response_format: { type: 'json_object' }`
 
 **System prompt incluye:**
@@ -212,7 +212,7 @@ Consulta el mesociclo más reciente con `status: 'completed'` e incluye nombre, 
 ### 6. Feedback de plan de mesociclo diseñado por el usuario
 **Endpoint:** `POST /api/mesocycles/ai-feedback`
 **Función de perfil:** `buildUserProfileAsync(userId)`
-**Modelo:** `gpt-5.4` | **Temp:** 0.6 | **Max tokens:** 800
+**Modelo:** `gpt-5.5` | **Temp:** 0.6 | **Max tokens:** 800
 
 **System prompt incluye:**
 - Rol: entrenador experto, feedback honesto y basado en datos

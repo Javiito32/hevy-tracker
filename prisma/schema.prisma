@@ -41,9 +41,21 @@ model BodyMetric {
   chest                Float?
   waist                Float?
   hips                 Float?
-  biceps               Float?
-  thighs               Float?
-  calves               Float?
+  left_bicep           Float?
+  right_bicep          Float?
+  left_bicep_relaxed   Float?
+  right_bicep_relaxed  Float?
+  left_forearm         Float?
+  right_forearm        Float?
+  hrv                  Float?
+  resting_hr           Int?
+  left_thigh           Float?
+  right_thigh          Float?
+  left_calf            Float?
+  right_calf           Float?
+  shoulder             Float?
+  abdomen              Float?
+  lean_mass            Float?
   raw_data             String?
   source               String   @default("hevy")
   created_at           DateTime @default(now())

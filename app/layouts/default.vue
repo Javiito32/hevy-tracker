@@ -13,6 +13,7 @@
           <NuxtLink to="/mesocycles" class="text-slate-400 hover:text-indigo-400 transition">Mesociclos</NuxtLink>
           <NuxtLink to="/macrocycles" class="text-slate-400 hover:text-indigo-400 transition">Macrociclos</NuxtLink>
           <NuxtLink to="/progress" class="text-slate-400 hover:text-indigo-400 transition">Progreso</NuxtLink>
+          <NuxtLink to="/body" class="text-slate-400 hover:text-indigo-400 transition">Métricas</NuxtLink>
           <NuxtLink to="/chat" class="text-slate-400 hover:text-indigo-400 transition">AI Coach</NuxtLink>
           <NuxtLink to="/settings" class="text-slate-400 hover:text-indigo-400 transition">Ajustes</NuxtLink>
           <NuxtLink v-if="isAdmin" to="/admin" class="text-slate-400 hover:text-indigo-400 transition font-medium">Admin</NuxtLink>

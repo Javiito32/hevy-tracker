@@ -2,23 +2,27 @@ import { prisma } from './prisma'
 import { fetchHevyWorkouts, fetchHevyWorkoutEvents, fetchHevyBodyMeasurements, fetchHevyBodyMeasurementByDate } from './hevy-client'
 import { calcSetVolume, calcEstimated1RM, calcAverageRPE } from './volume-calculator'
 
-function getAverage(v1?: number, v2?: number) {
-  if (v1 != null && v2 != null) return (v1 + v2) / 2
-  return v1 != null ? v1 : (v2 != null ? v2 : null)
-}
 
 async function processAndSaveBodyMetric(userId: string, data: any) {
   if (!data || !data.date) return false
   const dateStr = data.date
   const weight = data.weight_kg ?? null
+  const lean_mass = data.lean_mass_kg ?? null
   const fat = data.fat_percent ?? null
   const neck = data.neck_cm ?? null
+  const shoulder = data.shoulder_cm ?? null
   const chest = data.chest_cm ?? null
+  const left_bicep = data.left_bicep_cm ?? null
+  const right_bicep = data.right_bicep_cm ?? null
+  const left_forearm = data.left_forearm_cm ?? null
+  const right_forearm = data.right_forearm_cm ?? null
+  const abdomen = data.abdomen ?? null
   const waist = data.waist ?? null
   const hips = data.hips ?? null
-  const biceps = getAverage(data.left_bicep_cm, data.right_bicep_cm)
-  const thighs = getAverage(data.left_thigh, data.right_thigh)
-  const calves = getAverage(data.left_calf, data.right_calf)
+  const left_thigh = data.left_thigh ?? null
+  const right_thigh = data.right_thigh ?? null
+  const left_calf = data.left_calf ?? null
+  const right_calf = data.right_calf ?? null
 
   const startOfDay = new Date(`${dateStr}T00:00:00.000Z`)
   const endOfDay = new Date(`${dateStr}T23:59:59.999Z`)
@@ -30,14 +34,14 @@ async function processAndSaveBodyMetric(userId: string, data: any) {
   if (existing) {
     await prisma.bodyMetric.update({
       where: { id: existing.id },
-      data: { weight, body_fat_percentage: fat, neck, chest, waist, hips, biceps, thighs, calves, raw_data: JSON.stringify(data) }
+      data: { weight, lean_mass, body_fat_percentage: fat, neck, shoulder, chest, left_bicep, right_bicep, left_forearm, right_forearm, abdomen, waist, hips, left_thigh, right_thigh, left_calf, right_calf, raw_data: JSON.stringify(data) }
     })
   } else {
     await prisma.bodyMetric.create({
       data: {
         user_id: userId,
         date: new Date(`${dateStr}T12:00:00.000Z`),
-        weight, body_fat_percentage: fat, neck, chest, waist, hips, biceps, thighs, calves,
+        weight, lean_mass, body_fat_percentage: fat, neck, shoulder, chest, left_bicep, right_bicep, left_forearm, right_forearm, abdomen, waist, hips, left_thigh, right_thigh, left_calf, right_calf,
         raw_data: JSON.stringify(data)
       }
     })

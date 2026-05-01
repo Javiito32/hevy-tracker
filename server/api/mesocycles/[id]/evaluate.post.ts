@@ -1,7 +1,7 @@
 import OpenAI from 'openai'
 import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
-import { buildUserProfileAsync, formatWorkoutFull, formatWorkoutSummary } from '../../../utils/ai-context'
+import { buildAthleteProfile, buildWorkoutData, type WeekEvaluationPayload } from '../../../utils/ai-payload'
 import { AI_MODEL } from '../../../utils/ai-config'
 
 export default defineEventHandler(async (event) => {
@@ -37,8 +37,8 @@ export default defineEventHandler(async (event) => {
 
   const historyStart = prevWindows.length ? prevWindows[0].start : weekStart
 
-  const [profileBlock, thisWeekWorkouts, prevEvaluations, weekNotes, ...prevWeeksWorkouts] = await Promise.all([
-    buildUserProfileAsync(userId),
+  const [athlete, thisWeekWorkouts, prevEvaluations, weekNotes, ...prevWeeksWorkouts] = await Promise.all([
+    buildAthleteProfile(userId),
     prisma.workout.findMany({
       where: { user_id: userId, mesocycle_id: id, date: { gte: weekStart, lt: weekEnd } },
       orderBy: { date: 'asc' },
@@ -54,7 +54,7 @@ export default defineEventHandler(async (event) => {
       where: { mesocycle_id: id, date: { gte: historyStart, lt: weekEnd } },
       orderBy: { date: 'asc' }
     }),
-    // Previous weeks: omit exercises_summary — only the summary line is shown to reduce token usage
+    // Previous weeks: no exercises_summary — summary only to reduce token usage
     ...prevWindows.map(w =>
       prisma.workout.findMany({
         where: { user_id: userId, mesocycle_id: id, date: { gte: w.start, lt: w.end } },
@@ -64,73 +64,61 @@ export default defineEventHandler(async (event) => {
     )
   ])
 
-  const thisVol = thisWeekWorkouts.reduce((s, w) => s + (w.total_volume ?? 0), 0)
-  const prevVol = prevWeeksWorkouts[prevWeeksWorkouts.length - 1]?.reduce((s: number, w: any) => s + (w.total_volume ?? 0), 0) ?? 0
+  const thisVol = thisWeekWorkouts.reduce((s, w) => s + Number(w.total_volume ?? 0), 0)
+  const prevVol = prevWeeksWorkouts[prevWeeksWorkouts.length - 1]?.reduce(
+    (s: number, w: any) => s + Number(w.total_volume ?? 0), 0
+  ) ?? 0
   const volumeTrend = prevVol === 0 ? 'N/A' : thisVol > prevVol * 1.05 ? 'increasing' : thisVol < prevVol * 0.95 ? 'decreasing' : 'stable'
 
-  const formatWorkouts = (ws: any[]) =>
-    ws.length ? ws.map(formatWorkoutFull).join('\n\n') : '  (Sin entrenamientos)'
-
-  // Previous weeks: show only summary lines (no set-by-set detail) to reduce token usage.
-  // Full exercise detail is reserved for the current week only.
-  const prevWeeksBlock = prevWindows.map((w, i) => {
-    const ww = prevWeeksWorkouts[i] ?? []
-    const vol = (ww as any[]).reduce((s: number, x: any) => s + (x.total_volume ?? 0), 0)
-    const lines = (ww as any[]).length
-      ? (ww as any[]).map(formatWorkoutSummary).join('\n')
-      : '  (Sin entrenamientos)'
-    return `SEMANA ${w.weekNum} (${w.start.toLocaleDateString('es-ES')} – ${w.end.toLocaleDateString('es-ES')}) — Vol: ${Math.round(vol).toLocaleString()}kg:\n${lines}`
-  }).join('\n\n')
-
-  const notesBlock = weekNotes.length
-    ? weekNotes.map((n: any) => `  [${new Date(n.date).toLocaleDateString('es-ES')}] ${n.content}`).join('\n')
-    : '  Sin notas del deportista esta semana.'
-
-  const prevEvalsBlock = prevEvaluations.length
-    ? prevEvaluations.map(e => `  Semana ${e.week_number}: ${e.summary ?? 'Sin resumen'} (volumen: ${e.volume_trend ?? 'N/A'})`).join('\n')
-    : '  Primera evaluación del mesociclo.'
-
-  const todayStr = `${['domingo','lunes','martes','miércoles','jueves','viernes','sábado'][now.getDay()]}, ${now.toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })}`
   const daysLeftInWeek = weekEnd.getTime() > now.getTime()
     ? Math.ceil((weekEnd.getTime() - now.getTime()) / msPerDay)
     : 0
   const weekInProgress = daysLeftInWeek > 0
 
-  const targetMet = mesocycle.target_volume_weekly
-    ? weekInProgress
-      ? `${thisWeekWorkouts.length}/${mesocycle.target_volume_weekly} — semana en curso (hoy ${todayStr}, quedan ~${daysLeftInWeek} días)`
-      : `${thisWeekWorkouts.length}/${mesocycle.target_volume_weekly} (${thisWeekWorkouts.length >= mesocycle.target_volume_weekly ? '✓ objetivo cumplido' : 'objetivo no alcanzado'})`
-    : `${thisWeekWorkouts.length} entrenamientos`
-
-  const prompt = `Evalúa la semana ${weekNumber} del mesociclo "${mesocycle.name}". Sé conciso.
-
-OBJETIVO: ${mesocycle.goal ?? 'No especificado'}
-SPLIT: ${mesocycle.split_description ?? 'No especificado'}
-ENTRENAMIENTOS: ${targetMet}
-VOLUMEN: ${Math.round(thisVol).toLocaleString()}kg esta semana vs ${Math.round(prevVol).toLocaleString()}kg semana anterior (${volumeTrend})
-
-${prevWeeksBlock ? `SEMANAS ANTERIORES (referencia de progresión):\n${prevWeeksBlock}\n\n` : ''}SEMANA ACTUAL — SEMANA ${weekNumber} (${weekStart.toLocaleDateString('es-ES')} – ${weekEnd.toLocaleDateString('es-ES')}):
-${formatWorkouts(thisWeekWorkouts)}
-
-NOTAS DEL DEPORTISTA (últimas semanas):
-${notesBlock}
-
-EVALUACIONES PREVIAS:
-${prevEvalsBlock}
-
-Responde con estas secciones (breve, sin repetir datos que ya tienes):
-
-## Resumen
-(2 frases sobre el rendimiento)
-
-## Volumen e intensidad
-(Comparativa con semana anterior)
-
-## Puntos fuertes
-
-## Áreas de atención
-
-## Recomendaciones próxima semana`
+  const payload: WeekEvaluationPayload = {
+    task: 'week_evaluation',
+    today: now.toISOString().substring(0, 10),
+    athlete,
+    mesocycle: {
+      name: mesocycle.name,
+      ...(mesocycle.goal && { goal: mesocycle.goal }),
+      ...(mesocycle.split_description && { split: mesocycle.split_description }),
+      ...(mesocycle.target_volume_weekly != null && { sessions_per_week: mesocycle.target_volume_weekly })
+    },
+    current_week: {
+      number: weekNumber,
+      from: weekStart.toISOString().substring(0, 10),
+      to: weekEnd.toISOString().substring(0, 10),
+      in_progress: weekInProgress,
+      ...(weekInProgress && { days_remaining: daysLeftInWeek }),
+      workouts: thisWeekWorkouts.map(w => buildWorkoutData(w, true)),
+      total_volume_kg: Math.round(thisVol),
+      sessions_completed: thisWeekWorkouts.length,
+      ...(mesocycle.target_volume_weekly != null && { sessions_target: mesocycle.target_volume_weekly }),
+      volume_trend: volumeTrend,
+      volume_vs_previous_kg: Math.round(thisVol - prevVol),
+      athlete_notes: weekNotes.map((n: any) => ({
+        date: new Date(n.date).toISOString().substring(0, 10),
+        content: n.content
+      }))
+    },
+    previous_weeks: prevWindows.map((w, i) => {
+      const ww = prevWeeksWorkouts[i] ?? []
+      const vol = (ww as any[]).reduce((s: number, x: any) => s + Number(x.total_volume ?? 0), 0)
+      return {
+        number: w.weekNum,
+        from: w.start.toISOString().substring(0, 10),
+        to: w.end.toISOString().substring(0, 10),
+        workouts: (ww as any[]).map(x => buildWorkoutData(x, false)),
+        total_volume_kg: Math.round(vol)
+      }
+    }),
+    previous_evaluations: prevEvaluations.map(e => ({
+      week: e.week_number,
+      ...(e.summary && { summary: e.summary }),
+      ...(e.volume_trend && { volume_trend: e.volume_trend })
+    }))
+  }
 
   const openai = new OpenAI({ apiKey: config.openaiApiKey })
   const completion = await openai.chat.completions.create({
@@ -138,9 +126,17 @@ Responde con estas secciones (breve, sin repetir datos que ya tienes):
     messages: [
       {
         role: 'system',
-        content: `Eres un entrenador personal experto en hipertrofia. Evalúa semanas de entrenamiento con rigor científico. Sé conciso. Responde en español con formato Markdown.\n\n### PERFIL\n${profileBlock}`
+        content: `Eres un entrenador personal experto en hipertrofia. Evalúa semanas de entrenamiento con rigor científico. Sé conciso. Responde en español con formato Markdown.
+
+Recibirás un JSON con los datos de la semana a evaluar. Responde con estas secciones (breve, sin repetir datos que ya tienes):
+
+## Resumen
+## Volumen e intensidad
+## Puntos fuertes
+## Áreas de atención
+## Recomendaciones próxima semana`
       },
-      { role: 'user', content: prompt }
+      { role: 'user', content: JSON.stringify(payload, null, 2) }
     ],
     temperature: 0.6,
     max_completion_tokens: 700
@@ -153,7 +149,6 @@ Responde con estas secciones (breve, sin repetir datos que ya tienes):
   const recsMatch = aiAnalysis.match(/## Recomendaciones[\s\S]*?\n+([\s\S]*?)(?=\n##|$)/)
   const recommendations = recsMatch?.[1]?.trim() ?? ''
 
-  // Track token usage
   if (tokensUsed) {
     const convo = await prisma.aiConversation.create({ data: { context_type: 'evaluate', user_id: userId } })
     await prisma.aiMessage.create({ data: { conversation_id: convo.id, role: 'assistant', content: aiAnalysis, tokens_used: tokensUsed, model_used: AI_MODEL } })

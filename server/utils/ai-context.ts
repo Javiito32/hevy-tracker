@@ -89,8 +89,17 @@ interface MetricSnapshot {
 }
 
 function hasMeasurements(m: any): boolean {
-  return !!(m?.body_fat_percentage != null || m?.waist != null || m?.biceps != null ||
-    m?.chest != null || m?.thighs != null || m?.hips != null || m?.neck != null || m?.calves != null)
+  return !!(m?.body_fat_percentage != null || m?.waist != null || m?.left_bicep != null ||
+    m?.right_bicep != null || m?.chest != null || m?.left_thigh != null || m?.right_thigh != null ||
+    m?.hips != null || m?.neck != null || m?.left_calf != null || m?.right_calf != null)
+}
+
+function avg2(a: any, b: any): string | null {
+  const va = a != null ? parseFloat(a) : null
+  const vb = b != null ? parseFloat(b) : null
+  if (va == null && vb == null) return null
+  const result = va != null && vb != null ? (va + vb) / 2 : (va ?? vb)!
+  return result.toFixed(1)
 }
 
 function formatSnapshot(s: MetricSnapshot): string | null {
@@ -98,14 +107,19 @@ function formatSnapshot(s: MetricSnapshot): string | null {
   if (!m || !hasMeasurements(m)) return null
   const dateStr = new Date(m.date).toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit' })
   const parts: string[] = []
-  if (m.body_fat_percentage != null) parts.push(`${m.body_fat_percentage}% grasa`)
-  if (m.waist != null) parts.push(`cintura ${m.waist}cm`)
-  if (m.biceps != null) parts.push(`bíceps ${parseFloat(m.biceps).toFixed(1)}cm`)
-  if (m.chest != null) parts.push(`pecho ${m.chest}cm`)
-  if (m.thighs != null) parts.push(`muslos ${parseFloat(m.thighs).toFixed(1)}cm`)
-  if (m.hips != null) parts.push(`caderas ${m.hips}cm`)
-  if (m.neck != null) parts.push(`cuello ${m.neck}cm`)
-  if (m.calves != null) parts.push(`gemelos ${parseFloat(m.calves).toFixed(1)}cm`)
+  if (m.body_fat_percentage != null) parts.push(`${parseFloat(m.body_fat_percentage).toFixed(1)}% grasa`)
+  if (m.lean_mass != null) parts.push(`masa magra ${parseFloat(m.lean_mass).toFixed(1)}kg`)
+  if (m.waist != null) parts.push(`cintura ${parseFloat(m.waist).toFixed(1)}cm`)
+  if (m.abdomen != null) parts.push(`abdomen ${parseFloat(m.abdomen).toFixed(1)}cm`)
+  const biceps = avg2(m.left_bicep, m.right_bicep)
+  if (biceps) parts.push(`bíceps ${biceps}cm`)
+  if (m.chest != null) parts.push(`pecho ${parseFloat(m.chest).toFixed(1)}cm`)
+  const thighs = avg2(m.left_thigh, m.right_thigh)
+  if (thighs) parts.push(`muslos ${thighs}cm`)
+  if (m.hips != null) parts.push(`caderas ${parseFloat(m.hips).toFixed(1)}cm`)
+  if (m.neck != null) parts.push(`cuello ${parseFloat(m.neck).toFixed(1)}cm`)
+  const calves = avg2(m.left_calf, m.right_calf)
+  if (calves) parts.push(`gemelos ${calves}cm`)
   if (!parts.length) return null
   return `  ${s.label} (${dateStr}): ${parts.join(', ')}`
 }

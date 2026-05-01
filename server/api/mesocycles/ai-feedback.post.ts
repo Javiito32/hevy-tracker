@@ -1,7 +1,7 @@
 import OpenAI from 'openai'
 import { prisma } from '../../utils/prisma'
 import { getSessionUser } from '../../utils/session'
-import { buildUserProfileAsync, formatWorkoutFull, buildLastCompletedMesocycleSummary } from '../../utils/ai-context'
+import { buildAthleteProfile, buildWorkoutData, buildLastMesocycleSummaryData, type MesocycleFeedbackPayload } from '../../utils/ai-payload'
 import { AI_MODEL } from '../../utils/ai-config'
 
 export default defineEventHandler(async (event) => {
@@ -15,45 +15,32 @@ export default defineEventHandler(async (event) => {
   const body = await readBody(event)
   const { name, goal, split_description, target_volume_weekly, duration_weeks, notes } = body
 
-  const [profileBlock, recentWorkouts, lastMesocycleSummary] = await Promise.all([
-    buildUserProfileAsync(userId),
+  const [athlete, recentWorkouts, baselineMesocycle] = await Promise.all([
+    buildAthleteProfile(userId),
     prisma.workout.findMany({
       where: { user_id: userId },
       take: 5,
       orderBy: { date: 'desc' },
-      select: { name: true, date: true, total_volume: true, rpe_avg: true, exercises_summary: true, notes: true }
+      select: { name: true, date: true, total_volume: true, rpe_avg: true, notes: true }
     }),
-    // Last completed mesocycle as baseline — lets the model judge the new plan
-    // relative to what the athlete actually trained before, not in a vacuum
-    buildLastCompletedMesocycleSummary(userId)
+    buildLastMesocycleSummaryData(userId)
   ])
 
-  const recentText = recentWorkouts.length
-    ? recentWorkouts.map(formatWorkoutFull).join('\n\n')
-    : 'Sin entrenamientos recientes.'
-
-  // Baseline block: last completed mesocycle for comparison
-  const baselineBlock = lastMesocycleSummary
-    ? `\n\n### MESOCICLO ANTERIOR (línea base del deportista)\n${lastMesocycleSummary}`
-    : ''
-
-  const prompt = `El deportista ha diseñado el siguiente mesociclo y quiere feedback:
-
-**Nombre:** ${name || 'Sin nombre'}
-**Objetivo:** ${goal || 'No especificado'}
-**Duración:** ${duration_weeks ? duration_weeks + ' semanas' : 'No especificada'}
-**Sesiones por semana:** ${target_volume_weekly ?? 'No especificado'}
-**Split/Rutina:**
-${split_description || 'No especificado'}
-${notes ? `**Notas:** ${notes}` : ''}
-
-Analiza este plan con rigor y proporciona feedback constructivo en Markdown. Estructura tu respuesta con estas secciones:
-
-## Evaluación general
-## Volumen y frecuencia
-## Idoneidad del split
-## Riesgos o puntos de atención
-## Recomendaciones concretas`
+  const payload: MesocycleFeedbackPayload = {
+    task: 'mesocycle_feedback',
+    today: new Date().toISOString().substring(0, 10),
+    athlete,
+    recent_workouts: recentWorkouts.map(w => buildWorkoutData(w, false)),
+    plan: {
+      ...(name && { name }),
+      ...(goal && { goal }),
+      ...(duration_weeks && { duration_weeks }),
+      ...(target_volume_weekly != null && { sessions_per_week: target_volume_weekly }),
+      ...(split_description && { split_description }),
+      ...(notes && { notes })
+    },
+    ...(baselineMesocycle && { baseline_mesocycle: baselineMesocycle })
+  }
 
   const openai = new OpenAI({ apiKey: config.openaiApiKey })
   const completion = await openai.chat.completions.create({
@@ -61,9 +48,17 @@ Analiza este plan con rigor y proporciona feedback constructivo en Markdown. Est
     messages: [
       {
         role: 'system',
-        content: `Eres un entrenador personal experto en hipertrofia y powerbuilding. Da feedback honesto, directo y basado en datos científicos. Sé conciso. Responde en español.\n\n### PERFIL DEL DEPORTISTA\n${profileBlock}${baselineBlock}\n\n### ÚLTIMOS 5 ENTRENAMIENTOS\n${recentText}`
+        content: `Eres un entrenador personal experto en hipertrofia y powerbuilding. Da feedback honesto, directo y basado en datos científicos. Sé conciso. Responde en español.
+
+Recibirás un JSON con el plan de mesociclo propuesto y el contexto del deportista. Analiza el plan y proporciona feedback constructivo en Markdown con estas secciones:
+
+## Evaluación general
+## Volumen y frecuencia
+## Idoneidad del split
+## Riesgos o puntos de atención
+## Recomendaciones concretas`
       },
-      { role: 'user', content: prompt }
+      { role: 'user', content: JSON.stringify(payload, null, 2) }
     ],
     temperature: 0.6,
     max_completion_tokens: 800

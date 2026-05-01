@@ -1,7 +1,7 @@
 import OpenAI from 'openai'
 import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
-import { buildUserProfileAsync, formatWorkoutFull } from '../../../utils/ai-context'
+import { buildAthleteProfile, buildWorkoutData, type FinalSummaryPayload } from '../../../utils/ai-payload'
 import { AI_MODEL } from '../../../utils/ai-config'
 
 export default defineEventHandler(async (event) => {
@@ -18,12 +18,12 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 503, statusMessage: 'OpenAI API Key no configurada' })
   }
 
-  const [profileBlock, allWorkouts, allEvaluations, allNotes] = await Promise.all([
-    buildUserProfileAsync(userId),
+  const [athlete, allWorkouts, allEvaluations, allNotes] = await Promise.all([
+    buildAthleteProfile(userId),
     prisma.workout.findMany({
       where: { user_id: userId, mesocycle_id: id },
       orderBy: { date: 'asc' },
-      select: { name: true, date: true, total_volume: true, rpe_avg: true, exercises_summary: true, notes: true }
+      select: { name: true, date: true, total_volume: true, rpe_avg: true, exercises_summary: true, notes: true, duration: true }
     }),
     prisma.mesocycleEvaluation.findMany({
       where: { mesocycle_id: id },
@@ -36,48 +36,58 @@ export default defineEventHandler(async (event) => {
     })
   ])
 
-  const totalVolume = allWorkouts.reduce((s, w) => s + (w.total_volume ?? 0), 0)
-  const avgRpe = allWorkouts.filter(w => w.rpe_avg).reduce((s, w) => s + (w.rpe_avg ?? 0), 0) /
-    (allWorkouts.filter(w => w.rpe_avg).length || 1)
+  const totalVolume = allWorkouts.reduce((s, w) => s + Number(w.total_volume ?? 0), 0)
+  const workoutsWithRpe = allWorkouts.filter(w => w.rpe_avg)
+  const avgRpe = workoutsWithRpe.length
+    ? workoutsWithRpe.reduce((s, w) => s + (w.rpe_avg ?? 0), 0) / workoutsWithRpe.length
+    : 0
 
   const durationDays = mesocycle.end_date
     ? Math.round((new Date(mesocycle.end_date).getTime() - new Date(mesocycle.start_date).getTime()) / (24 * 60 * 60 * 1000))
     : Math.round((Date.now() - new Date(mesocycle.start_date).getTime()) / (24 * 60 * 60 * 1000))
 
-  const evalsBlock = allEvaluations.length
-    ? allEvaluations.map(e => `  Semana ${e.week_number}: ${e.summary ?? 'Sin resumen'} | Volumen: ${e.volume_trend ?? 'N/A'}`).join('\n')
-    : '  Sin evaluaciones semanales registradas.'
-
-  const notesBlock = allNotes.length
-    ? allNotes.map(n => `  [${new Date(n.date).toLocaleDateString('es-ES')}] ${n.content}`).join('\n')
-    : '  Sin notas del diario.'
-
   const firstWorkout = allWorkouts[0]
   const lastWorkout = allWorkouts[allWorkouts.length - 1]
 
-  const prompt = `Genera el resumen final del mesociclo "${mesocycle.name}" que acaba de completarse.
+  const payload: FinalSummaryPayload = {
+    task: 'final_summary',
+    today: new Date().toISOString().substring(0, 10),
+    athlete,
+    mesocycle: {
+      name: mesocycle.name,
+      ...(mesocycle.goal && { goal: mesocycle.goal }),
+      ...(mesocycle.split_description && { split: mesocycle.split_description })
+    },
+    stats: {
+      duration_days: durationDays,
+      duration_weeks: Math.round(durationDays / 7),
+      total_sessions: allWorkouts.length,
+      total_volume_kg: Math.round(totalVolume),
+      avg_rpe: parseFloat(avgRpe.toFixed(1))
+    },
+    ...(firstWorkout && { first_workout: buildWorkoutData(firstWorkout, true) }),
+    ...(lastWorkout && lastWorkout !== firstWorkout && { last_workout: buildWorkoutData(lastWorkout, true) }),
+    weekly_evaluations: allEvaluations.map(e => ({
+      week: e.week_number,
+      ...(e.summary && { summary: e.summary }),
+      ...(e.volume_trend && { volume_trend: e.volume_trend }),
+      ...(e.recommendations && { recommendations: e.recommendations })
+    })),
+    diary_notes: allNotes.map((n: any) => ({
+      date: new Date(n.date).toISOString().substring(0, 10),
+      content: n.content
+    }))
+  }
 
-DATOS GENERALES:
-- Duración: ${durationDays} días (${Math.round(durationDays / 7)} semanas)
-- Objetivo: ${mesocycle.goal ?? 'No especificado'}
-- Split: ${mesocycle.split_description ?? 'No especificado'}
-- Total entrenamientos: ${allWorkouts.length}
-- Volumen total acumulado: ${Math.round(totalVolume).toLocaleString()}kg
-- RPE promedio global: ${avgRpe.toFixed(1)}
+  const openai = new OpenAI({ apiKey: config.openaiApiKey })
+  const completion = await openai.chat.completions.create({
+    model: AI_MODEL,
+    messages: [
+      {
+        role: 'system',
+        content: `Eres un entrenador personal experto en hipertrofia. Genera análisis finales de bloques de entrenamiento con rigor científico. Sé conciso y constructivo. Responde en español con formato Markdown.
 
-PRIMER ENTRENAMIENTO:
-${firstWorkout ? formatWorkoutFull(firstWorkout) : '  (Sin datos)'}
-
-ÚLTIMO ENTRENAMIENTO:
-${lastWorkout && lastWorkout !== firstWorkout ? formatWorkoutFull(lastWorkout) : '  (Sin datos)'}
-
-RESUMEN DE EVALUACIONES SEMANALES:
-${evalsBlock}
-
-DIARIO DEL DEPORTISTA:
-${notesBlock}
-
-Genera un análisis final con estas secciones:
+Recibirás un JSON con los datos del mesociclo completado. Genera un análisis final con estas secciones:
 
 ## Conclusiones del mesociclo
 (Evaluación global: ¿Se cumplieron los objetivos? 3-4 frases)
@@ -91,16 +101,8 @@ Genera un análisis final con estas secciones:
 
 ## Recomendaciones para el próximo mesociclo
 (Ajustes de volumen, intensidad, split o ejercicios)`
-
-  const openai = new OpenAI({ apiKey: config.openaiApiKey })
-  const completion = await openai.chat.completions.create({
-    model: AI_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `Eres un entrenador personal experto en hipertrofia. Genera análisis finales de bloques de entrenamiento con rigor científico. Sé conciso y constructivo. Responde en español con formato Markdown.\n\n### PERFIL\n${profileBlock}`
       },
-      { role: 'user', content: prompt }
+      { role: 'user', content: JSON.stringify(payload, null, 2) }
     ],
     temperature: 0.6,
     max_completion_tokens: 900

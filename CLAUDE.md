@@ -37,7 +37,7 @@ Both keys are exposed to server-side code via `useRuntimeConfig()` as `config.he
 app/            ← Nuxt frontend (pages, components, layouts)
 server/
   api/          ← Nitro API route handlers (file = route)
-  utils/        ← Shared server utilities (prisma, hevy-client, ai-context, volume-calculator)
+  utils/        ← Shared server utilities (prisma, hevy-client, ai-context, ai-payload, ai-tools, ai-config, volume-calculator)
   plugins/      ← Nitro plugins (cron job)
 prisma/
   schema.prisma ← SQLite schema
@@ -71,11 +71,58 @@ Per-workout computed fields stored in DB:
 
 ### AI integration
 
-**Chat** (`POST /api/chat`): takes `{ message, historyContext, conversationId }`. Uses a **lean system prompt** (`buildLeanSystemPrompt` in `server/utils/ai-context.ts`) with just profile + active mesocycle + last 3 workout summaries, plus **OpenAI tool calling** (`server/utils/ai-tools.ts`) so the model fetches historical data on demand (`get_workouts_in_range`, `get_workout_detail`, `get_exercise_progression`, `get_body_metrics_range`, `get_mesocycle_evaluations`, `get_previous_mesocycles`, `get_weekly_aggregates`). The tool-call loop is capped at `MAX_TOOL_ITERATIONS = 5` and `historyContext` is trimmed to the last 8 messages. Chat messages are persisted to `AiConversation` / `AiMessage`.
+All AI calls use the model defined in `server/utils/ai-config.ts` (`AI_MODEL`). Every endpoint gates on `config.openaiApiKey` and throws a 503 when the key is missing or unconfigured.
 
-**Workout analysis** (`POST /api/workouts/:id/analyze`): builds a detailed per-workout prompt with all exercise sets, RPE, and mesocycle context. Returns a markdown string.
+#### Two architectural patterns
 
-Both endpoints gate on `config.openaiApiKey` and return a graceful error string (not a 500) when the key is missing.
+**1. Chat** (`POST /api/chat`) — conversational, stateful across turns.
+- Takes `{ message, historyContext, conversationId }`.
+- System prompt built by `buildLeanSystemPrompt` in `server/utils/ai-context.ts`: athlete profile + active mesocycle + last 3 workout summaries embedded as formatted text.
+- Uses **OpenAI tool calling** (`server/utils/ai-tools.ts`) so the model fetches additional data on demand. Tool-call loop capped at `MAX_TOOL_ITERATIONS = 5`. `historyContext` trimmed to last 8 messages.
+- Chat turns persisted to `AiConversation` / `AiMessage`.
+
+**2. Stateless analysis/generation endpoints** — one-shot, no conversation history.
+- System message = persona + instructions only (no data).
+- User message = `JSON.stringify(payload, null, 2)` with all structured data.
+- Payload types and builder functions live in `server/utils/ai-payload.ts`.
+
+| Endpoint | Task type | Payload type |
+|---|---|---|
+| `POST /api/workouts/:id/analyze` | Workout analysis | `WorkoutAnalysisPayload` |
+| `POST /api/mesocycles/:id/evaluate` | Weekly evaluation | `WeekEvaluationPayload` |
+| `POST /api/mesocycles/:id/final-summary` | Mesocycle final summary | `FinalSummaryPayload` |
+| `POST /api/mesocycles/ai-feedback` | Plan feedback | `MesocycleFeedbackPayload` |
+| `POST /api/mesocycles/ai-generate` | Mesocycle generation | `MesocycleGeneratePayload` |
+
+`ai-generate` uses `response_format: { type: 'json_object' }` and expects the model to return a structured mesocycle plan. All other stateless endpoints return Markdown.
+
+#### `server/utils/ai-payload.ts`
+
+Shared builders used by the stateless endpoints:
+
+- `buildAthleteProfile(userId, { includeInjuries? })` — fetches user profile, weekly weight history (last 5 weeks), and body measurement snapshots (current, ~1 month ago, ~3 months ago).
+- `buildWorkoutData(w, includeExercises)` — maps a DB workout row to a typed `Workout` object. Pass `false` for summary-only (no sets detail).
+- `extractCompoundLiftsData(workouts)` — returns best estimated 1RM per compound exercise across a list of workouts.
+- `buildLastMesocycleSummaryData(userId)` — returns the last completed mesocycle as a structured object for use in plan feedback.
+
+`includeInjuries: true` is only passed in `ai-generate` (injuries are a hard design constraint when building a new block).
+
+#### `server/utils/ai-tools.ts`
+
+8 tools available to the chat endpoint:
+
+| Tool | Returns |
+|---|---|
+| `get_workouts_in_range` | Workouts in date range. Summary includes exercise names, sets and volume per exercise. Full adds all sets with weight/reps/RPE. |
+| `get_workout_detail` | Full detail of a single workout by `workout_id` or `date`. |
+| `list_exercises` | All exercises ever logged: name, type, session count, last date, best 1RM. Use before `get_exercise_progression` when the exact name is unknown. |
+| `get_exercise_progression` | Per-session history for one exercise: 1RM, total volume, top set. |
+| `get_body_metrics_range` | All body metrics in a date range: weight, body fat %, lean mass, all circumferences (bilateral left/right for biceps flexed/relaxed, forearms, thighs, calves), HRV, resting HR. Only non-null fields are emitted. |
+| `get_mesocycle_evaluations` | Weekly evaluations of a mesocycle (defaults to active). |
+| `get_previous_mesocycles` | Completed/paused mesocycles with final summary. |
+| `get_weekly_aggregates` | Per-week: sessions, total volume, avg RPE, and volume+sets breakdown by exercise. |
+
+Tool implementations enforce `user_id` scoping — they never access another user's data. Adding new tools requires updating both `TOOL_IMPLS` and `OPENAI_TOOLS` in `ai-tools.ts`.
 
 ### Settings & User model
 

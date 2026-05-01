@@ -14,34 +14,62 @@ const daysAgo = (n: number): Date => {
   return d
 }
 
-const fmtDate = (d: Date | string): string => new Date(d).toISOString().split('T')[0]
+const fmtDate = (d: Date | string): string => new Date(d).toISOString().substring(0, 10)
 
-const summarizeWorkout = (w: any) => ({
-  id: w.id,
-  date: fmtDate(w.date),
-  name: w.name,
-  total_volume_kg: w.total_volume ? Math.round(Number(w.total_volume)) : null,
-  rpe_avg: w.rpe_avg ? Number(w.rpe_avg) : null,
-  notes: w.notes || undefined
-})
+const n1 = (v: any): number | null => v != null ? parseFloat(parseFloat(v).toFixed(1)) : null
+
+const summarizeWorkout = (w: any) => {
+  const exSummary: any[] = w.exercises_summary ? JSON.parse(w.exercises_summary) : []
+  const result: any = {
+    id: w.id,
+    date: fmtDate(w.date),
+    name: w.name,
+    total_volume_kg: w.total_volume ? Math.round(Number(w.total_volume)) : null,
+    rpe_avg: w.rpe_avg ? Number(w.rpe_avg) : null,
+  }
+  if (w.notes) result.notes = w.notes
+  if (exSummary.length) {
+    result.exercises = exSummary.map((ex: any) => {
+      const e: any = { name: ex.name, sets: ex.sets }
+      if (ex.total_volume) e.volume_kg = Math.round(Number(ex.total_volume))
+      if (ex.estimated_1rm && ex.type !== 'cardio' && ex.type !== 'duration') {
+        e.estimated_1rm_kg = parseFloat(parseFloat(ex.estimated_1rm).toFixed(1))
+      }
+      return e
+    })
+  }
+  return result
+}
 
 const fullWorkout = (w: any) => {
   const exSummary: any[] = w.exercises_summary ? JSON.parse(w.exercises_summary) : []
   return {
-    ...summarizeWorkout(w),
-    exercises: exSummary.map(ex => ({
-      name: ex.name,
-      sets: ex.sets,
-      total_volume_kg: ex.total_volume ?? null,
-      estimated_1rm_kg: ex.estimated_1rm ? parseFloat(ex.estimated_1rm) : null,
-      sets_details: (ex.sets_details || []).map((s: any) => ({
-        weight_kg: s.weight ?? null,
-        reps: s.reps ?? null,
-        rpe: s.rpe ?? null,
-        duration_s: s.duration_seconds ?? null,
-        distance_m: s.distance_meters ?? null
-      }))
-    }))
+    id: w.id,
+    date: fmtDate(w.date),
+    name: w.name,
+    total_volume_kg: w.total_volume ? Math.round(Number(w.total_volume)) : null,
+    rpe_avg: w.rpe_avg ? Number(w.rpe_avg) : null,
+    ...(w.notes && { notes: w.notes }),
+    exercises: exSummary.map((ex: any) => {
+      const e: any = {
+        name: ex.name,
+        sets: ex.sets,
+        total_volume_kg: ex.total_volume ? Math.round(Number(ex.total_volume)) : null,
+      }
+      if (ex.estimated_1rm) e.estimated_1rm_kg = parseFloat(parseFloat(ex.estimated_1rm).toFixed(1))
+      if (ex.total_distance_meters) e.total_distance_m = ex.total_distance_meters
+      if (ex.total_duration_seconds) e.total_duration_s = ex.total_duration_seconds
+      e.sets_details = (ex.sets_details || []).map((s: any) => {
+        const sd: any = {}
+        if (s.weight != null) sd.weight_kg = s.weight
+        if (s.reps != null) sd.reps = s.reps
+        if (s.rpe) sd.rpe = s.rpe
+        if (s.duration_seconds) sd.duration_s = s.duration_seconds
+        if (s.distance_meters) sd.distance_m = s.distance_meters
+        return sd
+      })
+      return e
+    })
   }
 }
 
@@ -52,7 +80,7 @@ const getWorkoutsInRange: ToolFn = async (userId, args) => {
   const workouts = await prisma.workout.findMany({
     where: { user_id: userId, date: { gte: start, lte: end } },
     orderBy: { date: 'asc' },
-    select: { id: true, name: true, date: true, total_volume: true, rpe_avg: true, notes: true, exercises_summary: detail === 'full' }
+    select: { id: true, name: true, date: true, total_volume: true, rpe_avg: true, notes: true, exercises_summary: true }
   })
   return {
     range: { start: fmtDate(start), end: fmtDate(end) },
@@ -77,6 +105,43 @@ const getWorkoutDetail: ToolFn = async (userId, args) => {
   return fullWorkout(w)
 }
 
+const listExercises: ToolFn = async (userId, args) => {
+  const weeksBack = Math.min(Math.max(Number(args.weeks_back) || 52, 1), 156)
+  const since = daysAgo(weeksBack * 7)
+  const workouts = await prisma.workout.findMany({
+    where: { user_id: userId, date: { gte: since } },
+    orderBy: { date: 'asc' },
+    select: { date: true, exercises_summary: true }
+  })
+  const map = new Map<string, { sessions: number; last_date: string; best_1rm: number | null; type: string }>()
+  for (const w of workouts) {
+    if (!w.exercises_summary) continue
+    let exs: any[]
+    try { exs = JSON.parse(w.exercises_summary) } catch { continue }
+    for (const ex of exs) {
+      const existing = map.get(ex.name)
+      const rm = ex.estimated_1rm ? parseFloat(ex.estimated_1rm) : null
+      if (!existing) {
+        map.set(ex.name, { sessions: 1, last_date: fmtDate(w.date), best_1rm: rm, type: ex.type || 'strength' })
+      } else {
+        existing.sessions++
+        if (fmtDate(w.date) > existing.last_date) existing.last_date = fmtDate(w.date)
+        if (rm != null && (existing.best_1rm == null || rm > existing.best_1rm)) existing.best_1rm = rm
+      }
+    }
+  }
+  return {
+    total: map.size,
+    exercises: Array.from(map.entries())
+      .sort((a, b) => b[1].sessions - a[1].sessions)
+      .map(([name, s]) => {
+        const e: any = { name, type: s.type, sessions: s.sessions, last_date: s.last_date }
+        if (s.best_1rm != null) e.best_1rm_kg = parseFloat(s.best_1rm.toFixed(1))
+        return e
+      })
+  }
+}
+
 const getExerciseProgression: ToolFn = async (userId, args) => {
   const name = (args.exercise_name || '').toLowerCase()
   if (!name) return { error: 'exercise_name es requerido' }
@@ -97,8 +162,8 @@ const getExerciseProgression: ToolFn = async (userId, args) => {
     sessions.push({
       date: fmtDate(w.date),
       sets: match.sets,
-      total_volume_kg: match.total_volume ?? null,
-      estimated_1rm_kg: match.estimated_1rm ? parseFloat(match.estimated_1rm) : null,
+      total_volume_kg: match.total_volume ? Math.round(Number(match.total_volume)) : null,
+      estimated_1rm_kg: match.estimated_1rm ? parseFloat(parseFloat(match.estimated_1rm).toFixed(1)) : null,
       top_set: (() => {
         const details = match.sets_details || []
         if (!details.length) return null
@@ -107,16 +172,15 @@ const getExerciseProgression: ToolFn = async (userId, args) => {
           const vb = (b?.weight ?? 0) * (b?.reps ?? 0)
           return vb > va ? b : a
         })
-        return { weight_kg: best.weight ?? null, reps: best.reps ?? null, rpe: best.rpe ?? null }
+        const ts: any = {}
+        if (best.weight != null) ts.weight_kg = best.weight
+        if (best.reps != null) ts.reps = best.reps
+        if (best.rpe) ts.rpe = best.rpe
+        return ts
       })()
     })
   }
-  return {
-    exercise_query: args.exercise_name,
-    weeks_back: weeksBack,
-    sessions_found: sessions.length,
-    sessions
-  }
+  return { exercise_query: args.exercise_name, weeks_back: weeksBack, sessions_found: sessions.length, sessions }
 }
 
 const getBodyMetricsRange: ToolFn = async (userId, args) => {
@@ -126,25 +190,43 @@ const getBodyMetricsRange: ToolFn = async (userId, args) => {
     where: { user_id: userId, date: { gte: start, lte: end } },
     orderBy: { date: 'asc' },
     select: {
-      date: true, weight: true, body_fat_percentage: true,
-      neck: true, chest: true, waist: true, hips: true, biceps: true, thighs: true, calves: true
+      date: true, weight: true, body_fat_percentage: true, lean_mass: true,
+      neck: true, shoulder: true, chest: true, waist: true, abdomen: true, hips: true,
+      left_bicep: true, right_bicep: true, left_bicep_relaxed: true, right_bicep_relaxed: true,
+      left_forearm: true, right_forearm: true,
+      left_thigh: true, right_thigh: true,
+      left_calf: true, right_calf: true,
+      hrv: true, resting_hr: true
     }
   })
   return {
     range: { start: fmtDate(start), end: fmtDate(end) },
     count: metrics.length,
-    metrics: metrics.map(m => ({
-      date: fmtDate(m.date),
-      weight_kg: m.weight ?? null,
-      body_fat_pct: m.body_fat_percentage ?? null,
-      neck_cm: m.neck ?? null,
-      chest_cm: m.chest ?? null,
-      waist_cm: m.waist ?? null,
-      hips_cm: m.hips ?? null,
-      biceps_cm: m.biceps ?? null,
-      thighs_cm: m.thighs ?? null,
-      calves_cm: m.calves ?? null
-    }))
+    metrics: metrics.map(m => {
+      const entry: any = { date: fmtDate(m.date) }
+      if (m.weight != null) entry.weight_kg = n1(m.weight)
+      if (m.body_fat_percentage != null) entry.body_fat_pct = n1(m.body_fat_percentage)
+      if (m.lean_mass != null) entry.lean_mass_kg = n1(m.lean_mass)
+      if (m.neck != null) entry.neck_cm = n1(m.neck)
+      if (m.shoulder != null) entry.shoulder_cm = n1(m.shoulder)
+      if (m.chest != null) entry.chest_cm = n1(m.chest)
+      if (m.waist != null) entry.waist_cm = n1(m.waist)
+      if (m.abdomen != null) entry.abdomen_cm = n1(m.abdomen)
+      if (m.hips != null) entry.hips_cm = n1(m.hips)
+      if (m.left_bicep != null) entry.left_bicep_cm = n1(m.left_bicep)
+      if (m.right_bicep != null) entry.right_bicep_cm = n1(m.right_bicep)
+      if (m.left_bicep_relaxed != null) entry.left_bicep_relaxed_cm = n1(m.left_bicep_relaxed)
+      if (m.right_bicep_relaxed != null) entry.right_bicep_relaxed_cm = n1(m.right_bicep_relaxed)
+      if (m.left_forearm != null) entry.left_forearm_cm = n1(m.left_forearm)
+      if (m.right_forearm != null) entry.right_forearm_cm = n1(m.right_forearm)
+      if (m.left_thigh != null) entry.left_thigh_cm = n1(m.left_thigh)
+      if (m.right_thigh != null) entry.right_thigh_cm = n1(m.right_thigh)
+      if (m.left_calf != null) entry.left_calf_cm = n1(m.left_calf)
+      if (m.right_calf != null) entry.right_calf_cm = n1(m.right_calf)
+      if (m.hrv != null) entry.hrv = n1(m.hrv)
+      if (m.resting_hr != null) entry.resting_hr = Number(m.resting_hr)
+      return entry
+    })
   }
 }
 
@@ -167,7 +249,10 @@ const getMesocycleEvaluations: ToolFn = async (userId, args) => {
   })
   if (!meso) return { error: 'Mesociclo no encontrado' }
   return {
-    mesocycle: { id: meso.id, name: meso.name, goal: meso.goal, status: meso.status, start: fmtDate(meso.start_date), end: meso.end_date ? fmtDate(meso.end_date) : null },
+    mesocycle: {
+      id: meso.id, name: meso.name, goal: meso.goal, status: meso.status,
+      start: fmtDate(meso.start_date), end: meso.end_date ? fmtDate(meso.end_date) : null
+    },
     evaluations: meso.evaluations.map(e => ({
       week: e.week_number,
       date: fmtDate(e.evaluation_date),
@@ -201,7 +286,7 @@ const getPreviousMesocycles: ToolFn = async (userId, args) => {
       status: m.status,
       start: fmtDate(m.start_date),
       end: m.end_date ? fmtDate(m.end_date) : null,
-      final_summary: m.final_summary || undefined
+      ...(m.final_summary && { final_summary: m.final_summary })
     }))
   }
 }
@@ -212,20 +297,30 @@ const getWeeklyAggregates: ToolFn = async (userId, args) => {
   const workouts = await prisma.workout.findMany({
     where: { user_id: userId, date: { gte: since } },
     orderBy: { date: 'asc' },
-    select: { date: true, total_volume: true, rpe_avg: true }
+    select: { date: true, total_volume: true, rpe_avg: true, exercises_summary: true }
   })
-  const byWeek = new Map<string, { volumes: number[]; rpes: number[]; count: number }>()
+  const byWeek = new Map<string, { volumes: number[]; rpes: number[]; count: number; exercises: Map<string, { sets: number; volume: number }> }>()
   for (const w of workouts) {
     const d = new Date(w.date)
     const day = d.getDay()
     d.setDate(d.getDate() - (day === 0 ? 6 : day - 1))
     d.setHours(0, 0, 0, 0)
-    const key = d.toISOString().split('T')[0]
-    if (!byWeek.has(key)) byWeek.set(key, { volumes: [], rpes: [], count: 0 })
+    const key = d.toISOString().substring(0, 10)
+    if (!byWeek.has(key)) byWeek.set(key, { volumes: [], rpes: [], count: 0, exercises: new Map() })
     const bucket = byWeek.get(key)!
     bucket.count++
     if (w.total_volume) bucket.volumes.push(Number(w.total_volume))
     if (w.rpe_avg) bucket.rpes.push(Number(w.rpe_avg))
+    if (w.exercises_summary) {
+      let exs: any[]
+      try { exs = JSON.parse(w.exercises_summary) } catch { continue }
+      for (const ex of exs) {
+        if (!bucket.exercises.has(ex.name)) bucket.exercises.set(ex.name, { sets: 0, volume: 0 })
+        const e = bucket.exercises.get(ex.name)!
+        e.sets += ex.sets ?? 0
+        e.volume += ex.total_volume ? Math.round(Number(ex.total_volume)) : 0
+      }
+    }
   }
   return {
     weeks_back: weeksBack,
@@ -235,7 +330,10 @@ const getWeeklyAggregates: ToolFn = async (userId, args) => {
         week_start: weekStart,
         sessions: b.count,
         total_volume_kg: b.volumes.length ? Math.round(b.volumes.reduce((s, v) => s + v, 0)) : 0,
-        avg_rpe: b.rpes.length ? Number((b.rpes.reduce((s, v) => s + v, 0) / b.rpes.length).toFixed(2)) : null
+        avg_rpe: b.rpes.length ? parseFloat((b.rpes.reduce((s, v) => s + v, 0) / b.rpes.length).toFixed(2)) : null,
+        exercises: Array.from(b.exercises.entries())
+          .sort((a, b) => b[1].volume - a[1].volume)
+          .map(([name, s]) => ({ name, sets: s.sets, volume_kg: s.volume }))
       }))
   }
 }
@@ -243,6 +341,7 @@ const getWeeklyAggregates: ToolFn = async (userId, args) => {
 const TOOL_IMPLS: Record<string, ToolFn> = {
   get_workouts_in_range: getWorkoutsInRange,
   get_workout_detail: getWorkoutDetail,
+  list_exercises: listExercises,
   get_exercise_progression: getExerciseProgression,
   get_body_metrics_range: getBodyMetricsRange,
   get_mesocycle_evaluations: getMesocycleEvaluations,
@@ -255,13 +354,13 @@ export const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'get_workouts_in_range',
-      description: 'Obtiene entrenamientos del usuario en un rango de fechas. Úsalo cuando el usuario pregunte por entrenamientos pasados, semanas concretas o comparaciones de periodos.',
+      description: 'Obtiene entrenamientos en un rango de fechas. Summary incluye nombre de ejercicios, series y volumen por ejercicio. Full añade todas las series con peso/reps/RPE. Úsalo para revisar semanas concretas, comparar periodos o ver qué ejercicios se hicieron.',
       parameters: {
         type: 'object',
         properties: {
-          start_date: { type: 'string', description: 'Fecha inicio en formato YYYY-MM-DD' },
-          end_date: { type: 'string', description: 'Fecha fin en formato YYYY-MM-DD' },
-          detail: { type: 'string', enum: ['summary', 'full'], description: 'summary = fecha/nombre/volumen/RPE. full = todas las series. Usa full solo si el usuario pregunta por ejercicios/series concretas.' }
+          start_date: { type: 'string', description: 'Fecha inicio YYYY-MM-DD' },
+          end_date: { type: 'string', description: 'Fecha fin YYYY-MM-DD' },
+          detail: { type: 'string', enum: ['summary', 'full'], description: 'summary = fecha/nombre/volumen/RPE + ejercicios con series y volumen. full = todas las series con peso/reps/RPE. Usa full solo si necesitas series detalladas.' }
         },
         required: ['start_date', 'end_date']
       }
@@ -271,7 +370,7 @@ export const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'get_workout_detail',
-      description: 'Obtiene un entrenamiento concreto con todas sus series. Usa workout_id si lo tienes, si no pasa date (YYYY-MM-DD).',
+      description: 'Detalle completo de un entrenamiento concreto con todas sus series. Usa workout_id si lo tienes (viene en get_workouts_in_range), si no pasa date (YYYY-MM-DD).',
       parameters: {
         type: 'object',
         properties: {
@@ -284,13 +383,26 @@ export const OPENAI_TOOLS = [
   {
     type: 'function',
     function: {
+      name: 'list_exercises',
+      description: 'Lista todos los ejercicios registrados con nº de sesiones, última fecha y mejor 1RM estimado. Úsalo antes de get_exercise_progression cuando no sepas el nombre exacto del ejercicio, o cuando el usuario pregunte qué ejercicios hace habitualmente.',
+      parameters: {
+        type: 'object',
+        properties: {
+          weeks_back: { type: 'number', description: 'Semanas hacia atrás a considerar (1-156, default 52)' }
+        }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_exercise_progression',
-      description: 'Progresión histórica de un ejercicio concreto (1RM estimado, volumen y mejor serie por sesión). Útil para analizar estancamientos o progreso en movimientos específicos.',
+      description: 'Progresión histórica de un ejercicio concreto: 1RM estimado, volumen total y mejor serie por sesión. Útil para analizar estancamientos o progreso en movimientos específicos. Usa list_exercises si no conoces el nombre exacto.',
       parameters: {
         type: 'object',
         properties: {
           exercise_name: { type: 'string', description: 'Nombre o palabra clave del ejercicio (ej: "banca", "squat", "press militar")' },
-          weeks_back: { type: 'number', description: 'Semanas hacia atrás a consultar (1-52, default 12)' }
+          weeks_back: { type: 'number', description: 'Semanas hacia atrás (1-52, default 12)' }
         },
         required: ['exercise_name']
       }
@@ -300,7 +412,7 @@ export const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'get_body_metrics_range',
-      description: 'Métricas corporales en un rango (peso, % grasa, medidas). Úsalo cuando el usuario pregunte por evolución de peso o composición corporal.',
+      description: 'Métricas corporales en un rango de fechas: peso, % grasa, masa magra y todas las medidas de circunferencia (cuello, hombros, pecho, cintura, abdomen, caderas, bíceps izq/der flexionado/relajado, antebrazo, muslo, gemelo) más HRV y FC en reposo. Solo incluye los campos que tienen datos registrados.',
       parameters: {
         type: 'object',
         properties: {
@@ -315,7 +427,7 @@ export const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'get_mesocycle_evaluations',
-      description: 'Evaluaciones semanales de un mesociclo (por defecto el activo). Úsalo cuando el usuario pregunte por evaluaciones previas o progresión semanal dentro de un meso.',
+      description: 'Evaluaciones semanales de un mesociclo (por defecto el activo). Devuelve resumen, tendencia de volumen y recomendaciones por semana.',
       parameters: {
         type: 'object',
         properties: {
@@ -328,7 +440,7 @@ export const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'get_previous_mesocycles',
-      description: 'Lista mesociclos completados o pausados con su resumen final. Úsalo cuando el usuario pregunte por mesociclos anteriores o quiera comparar con bloques previos.',
+      description: 'Lista mesociclos completados o pausados con su resumen final. Úsalo cuando el usuario pregunte por bloques anteriores o quiera comparar con el pasado.',
       parameters: {
         type: 'object',
         properties: {
@@ -341,7 +453,7 @@ export const OPENAI_TOOLS = [
     type: 'function',
     function: {
       name: 'get_weekly_aggregates',
-      description: 'Agregados semanales: # sesiones, volumen total y RPE medio por semana. Úsalo para ver tendencias de carga o adherencia.',
+      description: 'Agregados semanales: sesiones, volumen total, RPE medio y desglose de volumen y series por ejercicio. Útil para ver tendencias de carga, adherencia o qué ejercicios acumulan más volumen.',
       parameters: {
         type: 'object',
         properties: {

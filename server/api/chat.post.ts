@@ -62,7 +62,6 @@ export default defineEventHandler(async (event) => {
         messages,
         tools: OPENAI_TOOLS as any,
         tool_choice: 'auto',
-        temperature: 0.7,
         max_completion_tokens: 3000,
       });
 

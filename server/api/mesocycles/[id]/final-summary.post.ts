@@ -104,8 +104,7 @@ Recibirás un JSON con los datos del mesociclo completado. Genera un análisis f
       },
       { role: 'user', content: JSON.stringify(payload, null, 2) }
     ],
-    temperature: 0.6,
-    max_completion_tokens: 900
+    max_completion_tokens: 1400
   })
 
   const tokensUsed = completion.usage?.total_tokens ?? null

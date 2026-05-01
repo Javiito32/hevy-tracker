@@ -76,7 +76,6 @@ Responde ÚNICAMENTE con un objeto JSON válido con esta estructura exacta:
       },
       { role: 'user', content: JSON.stringify(payload, null, 2) }
     ],
-    temperature: 0.7,
     max_completion_tokens: 1200,
     response_format: { type: 'json_object' }
   })

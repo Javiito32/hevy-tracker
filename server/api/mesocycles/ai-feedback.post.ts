@@ -60,8 +60,7 @@ Recibirás un JSON con el plan de mesociclo propuesto y el contexto del deportis
       },
       { role: 'user', content: JSON.stringify(payload, null, 2) }
     ],
-    temperature: 0.6,
-    max_completion_tokens: 800
+    max_completion_tokens: 1300
   })
 
   const tokensUsed = completion.usage?.total_tokens ?? null

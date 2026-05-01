@@ -138,8 +138,7 @@ Recibirás un JSON con los datos de la semana a evaluar. Responde con estas secc
       },
       { role: 'user', content: JSON.stringify(payload, null, 2) }
     ],
-    temperature: 0.6,
-    max_completion_tokens: 700
+    max_completion_tokens: 1200
   })
 
   const tokensUsed = completion.usage?.total_tokens ?? null

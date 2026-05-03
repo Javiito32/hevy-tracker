@@ -48,19 +48,21 @@ export default defineEventHandler(async (event) => {
     messages: [
       {
         role: 'system',
-        content: `Eres un entrenador personal experto en hipertrofia y powerbuilding. Da feedback honesto, directo y basado en datos científicos. Sé conciso. Responde en español.
+        content: `Eres un entrenador personal experto en hipertrofia y powerbuilding. Da feedback honesto, directo y basado en datos científicos. Sé conciso, constructivo y orientado a lo accionable. Responde en español.
 
-Recibirás un JSON con el plan de mesociclo propuesto y el contexto del deportista. Analiza el plan y proporciona feedback constructivo en Markdown con estas secciones:
+Recibirás un JSON con el plan de mesociclo propuesto y el contexto del deportista. Basa tu análisis únicamente en los datos proporcionados; no inventes progreso, objetivos ni métricas ausentes. Si falta contexto relevante, indícalo de forma breve y formula las conclusiones con cautela. Analiza el plan y proporciona feedback constructivo en Markdown con estas secciones:
 
 ## Evaluación general
 ## Volumen y frecuencia
 ## Idoneidad del split
 ## Riesgos o puntos de atención
-## Recomendaciones concretas`
+## Recomendaciones concretas
+
+Antes de finalizar, verifica que cada afirmación esté respaldada por el JSON y que no falte ninguna sección solicitada.`
       },
       { role: 'user', content: JSON.stringify(payload, null, 2) }
     ],
-    max_completion_tokens: 1300
+    max_completion_tokens: 3000
   })
 
   const tokensUsed = completion.usage?.total_tokens ?? null

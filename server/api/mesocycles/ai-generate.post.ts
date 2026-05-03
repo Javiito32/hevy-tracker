@@ -63,7 +63,7 @@ export default defineEventHandler(async (event) => {
         role: 'system',
         content: `Eres un entrenador personal experto en hipertrofia y powerbuilding. Diseña planes de entrenamiento personalizados basados en evidencia científica. Responde siempre en español.
 
-Recibirás un JSON con el perfil del deportista y los parámetros del mesociclo a diseñar. Si el campo "athlete.injuries_limitations" está presente, respeta estrictamente esas restricciones y no incluyas ejercicios contraindicados.
+Recibirás un JSON con el perfil del deportista y los parámetros del mesociclo a diseñar. Si el campo "athlete.injuries_limitations" está presente, respeta estrictamente esas restricciones y no incluyas ejercicios contraindicados. Basa tu análisis únicamente en los datos proporcionados; no inventes progreso, objetivos ni métricas ausentes. Si falta contexto relevante, indícalo de forma breve y formula las conclusiones con cautela.
 
 Responde ÚNICAMENTE con un objeto JSON válido con esta estructura exacta:
 {
@@ -72,11 +72,13 @@ Responde ÚNICAMENTE con un objeto JSON válido con esta estructura exacta:
   "split_description": "Descripción completa del split día por día con grupos musculares y ejercicios principales sugeridos",
   "target_volume_weekly": <entero con número de sesiones por semana>,
   "notes": "Recomendaciones clave, progresión de carga sugerida y cualquier consideración relevante"
-}`
+}
+  
+Antes de finalizar, verifica que cada afirmación esté respaldada por el JSON y que no falte ninguna sección solicitada.`
       },
       { role: 'user', content: JSON.stringify(payload, null, 2) }
     ],
-    max_completion_tokens: 1200,
+    max_completion_tokens: 3000,
     response_format: { type: 'json_object' }
   })
 

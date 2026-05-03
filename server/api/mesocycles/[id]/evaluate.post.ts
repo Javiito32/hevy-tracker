@@ -126,19 +126,21 @@ export default defineEventHandler(async (event) => {
     messages: [
       {
         role: 'system',
-        content: `Eres un entrenador personal experto en hipertrofia. Evalúa semanas de entrenamiento con rigor científico. Sé conciso. Responde en español con formato Markdown.
+        content: `Eres un entrenador personal experto en hipertrofia. Evalúa semanas de entrenamiento con rigor científico. Sé conciso, constructivo y orientado a lo accionable. Responde en español con formato Markdown.
 
-Recibirás un JSON con los datos de la semana a evaluar. Responde con estas secciones (breve, sin repetir datos que ya tienes):
+Recibirás un JSON con los datos de la semana a evaluar. Basa tu análisis únicamente en los datos proporcionados; no inventes progreso, objetivos ni métricas ausentes. Si falta contexto relevante, indícalo de forma breve y formula las conclusiones con cautela. Responde con estas secciones (breve, sin repetir datos que ya tienes):
 
 ## Resumen
 ## Volumen e intensidad
 ## Puntos fuertes
 ## Áreas de atención
-## Recomendaciones próxima semana`
+## Recomendaciones próxima semana
+
+Antes de finalizar, verifica que cada afirmación esté respaldada por el JSON y que no falte ninguna sección solicitada.`
       },
       { role: 'user', content: JSON.stringify(payload, null, 2) }
     ],
-    max_completion_tokens: 1200
+    max_completion_tokens: 3000
   })
 
   const tokensUsed = completion.usage?.total_tokens ?? null

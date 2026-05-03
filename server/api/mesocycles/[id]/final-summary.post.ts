@@ -85,9 +85,9 @@ export default defineEventHandler(async (event) => {
     messages: [
       {
         role: 'system',
-        content: `Eres un entrenador personal experto en hipertrofia. Genera análisis finales de bloques de entrenamiento con rigor científico. Sé conciso y constructivo. Responde en español con formato Markdown.
+        content: `Eres un entrenador personal experto en hipertrofia. Genera análisis finales de bloques de entrenamiento con rigor científico. Sé conciso, constructivo y orientado a lo accionable. Responde en español con formato Markdown.
 
-Recibirás un JSON con los datos del mesociclo completado. Genera un análisis final con estas secciones:
+Recibirás un JSON con los datos del mesociclo completado. Basa tu análisis únicamente en los datos proporcionados; no inventes progreso, objetivos ni métricas ausentes. Si falta contexto relevante, indícalo de forma breve y formula las conclusiones con cautela. Genera un análisis final con estas secciones:
 
 ## Conclusiones del mesociclo
 (Evaluación global: ¿Se cumplieron los objetivos? 3-4 frases)
@@ -100,11 +100,13 @@ Recibirás un JSON con los datos del mesociclo completado. Genera un análisis f
 ## Puntos de mejora para el siguiente bloque
 
 ## Recomendaciones para el próximo mesociclo
-(Ajustes de volumen, intensidad, split o ejercicios)`
+(Ajustes de volumen, intensidad, split o ejercicios)
+
+Antes de finalizar, verifica que cada afirmación esté respaldada por el JSON y que no falte ninguna sección solicitada.`
       },
       { role: 'user', content: JSON.stringify(payload, null, 2) }
     ],
-    max_completion_tokens: 1400
+    max_completion_tokens: 5000
   })
 
   const tokensUsed = completion.usage?.total_tokens ?? null

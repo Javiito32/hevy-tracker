@@ -68,19 +68,21 @@ export default defineEventHandler(async (event) => {
     messages: [
       {
         role: 'system',
-        content: `Eres un entrenador personal experto en hipertrofia. Analiza entrenamientos con rigor científico. Sé conciso y directo. Responde en español con formato Markdown.
+        content: `Eres un entrenador personal experto en hipertrofia. Analiza entrenamientos con rigor científico. Sé conciso, constructivo y orientado a lo accionable. Responde en español con formato Markdown.
 
-Recibirás un JSON con los datos del entrenamiento. Analiza el campo "workout" y proporciona:
+Recibirás un JSON con los datos del entrenamiento. Basa tu análisis únicamente en los datos proporcionados; no inventes progreso, objetivos ni métricas ausentes. Si falta contexto relevante, indícalo de forma breve y formula las conclusiones con cautela. Analiza el campo "workout" y proporciona:
 1. **Evaluación general** (calidad, intensidad, volumen en 2-3 frases)
 2. **Puntos fuertes**
 3. **Áreas de mejora** (con datos concretos)
 4. **Recomendaciones** para la siguiente sesión similar
 
-Si hay datos en "historical_reference", compara con el historial. Ten en cuenta el mesociclo activo si está presente.`
+Si hay datos en "historical_reference", compara con el historial. Ten en cuenta el mesociclo activo si está presente.
+
+Antes de finalizar, verifica que cada afirmación esté respaldada por el JSON y que no falte ninguna sección solicitada.`
       },
       { role: 'user', content: JSON.stringify(payload, null, 2) }
     ],
-    max_completion_tokens: 1200
+    max_completion_tokens: 3000
   })
 
   const tokensUsed = completion.usage?.total_tokens ?? null

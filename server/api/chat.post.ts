@@ -62,7 +62,7 @@ export default defineEventHandler(async (event) => {
         messages,
         tools: OPENAI_TOOLS as any,
         tool_choice: 'auto',
-        max_completion_tokens: 3000,
+        max_completion_tokens: 5000,
       });
 
       totalTokens += completion.usage?.total_tokens ?? 0;

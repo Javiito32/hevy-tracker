@@ -338,6 +338,24 @@ const getWeeklyAggregates: ToolFn = async (userId, args) => {
   }
 }
 
+const saveUserNote: ToolFn = async (userId, args) => {
+  const content = (args.content || '').toString().slice(0, 300)
+  if (!content.trim()) return { error: 'El contenido de la nota no puede estar vacío' }
+  const note = await prisma.aiNote.create({ data: { user_id: userId, content } })
+  return { success: true, note_id: note.id, message: 'Nota guardada correctamente.' }
+}
+
+const deactivateUserNote: ToolFn = async (userId, args) => {
+  const noteId = (args.note_id || '').toString()
+  if (!noteId) return { error: 'note_id es requerido' }
+  const result = await prisma.aiNote.updateMany({
+    where: { id: noteId, user_id: userId },
+    data: { is_active: false }
+  })
+  if (result.count === 0) return { error: 'Nota no encontrada o no pertenece al usuario' }
+  return { success: true, message: 'Nota desactivada.' }
+}
+
 const TOOL_IMPLS: Record<string, ToolFn> = {
   get_workouts_in_range: getWorkoutsInRange,
   get_workout_detail: getWorkoutDetail,
@@ -346,7 +364,9 @@ const TOOL_IMPLS: Record<string, ToolFn> = {
   get_body_metrics_range: getBodyMetricsRange,
   get_mesocycle_evaluations: getMesocycleEvaluations,
   get_previous_mesocycles: getPreviousMesocycles,
-  get_weekly_aggregates: getWeeklyAggregates
+  get_weekly_aggregates: getWeeklyAggregates,
+  save_user_note: saveUserNote,
+  deactivate_user_note: deactivateUserNote
 }
 
 export const OPENAI_TOOLS = [
@@ -459,6 +479,52 @@ export const OPENAI_TOOLS = [
         properties: {
           weeks_back: { type: 'number', description: 'Semanas hacia atrás (1-26, default 8)' }
         }
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'save_user_note',
+      description: `Guarda una nota persistente sobre el usuario que se recordará en futuras conversaciones.
+CUÁNDO USARLA: cuando el usuario mencione algo que no está en su perfil y sea útil recordar más adelante:
+- Preferencias: ejercicios que le gustan/no gustan, equipamiento disponible, horarios de entrenamiento
+- Contexto temporal: viaje próximo, evento social, época de estrés laboral, vacaciones
+- Objetivos personales: competición, fecha objetivo, motivación concreta
+- Contexto nutricional: corte/volumen, dieta especial, cambio de calorías
+- Restricciones nuevas no formalizadas en el perfil: molestia reciente, limitación temporal
+NO USARLA para: información ya en el perfil (peso, altura, lesiones_notas), preguntas puntuales, saludos o charla casual.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          content: {
+            type: 'string',
+            description: 'Nota concisa en tercera persona. Incluye fecha si es relevante. Ej: "Tiene viaje a Londres del 20 al 30 de mayo, sin acceso a gimnasio." Máximo 300 caracteres.'
+          }
+        },
+        required: ['content']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'deactivate_user_note',
+      description: `Marca una nota como inactiva cuando ya no es relevante.
+CUÁNDO USARLA:
+- El usuario indica que la situación cambió o se resolvió ("ya volví del viaje", "la competición se canceló")
+- La nota tiene fecha límite y esa fecha ya pasó (compara con HOY en el contexto)
+- El usuario proporciona información que contradice directamente la nota
+NO USARLA si hay duda: mejor mantener una nota antigua que perder información relevante.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          note_id: {
+            type: 'string',
+            description: 'ID de la nota a desactivar, tal como aparece entre corchetes en NOTAS RECORDADAS: [uuid]'
+          }
+        },
+        required: ['note_id']
       }
     }
   }

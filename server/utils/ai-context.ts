@@ -292,7 +292,7 @@ export const buildLeanSystemPrompt = async (userId: string): Promise<string> => 
   const dAgo = (n: number) => { const d = new Date(now); d.setDate(d.getDate() - n); return d }
   const tenWeeksAgo = dAgo(70)
 
-  const [user, activeMesocycle, currentMetric, recentBodyMetrics, recentWorkouts, metric1m, metric3m] = await Promise.all([
+  const [user, activeMesocycle, currentMetric, recentBodyMetrics, recentWorkouts, metric1m, metric3m, activeNotes] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId } }),
     prisma.mesocycle.findFirst({
       where: { user_id: userId, status: 'active' },
@@ -313,7 +313,8 @@ export const buildLeanSystemPrompt = async (userId: string): Promise<string> => 
       select: { name: true, date: true, total_volume: true, rpe_avg: true, notes: true }
     }),
     prisma.bodyMetric.findFirst({ where: { user_id: userId, date: { gte: dAgo(42), lte: dAgo(21) } }, orderBy: { date: 'desc' } }),
-    prisma.bodyMetric.findFirst({ where: { user_id: userId, date: { gte: dAgo(105), lte: dAgo(70) } }, orderBy: { date: 'desc' } })
+    prisma.bodyMetric.findFirst({ where: { user_id: userId, date: { gte: dAgo(105), lte: dAgo(70) } }, orderBy: { date: 'desc' } }),
+    prisma.aiNote.findMany({ where: { user_id: userId, is_active: true }, orderBy: { created_at: 'asc' } })
   ])
 
   const weeklyWeights = computeWeeklyWeights(recentBodyMetrics)
@@ -349,6 +350,10 @@ ${notesSummary}`
     ? recentWorkouts.map(formatWorkoutSummary).join('\n')
     : '- No hay entrenamientos recientes registrados.'
 
+  const notesBlock = activeNotes.length > 0
+    ? activeNotes.map(n => `- [${n.id}] ${n.content}`).join('\n')
+    : '- Sin notas guardadas.'
+
   const todayStr = `${DAY_NAMES_ES[now.getDay()]}, ${now.toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })}`
   const daysLeftInWeek = 6 - now.getDay()
 
@@ -366,6 +371,9 @@ ${mesoBlock}
 ### ÚLTIMOS 3 ENTRENAMIENTOS (resumen)
 ${recentText}
 
+### NOTAS RECORDADAS
+${notesBlock}
+
 ---
 
 ### CÓMO RESPONDER
@@ -374,6 +382,8 @@ Tienes acceso a herramientas para consultar más datos bajo demanda. Úsalas sol
 - Comparaciones históricas, semanas concretas, progresión de ejercicios, métricas corporales pasadas, mesociclos anteriores → invoca la herramienta apropiada.
 - Para series detalladas de un entreno concreto usa get_workout_detail, no get_workouts_in_range con detail=full.
 - Encadena varias herramientas si la pregunta lo requiere, pero evita llamadas redundantes.
+- Usa \`save_user_note\` cuando el usuario mencione preferencias, contexto temporal (viajes, eventos, estrés), objetivos concretos, restricciones nuevas o contexto nutricional que no esté ya en su perfil. Hazlo en el mismo turno en que el usuario lo menciona.
+- Usa \`deactivate_user_note\` con el ID entre corchetes cuando el usuario confirme que la situación se resolvió, la fecha de la nota ya pasó, o el usuario la contradiga directamente. Si hay duda, no la desactives.
 
 ### REGLAS DE ESTILO
 1. Sé directo y conciso. Markdown con negritas para valores clave y listas para recomendaciones.

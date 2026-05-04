@@ -74,6 +74,7 @@ export interface AthleteProfile {
     three_months_ago?: BodyMeasurements
   }
   injuries_limitations?: string
+  active_notes?: string[]
 }
 
 export interface WeeklyEvaluation {
@@ -330,7 +331,7 @@ export async function buildAthleteProfile(
   const now = new Date()
   const daysAgo = (n: number) => { const d = new Date(now); d.setDate(d.getDate() - n); return d }
 
-  const [user, recentWeights, currentMetric, metric1m, metric3m] = await Promise.all([
+  const [user, recentWeights, currentMetric, metric1m, metric3m, notes] = await Promise.all([
     prisma.user.findUnique({
       where: { id: userId },
       select: { name: true, sex: true, birth_date: true, height: true, injuries_notes: true }
@@ -348,6 +349,11 @@ export async function buildAthleteProfile(
     prisma.bodyMetric.findFirst({
       where: { user_id: userId, date: { gte: daysAgo(105), lte: daysAgo(70) } },
       orderBy: { date: 'desc' }
+    }),
+    prisma.aiNote.findMany({
+      where: { user_id: userId, is_active: true },
+      orderBy: { created_at: 'asc' },
+      select: { content: true }
     })
   ])
 
@@ -371,6 +377,9 @@ export async function buildAthleteProfile(
   if (user?.height) profile.height_cm = Number(user.height)
   if (options.includeInjuries && user?.injuries_notes) {
     profile.injuries_limitations = user.injuries_notes
+  }
+  if (notes.length > 0) {
+    profile.active_notes = notes.map(n => n.content)
   }
 
   const currentSnap = buildMeasurementSnapshot(currentMetric)

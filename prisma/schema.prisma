@@ -28,6 +28,7 @@ model User {
   macrocycles    Macrocycle[]
   body_metrics   BodyMetric[]
   conversations  AiConversation[]
+  ai_notes       AiNote[]
 }
 
 model BodyMetric {
@@ -186,4 +187,14 @@ model AiMessage {
   tokens_used      Int?
   model_used       String?
   created_at       DateTime       @default(now())
+}
+
+model AiNote {
+  id         String   @id @default(uuid())
+  user_id    String
+  user       User     @relation(fields: [user_id], references: [id])
+  content    String
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
 }

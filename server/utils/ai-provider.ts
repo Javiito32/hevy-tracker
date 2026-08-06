@@ -54,9 +54,23 @@ export interface GenerateResult {
   totalTokens: number
 }
 
+/** Incremental output from `generateStream`. */
+export type StreamEvent =
+  | { type: 'text'; delta: string }
+  /** Emitted once at the end of the stream, if the model requested any tools. */
+  | { type: 'toolCalls'; toolCalls: ToolCall[] }
+  | { type: 'usage'; totalTokens: number }
+
 export interface AiProvider {
   readonly model: string
   generate(messages: ChatMessage[], options?: GenerateOptions): Promise<GenerateResult>
+  /**
+   * Same contract as `generate`, delivered incrementally. Text arrives as
+   * `text` deltas; tool calls are buffered and emitted as a single `toolCalls`
+   * event once complete (arguments stream in fragments and are unusable until
+   * the stream closes).
+   */
+  generateStream(messages: ChatMessage[], options?: GenerateOptions): AsyncGenerator<StreamEvent>
 }
 
 export interface AiKeys {
@@ -86,6 +100,11 @@ function toOpenAiMessages(messages: ChatMessage[]): any[] {
   })
 }
 
+/** Model never returns valid JSON args for a call → fall back to {} (as generate does). */
+function parseToolArguments(raw: string | undefined): Record<string, any> {
+  try { return JSON.parse(raw || '{}') } catch { return {} }
+}
+
 class OpenAiCompatibleProvider implements AiProvider {
   readonly model = AI_MODEL
   private client: OpenAI
@@ -94,36 +113,88 @@ class OpenAiCompatibleProvider implements AiProvider {
     this.client = new OpenAI({ apiKey, ...(baseURL && { baseURL }), ...(defaultHeaders && { defaultHeaders }) })
   }
 
-  async generate(messages: ChatMessage[], options: GenerateOptions = {}): Promise<GenerateResult> {
-    const completion = await this.client.chat.completions.create({
+  /** Request body shared by the buffered and streaming paths. */
+  private buildRequest(messages: ChatMessage[], options: GenerateOptions) {
+    return {
       model: this.model,
       messages: toOpenAiMessages(messages),
       ...(options.maxOutputTokens && { max_completion_tokens: options.maxOutputTokens }),
-      ...(options.jsonMode && { response_format: { type: 'json_object' } }),
+      ...(options.jsonMode && { response_format: { type: 'json_object' as const } }),
       ...(AI_REASONING_EFFORT && { reasoning_effort: AI_REASONING_EFFORT }),
       ...(options.tools?.length && {
         tools: options.tools.map(t => ({
           type: 'function' as const,
           function: { name: t.name, description: t.description, parameters: t.parameters }
         })),
-        tool_choice: options.toolChoice === 'none' ? 'none' : 'auto'
+        tool_choice: options.toolChoice === 'none' ? 'none' as const : 'auto' as const
       })
+    }
+  }
+
+  async generate(messages: ChatMessage[], options: GenerateOptions = {}): Promise<GenerateResult> {
+    const completion = await this.client.chat.completions.create({
+      ...this.buildRequest(messages, options),
+      stream: false
     })
 
     const choice = completion.choices[0]
     const toolCalls: ToolCall[] = (choice?.message?.tool_calls ?? [])
       .filter((tc: any) => tc.type === 'function')
-      .map((tc: any) => {
-        let args: Record<string, any> = {}
-        try { args = JSON.parse(tc.function.arguments || '{}') } catch { /* keep {} */ }
-        return { id: tc.id, name: tc.function.name, arguments: args }
-      })
+      .map((tc: any) => ({
+        id: tc.id,
+        name: tc.function.name,
+        arguments: parseToolArguments(tc.function.arguments)
+      }))
 
     return {
       text: choice?.message?.content ?? null,
       toolCalls,
       totalTokens: completion.usage?.total_tokens ?? 0
     }
+  }
+
+  async *generateStream(messages: ChatMessage[], options: GenerateOptions = {}): AsyncGenerator<StreamEvent> {
+    const stream = await this.client.chat.completions.create({
+      ...this.buildRequest(messages, options),
+      stream: true,
+      // Usage is omitted from streamed responses unless asked for; without it
+      // token accounting for the admin stats would read 0 on every chat turn.
+      stream_options: { include_usage: true }
+    })
+
+    // Tool calls arrive as fragments: the id and name land on the first chunk for
+    // a given `index`, then `arguments` accumulates character by character across
+    // later chunks. Buffer per index and parse once the stream is done.
+    const pending = new Map<number, { id: string; name: string; args: string }>()
+    let totalTokens = 0
+
+    for await (const chunk of stream) {
+      // The usage-only chunk arrives last and carries no choices.
+      if (chunk.usage?.total_tokens) totalTokens = chunk.usage.total_tokens
+
+      const delta = chunk.choices[0]?.delta
+      if (!delta) continue
+
+      if (delta.content) yield { type: 'text', delta: delta.content }
+
+      for (const tc of delta.tool_calls ?? []) {
+        const slot = pending.get(tc.index) ?? { id: '', name: '', args: '' }
+        if (tc.id) slot.id = tc.id
+        if (tc.function?.name) slot.name = tc.function.name
+        if (tc.function?.arguments) slot.args += tc.function.arguments
+        pending.set(tc.index, slot)
+      }
+    }
+
+    if (pending.size > 0) {
+      const toolCalls: ToolCall[] = [...pending.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, slot]) => ({ id: slot.id, name: slot.name, arguments: parseToolArguments(slot.args) }))
+        .filter(tc => tc.name)
+      if (toolCalls.length) yield { type: 'toolCalls', toolCalls }
+    }
+
+    if (totalTokens > 0) yield { type: 'usage', totalTokens }
   }
 }
 

@@ -550,15 +550,5 @@ const noteDay = (d: string) => new Date(d).getDate()
 const noteDayMonth = (d: string) =>
   new Date(d).toLocaleDateString('es-ES', { month: 'short' }).replace('.', '')
 
-const renderMarkdown = (text: string): string => {
-  return text
-    .replace(/^### (.+)$/gm, '<h3 class="font-semibold text-slate-200 mt-3 mb-1">$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2 class="font-bold text-slate-100 mt-4 mb-2">$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1 class="font-bold text-lg text-slate-100 mt-4 mb-2">$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>')
-    .replace(/\n\n/g, '</p><p class="mb-2">')
-    .replace(/^(?!<[hlp]|<li)(.+)$/gm, '<p class="mb-2">$1</p>')
-}
+// renderMarkdown comes from app/utils/markdown.ts (auto-imported).
 </script>

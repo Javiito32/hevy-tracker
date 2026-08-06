@@ -173,20 +173,30 @@ model AiConversation {
   user           User      @relation(fields: [user_id], references: [id])
   context_type   String    @default("general")
   context_id     String?
+  /// Derived from the first user message; null until the first turn completes.
+  title          String?
   created_at     DateTime  @default(now())
+  /// Last activity. Written explicitly at the end of each chat turn — NOT
+  /// @updatedAt, which only fires when this row itself is written and would
+  /// go stale as messages are appended.
+  updated_at     DateTime  @default(now())
 
   messages       AiMessage[]
+
+  @@index([user_id, context_type, updated_at])
 }
 
 model AiMessage {
   id               String         @id @default(uuid())
   conversation_id  String
-  conversation     AiConversation @relation(fields: [conversation_id], references: [id])
+  conversation     AiConversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
   role             String
   content          String
   tokens_used      Int?
   model_used       String?
   created_at       DateTime       @default(now())
+
+  @@index([conversation_id, created_at])
 }
 
 model AiNote {

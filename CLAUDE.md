@@ -38,7 +38,7 @@ Keys are exposed to server-side code via `useRuntimeConfig()` as `config.hevyApi
 app/            ← Nuxt frontend (pages, components, layouts)
 server/
   api/          ← Nitro API route handlers (file = route)
-  utils/        ← Shared server utilities (prisma, hevy-client, ai-provider, ai-service, ai-prompts, ai-context, ai-payload, ai-tools, ai-config, volume-calculator)
+  utils/        ← Shared server utilities (prisma, hevy-client, ai-provider, ai-service, ai-chat, ai-prompts, ai-context, ai-payload, ai-tools, ai-config, conversations, volume-calculator)
   plugins/      ← Nitro plugins (cron job)
 prisma/
   schema.prisma ← SQLite schema
@@ -74,7 +74,7 @@ Per-workout computed fields stored in DB:
 
 The AI subsystem is **provider-agnostic**. No endpoint imports a vendor SDK directly:
 
-- `server/utils/ai-provider.ts` — neutral `AiProvider` interface (`generate(messages, options)`) with neutral `ChatMessage` / `ToolDefinition` / `ToolCall` types, plus an OpenAI-compatible adapter that serves two providers: **`openrouter`** (default — routes to any vendor's model via OpenRouter slugs like `anthropic/claude-sonnet-5`; key: `OPENROUTER_API_KEY`) and **`openai`** (direct; key: `OPENAI_API_KEY`). Swapping vendors/models = changing `AI_PROVIDER`/`AI_MODEL` in `ai-config.ts`.
+- `server/utils/ai-provider.ts` — neutral `AiProvider` interface (`generate(messages, options)` plus `generateStream(...)` yielding `StreamEvent`s) with neutral `ChatMessage` / `ToolDefinition` / `ToolCall` types, plus an OpenAI-compatible adapter that serves two providers: **`openrouter`** (default — routes to any vendor's model via OpenRouter slugs like `anthropic/claude-sonnet-5`; key: `OPENROUTER_API_KEY`) and **`openai`** (direct; key: `OPENAI_API_KEY`). Swapping vendors/models = changing `AI_PROVIDER`/`AI_MODEL` in `ai-config.ts`.
 - `server/utils/ai-config.ts` — all tunables: `AI_PROVIDER`, `AI_MODEL` (OpenRouter slug when provider is openrouter), `AI_REASONING_EFFORT` (null for models without it), `MAX_TOOL_ITERATIONS`, `CHAT_HISTORY_WINDOW`, `MAX_OUTPUT_TOKENS` per task type.
 - `server/utils/ai-service.ts` — `runAiTask()` shared runner for the stateless endpoints (builds messages, calls the provider, persists usage to `AiConversation`/`AiMessage`) + `aiKeysFromConfig()` helper.
 - `server/utils/ai-prompts.ts` — all stateless system prompts, built from a shared persona + grounding rules + task instructions.
@@ -83,11 +83,25 @@ The AI subsystem is **provider-agnostic**. No endpoint imports a vendor SDK dire
 
 #### Two architectural patterns
 
-**1. Chat** (`POST /api/chat`) — conversational, stateful across turns.
+**1. Chat** — conversational, stateful across turns. Two endpoints over one shared runner:
+- `POST /api/chat/stream` — SSE, what the UI uses. Frames are JSON on a `data:` line: `{type:'tool',name}`, `{type:'delta',text}`, `{type:'done',conversationId,model,title,tokens,toolsInvoked}`, `{type:'error',message}`. `EventSource` can't POST, so the client reads it off `fetch()`'s body reader.
+- `POST /api/chat` — buffered, returns the whole reply. Client fallback and for non-SSE callers.
+- Both delegate to `runChatTurn()` in `server/utils/ai-chat.ts`, which owns the tool-call loop, persistence and `updated_at`. Don't duplicate turn logic in an endpoint — the two would drift.
 - Takes `{ message, conversationId }`. Conversation history is loaded **server-side from the DB** (last `CHAT_HISTORY_WINDOW = 8` messages); the client never sends history.
+- `conversationId: null` always **creates a new conversation**. It must never fall back to an existing one — resolving null to the user's oldest conversation is the bug this design replaced.
 - System prompt built by `buildLeanSystemPrompt` in `server/utils/ai-context.ts`: athlete profile + active mesocycle + last 3 workout summaries embedded as formatted text.
 - Uses tool calling (`server/utils/ai-tools.ts`) so the model fetches additional data on demand. Tool-call loop capped at `MAX_TOOL_ITERATIONS = 5`; on the final iteration `toolChoice: 'none'` forces the model to answer with the data gathered so far.
 - Chat turns persisted to `AiConversation` / `AiMessage`.
+
+#### Conversations
+
+`AiConversation.context_type` is the dividing line: `'general'` rows are chat threads (`CHAT_CONTEXT_TYPE` in `server/utils/conversations.ts`), every other value is written by `recordAiInteraction()` — one row per analysis/generation, kept only for the admin token stats. Chat endpoints filter on it so analysis rows never surface in the UI.
+
+- `updated_at` is written **explicitly** at the end of each turn, not via `@updatedAt`: Prisma only refreshes that on writes to the row itself, so appending a message would leave it stale — exactly the field the ordering depends on.
+- `title` is derived from the first user message by `deriveConversationTitle()`, trimmed to 60 chars on a word boundary. No extra model call.
+- `GET /api/conversations` lists threads ordered by `updated_at desc` (so reopening `/chat` resumes the last one you actually talked to) and filters out empty rows. `[id].get` loads the transcript newest-first with a `take`, then reverses — querying ascending with a take would return the *oldest* 100 messages.
+- `[id].get` / `[id].patch` / `[id].delete` all resolve ownership through `requireOwnedConversation()`, which 404s (not 403s) on someone else's id. Messages cascade on delete.
+- There is no "create empty conversation" endpoint: the row is created with the first message, so abandoned drafts don't accumulate.
 
 **2. Stateless analysis/generation endpoints** — one-shot, no conversation history, all via `runAiTask()`.
 - System message = persona + instructions only (no data), from `ai-prompts.ts`.
@@ -146,5 +160,5 @@ Only one mesocycle can be `active` at a time. Both `index.post.ts` (create) and 
 
 - Data fetching uses Nuxt's `useFetch()` for SSR-compatible calls; mutations use `$fetch()` directly.
 - No global state store (no Pinia). Each page manages its own local `ref()` state.
-- Markdown from AI responses is rendered via `v-html` with a lightweight regex-based formatter in `ChatMessageBubble.vue` (component) and an inline `renderMarkdown()` helper in the workout detail page.
+- Markdown from AI responses is rendered via `v-html` with the shared `renderMarkdown()` in `app/utils/markdown.ts` (auto-imported). It is line-based, escapes HTML first, and handles headings, both list types, tables, code, quotes and rules. Use it rather than adding another local regex chain — it replaced four divergent copies.
 - The `CalendarGrid` component emits `select-date` upward; the parent `calendar.vue` page owns the selected date state.

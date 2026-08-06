@@ -278,16 +278,7 @@ const analyzeWithAI = async () => {
   }
 }
 
-const renderMarkdown = (text: string): string => {
-  return text
-    .replace(/^## (.+)$/gm, '<h2 class="font-bold text-slate-200 mt-4 mb-1 text-sm">$1</h2>')
-    .replace(/^### (.+)$/gm, '<h3 class="font-semibold text-slate-300 mt-3 mb-1 text-sm">$1</h3>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/^- (.+)$/gm, '<li class="ml-4 list-disc text-sm">$1</li>')
-    .replace(/^(\d+)\. (.+)$/gm, '<li class="ml-4 list-decimal text-sm">$2</li>')
-    .replace(/\n\n/g, '<br/>')
-}
+// renderMarkdown comes from app/utils/markdown.ts (auto-imported).
 
 const handleSubmit = async () => {
   error.value = ''

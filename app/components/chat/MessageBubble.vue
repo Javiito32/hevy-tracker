@@ -16,18 +16,19 @@
           : 'bg-slate-800 border border-slate-700 text-slate-100 rounded-tl-sm'
       ]"
     >
+      <div class="prose prose-sm prose-invert leading-relaxed max-w-none">
+        <span v-html="renderMarkdown(content)"></span><span
+          v-if="streaming"
+          class="inline-block w-1.5 h-4 -mb-0.5 ml-0.5 bg-violet-400 animate-pulse"
+        ></span>
+      </div>
       <div
-        class="prose prose-sm leading-relaxed"
-        :class="{ 'prose-invert': true }"
-        v-html="formattedContent"
-      ></div>
-      <div
-        v-if="timestamp"
+        v-if="timestamp && !streaming"
         :class="['text-[10px] mt-2 text-right opacity-50']"
       >
         {{ formatTime(timestamp) }}
       </div>
-      <p v-if="!isUser && isAdmin && modelUsed" class="text-[10px] font-mono text-slate-600 mt-1">Modelo: {{ modelUsed }}</p>
+      <p v-if="!isUser && isAdmin && modelUsed && !streaming" class="text-[10px] font-mono text-slate-600 mt-1">Modelo: {{ modelUsed }}</p>
     </div>
 
     <!-- User Avatar -->
@@ -47,27 +48,14 @@ const props = defineProps<{
   content: string
   timestamp?: Date
   modelUsed?: string
+  /** Reply still arriving: shows a caret and hides the timestamp/model footer. */
+  streaming?: boolean
 }>()
 
 const { session } = useUserSession()
 const isAdmin = computed(() => (session.value?.user as any)?.role === 'admin')
 
 const isUser = computed(() => props.role === 'user')
-
-const formattedContent = computed(() => {
-  if (!props.content) return ''
-  let html = props.content
-    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.*?)\*/g, '<em>$1</em>')
-    .replace(/^- (.*)$/gm, '<li>$1</li>')
-    .replace(/\n/g, '<br />')
-
-  if (html.includes('<li>')) {
-    html = html.replace(/(<li>.*<\/li>)/s, '<ul class="list-disc pl-4 space-y-1 my-2">$1</ul>')
-  }
-
-  return html
-})
 
 const formatTime = (date: Date) => {
   return new Intl.DateTimeFormat('es-ES', { hour: '2-digit', minute: '2-digit' }).format(date)

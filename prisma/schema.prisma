@@ -192,11 +192,39 @@ model AiMessage {
   conversation     AiConversation @relation(fields: [conversation_id], references: [id], onDelete: Cascade)
   role             String
   content          String
+  /// Total tokens billed for the turn (input + output, plus any provider extras).
+  /// Kept alongside the split: it is the ONLY usage data on messages written
+  /// before the in/out breakdown existed, where the two fields below are null.
   tokens_used      Int?
+  /// Prompt tokens. Null for messages predating the breakdown — cost cannot be
+  /// computed for those, and the admin panel reports them as such rather than
+  /// estimating a split.
+  input_tokens     Int?
+  /// Completion tokens. Priced several times higher than input, which is why the
+  /// split is stored rather than derived from the total.
+  output_tokens    Int?
   model_used       String?
   created_at       DateTime       @default(now())
 
   @@index([conversation_id, created_at])
+  /// Date-range filtering in the admin analytics scans by timestamp alone.
+  @@index([created_at])
+}
+
+/// Per-million-token price of a model, editable from /admin so a vendor price
+/// change doesn't need a deploy. Keyed by the slug the provider reports in
+/// AiMessage.model_used (e.g. 'anthropic/claude-sonnet-5').
+model AiModelPrice {
+  id            String   @id @default(uuid())
+  model         String   @unique
+  /// USD per 1M input tokens. Per-million is the unit vendors publish, which
+  /// keeps the admin form free of 8-decimal figures.
+  input_per_1m  Float
+  /// USD per 1M output tokens.
+  output_per_1m Float
+  currency      String   @default("USD")
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
 }
 
 model AiNote {

@@ -47,11 +47,25 @@ export interface GenerateOptions {
   toolChoice?: 'auto' | 'none'
 }
 
+/**
+ * Token usage of one provider call.
+ *
+ * The in/out split is what makes cost accounting possible: output tokens are
+ * several times more expensive than input ones, so a single total can't be
+ * priced. `totalTokens` is kept as its own field rather than derived, because
+ * providers may bill extras (reasoning tokens) that aren't in either bucket.
+ */
+export interface TokenUsage {
+  inputTokens: number
+  outputTokens: number
+  totalTokens: number
+}
+
 export interface GenerateResult {
   /** Final text content, or null when the model only requested tool calls. */
   text: string | null
   toolCalls: ToolCall[]
-  totalTokens: number
+  usage: TokenUsage
 }
 
 /** Incremental output from `generateStream`. */
@@ -59,7 +73,7 @@ export type StreamEvent =
   | { type: 'text'; delta: string }
   /** Emitted once at the end of the stream, if the model requested any tools. */
   | { type: 'toolCalls'; toolCalls: ToolCall[] }
-  | { type: 'usage'; totalTokens: number }
+  | { type: 'usage'; usage: TokenUsage }
 
 export interface AiProvider {
   readonly model: string
@@ -103,6 +117,30 @@ function toOpenAiMessages(messages: ChatMessage[]): any[] {
 /** Model never returns valid JSON args for a call → fall back to {} (as generate does). */
 function parseToolArguments(raw: string | undefined): Record<string, any> {
   try { return JSON.parse(raw || '{}') } catch { return {} }
+}
+
+export const EMPTY_USAGE: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+
+/** Reads the OpenAI-compatible `usage` block into neutral shape. */
+function toTokenUsage(usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined): TokenUsage {
+  return {
+    inputTokens: usage?.prompt_tokens ?? 0,
+    outputTokens: usage?.completion_tokens ?? 0,
+    totalTokens: usage?.total_tokens ?? 0
+  }
+}
+
+/**
+ * Sums two usages. A chat turn can chain several provider calls (one per
+ * tool-call round) and every one of them is billed, so the turn's cost is the
+ * sum — not the usage of the last call.
+ */
+export function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    totalTokens: a.totalTokens + b.totalTokens
+  }
 }
 
 class OpenAiCompatibleProvider implements AiProvider {
@@ -149,7 +187,7 @@ class OpenAiCompatibleProvider implements AiProvider {
     return {
       text: choice?.message?.content ?? null,
       toolCalls,
-      totalTokens: completion.usage?.total_tokens ?? 0
+      usage: toTokenUsage(completion.usage)
     }
   }
 
@@ -166,11 +204,11 @@ class OpenAiCompatibleProvider implements AiProvider {
     // a given `index`, then `arguments` accumulates character by character across
     // later chunks. Buffer per index and parse once the stream is done.
     const pending = new Map<number, { id: string; name: string; args: string }>()
-    let totalTokens = 0
+    let usage: TokenUsage | null = null
 
     for await (const chunk of stream) {
       // The usage-only chunk arrives last and carries no choices.
-      if (chunk.usage?.total_tokens) totalTokens = chunk.usage.total_tokens
+      if (chunk.usage) usage = toTokenUsage(chunk.usage)
 
       const delta = chunk.choices[0]?.delta
       if (!delta) continue
@@ -194,7 +232,7 @@ class OpenAiCompatibleProvider implements AiProvider {
       if (toolCalls.length) yield { type: 'toolCalls', toolCalls }
     }
 
-    if (totalTokens > 0) yield { type: 'usage', totalTokens }
+    if (usage && usage.totalTokens > 0) yield { type: 'usage', usage }
   }
 }
 

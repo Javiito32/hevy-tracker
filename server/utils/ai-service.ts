@@ -1,5 +1,5 @@
 import { prisma } from './prisma'
-import { createAiProvider, type AiKeys } from './ai-provider'
+import { createAiProvider, type AiKeys, type TokenUsage } from './ai-provider'
 
 /** Extracts the AI provider keys from Nuxt's runtime config. */
 export function aiKeysFromConfig(config: { openaiApiKey?: string; openrouterApiKey?: string }): AiKeys {
@@ -29,6 +29,7 @@ interface AiTaskResult {
   content: string
   model: string
   tokensUsed: number
+  usage: TokenUsage
 }
 
 export async function runAiTask(options: AiTaskOptions): Promise<AiTaskResult> {
@@ -47,24 +48,29 @@ export async function runAiTask(options: AiTaskOptions): Promise<AiTaskResult> {
 
   const content = result.text ?? ''
 
-  if (result.totalTokens > 0) {
+  if (result.usage.totalTokens > 0) {
     await recordAiInteraction({
       userId: options.userId,
       contextType: options.contextType,
       content,
-      tokensUsed: result.totalTokens,
+      usage: result.usage,
       model: provider.model
     })
   }
 
-  return { content, model: provider.model, tokensUsed: result.totalTokens }
+  return {
+    content,
+    model: provider.model,
+    tokensUsed: result.usage.totalTokens,
+    usage: result.usage
+  }
 }
 
 export async function recordAiInteraction(args: {
   userId: string
   contextType: string
   content: string
-  tokensUsed: number
+  usage: TokenUsage
   model: string
 }): Promise<void> {
   const convo = await prisma.aiConversation.create({
@@ -75,7 +81,9 @@ export async function recordAiInteraction(args: {
       conversation_id: convo.id,
       role: 'assistant',
       content: args.content,
-      tokens_used: args.tokensUsed,
+      tokens_used: args.usage.totalTokens,
+      input_tokens: args.usage.inputTokens || null,
+      output_tokens: args.usage.outputTokens || null,
       model_used: args.model
     }
   })

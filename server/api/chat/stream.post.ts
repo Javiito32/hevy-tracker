@@ -13,7 +13,7 @@ import { runChatTurn } from '../../utils/ai-chat'
  * Event payloads (all JSON on a single `data:` line):
  *   { type: 'tool',  name }
  *   { type: 'delta', text }
- *   { type: 'done',  conversationId, model, title, tokens, toolsInvoked }
+ *   { type: 'done',  conversationId, model, title, tokens, inputTokens, outputTokens, toolsInvoked }
  *   { type: 'error', message }
  */
 export default defineEventHandler(async (event) => {
@@ -60,7 +60,9 @@ export default defineEventHandler(async (event) => {
         conversationId: result.conversationId,
         model: result.model,
         title: result.title,
-        tokens: result.totalTokens,
+        tokens: result.usage.totalTokens,
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
         toolsInvoked: result.toolsInvoked
       })
     } catch (error: any) {

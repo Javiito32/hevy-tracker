@@ -38,7 +38,7 @@ Keys are exposed to server-side code via `useRuntimeConfig()` as `config.hevyApi
 app/            ← Nuxt frontend (pages, components, layouts)
 server/
   api/          ← Nitro API route handlers (file = route)
-  utils/        ← Shared server utilities (prisma, hevy-client, ai-provider, ai-service, ai-chat, ai-prompts, ai-context, ai-payload, ai-tools, ai-config, conversations, volume-calculator)
+  utils/        ← Shared server utilities (prisma, hevy-client, ai-provider, ai-service, ai-chat, ai-prompts, ai-context, ai-payload, ai-tools, ai-config, ai-usage, conversations, volume-calculator)
   plugins/      ← Nitro plugins (cron job)
 prisma/
   schema.prisma ← SQLite schema
@@ -74,17 +74,26 @@ Per-workout computed fields stored in DB:
 
 The AI subsystem is **provider-agnostic**. No endpoint imports a vendor SDK directly:
 
-- `server/utils/ai-provider.ts` — neutral `AiProvider` interface (`generate(messages, options)` plus `generateStream(...)` yielding `StreamEvent`s) with neutral `ChatMessage` / `ToolDefinition` / `ToolCall` types, plus an OpenAI-compatible adapter that serves two providers: **`openrouter`** (default — routes to any vendor's model via OpenRouter slugs like `anthropic/claude-sonnet-5`; key: `OPENROUTER_API_KEY`) and **`openai`** (direct; key: `OPENAI_API_KEY`). Swapping vendors/models = changing `AI_PROVIDER`/`AI_MODEL` in `ai-config.ts`.
+- `server/utils/ai-provider.ts` — neutral `AiProvider` interface (`generate(messages, options)` plus `generateStream(...)` yielding `StreamEvent`s) with neutral `ChatMessage` / `ToolDefinition` / `ToolCall` / `TokenUsage` types, plus an OpenAI-compatible adapter that serves two providers: **`openrouter`** (default — routes to any vendor's model via OpenRouter slugs like `anthropic/claude-sonnet-5`; key: `OPENROUTER_API_KEY`) and **`openai`** (direct; key: `OPENAI_API_KEY`). Swapping vendors/models = changing `AI_PROVIDER`/`AI_MODEL` in `ai-config.ts`.
 - `server/utils/ai-config.ts` — all tunables: `AI_PROVIDER`, `AI_MODEL` (OpenRouter slug when provider is openrouter), `AI_REASONING_EFFORT` (null for models without it), `MAX_TOOL_ITERATIONS`, `CHAT_HISTORY_WINDOW`, `MAX_OUTPUT_TOKENS` per task type.
 - `server/utils/ai-service.ts` — `runAiTask()` shared runner for the stateless endpoints (builds messages, calls the provider, persists usage to `AiConversation`/`AiMessage`) + `aiKeysFromConfig()` helper.
 - `server/utils/ai-prompts.ts` — all stateless system prompts, built from a shared persona + grounding rules + task instructions.
 
 `createAiProvider()` throws a 503 when the active provider's API key is missing or unconfigured — endpoints no longer gate individually.
 
+#### Token accounting
+
+Every provider call reports a `TokenUsage` (`{ inputTokens, outputTokens, totalTokens }`), read from the OpenAI-compatible `usage` block (`prompt_tokens` / `completion_tokens` / `total_tokens`). The in/out split is what makes cost computable — output tokens are priced several times higher than input, so a single total can't be priced.
+
+- `totalTokens` is stored as its own field rather than derived: providers may bill extras (reasoning tokens) that land in neither bucket.
+- A chat turn can chain several billed calls (one per tool-call round), so `runChatTurn` **sums** usage across iterations via `addUsage()` — the last call's usage would undercount.
+- Persisted to `AiMessage` as `tokens_used` / `input_tokens` / `output_tokens`.
+- Messages written before the `20260806141206_ai_usage_analytics` migration have `tokens_used` only; `input_tokens` / `output_tokens` are null. Those rows are reported as "sin desglose" and **excluded from cost**, never estimated with an assumed ratio.
+
 #### Two architectural patterns
 
 **1. Chat** — conversational, stateful across turns. Two endpoints over one shared runner:
-- `POST /api/chat/stream` — SSE, what the UI uses. Frames are JSON on a `data:` line: `{type:'tool',name}`, `{type:'delta',text}`, `{type:'done',conversationId,model,title,tokens,toolsInvoked}`, `{type:'error',message}`. `EventSource` can't POST, so the client reads it off `fetch()`'s body reader.
+- `POST /api/chat/stream` — SSE, what the UI uses. Frames are JSON on a `data:` line: `{type:'tool',name}`, `{type:'delta',text}`, `{type:'done',conversationId,model,title,tokens,inputTokens,outputTokens,toolsInvoked}`, `{type:'error',message}`. `EventSource` can't POST, so the client reads it off `fetch()`'s body reader.
 - `POST /api/chat` — buffered, returns the whole reply. Client fallback and for non-SSE callers.
 - Both delegate to `runChatTurn()` in `server/utils/ai-chat.ts`, which owns the tool-call loop, persistence and `updated_at`. Don't duplicate turn logic in an endpoint — the two would drift.
 - Takes `{ message, conversationId }`. Conversation history is loaded **server-side from the DB** (last `CHAT_HISTORY_WINDOW = 8` messages); the client never sends history.
@@ -95,7 +104,7 @@ The AI subsystem is **provider-agnostic**. No endpoint imports a vendor SDK dire
 
 #### Conversations
 
-`AiConversation.context_type` is the dividing line: `'general'` rows are chat threads (`CHAT_CONTEXT_TYPE` in `server/utils/conversations.ts`), every other value is written by `recordAiInteraction()` — one row per analysis/generation, kept only for the admin token stats. Chat endpoints filter on it so analysis rows never surface in the UI.
+`AiConversation.context_type` is the dividing line: `'general'` rows are chat threads (`CHAT_CONTEXT_TYPE` in `server/utils/conversations.ts`), every other value is written by `recordAiInteraction()` — one row per analysis/generation, kept only for the admin usage stats. Chat endpoints filter on it so analysis rows never surface in the UI. Human labels for each value live in `TASK_LABELS` (`server/utils/ai-usage.ts`) — add one there when introducing a new context type.
 
 - `updated_at` is written **explicitly** at the end of each turn, not via `@updatedAt`: Prisma only refreshes that on writes to the row itself, so appending a message would leave it stale — exactly the field the ordering depends on.
 - `title` is derived from the first user message by `deriveConversationTitle()`, trimmed to 60 chars on a word boundary. No extra model call.
@@ -148,6 +157,38 @@ Shared builders used by the stateless endpoints:
 
 Tool implementations enforce `user_id` scoping — they never access another user's data. Adding new tools requires updating both `TOOL_IMPLS` and `AI_TOOLS` in `ai-tools.ts`.
 
+### Admin panel & AI usage analytics
+
+`/admin` (middleware `admin`) reports AI usage and cost. All endpoints gate on `requireAdmin()`.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/admin/ai-stats?from&to` | Aggregates for a date range: `totals`, `by_model`, `by_user`, `by_user_model`, `by_user_task`, `by_task`, `unpriced_models`, `timeline`, `month_to_date`, `top_interactions`. |
+| `GET /api/admin/ai-usage?from&to&userId&model&contextType&page` | Paginated log of individual interactions (50/page, server-side pagination). |
+| `GET /api/admin/ai-prices` | Configured prices + `unpriced_models` seen in use. |
+| `POST /api/admin/ai-prices` | **Upsert** by model slug — one endpoint for create and edit. |
+| `DELETE /api/admin/ai-prices/:id` | Routed by row **id, not model**: slugs contain `/`, which a single dynamic segment can't carry. |
+
+`server/utils/ai-usage.ts` is the single home of range parsing, pricing and cost arithmetic (`parseRange`, `rangeFilter`, `loadPrices`, `rowCost`, `accumulate`, `groupTotals`, `toUsageRow`, `TASK_LABELS`). Three endpoints report money; a divergent formula between them would show three different totals for the same period. Put new cost logic here, not in an endpoint.
+
+- **Prices live in the DB** (`AiModelPrice`), not `ai-config.ts`: a vendor price change shouldn't need a deploy. Quoted **per 1M tokens**, the unit vendors publish.
+- **`rowCost` returns `null`, never an estimate**, when the model is unpriced or the row predates the in/out split. Totals therefore exclude those rows and report `unpriced_count` / `no_breakdown_count` so the UI can flag a figure as partial. Don't "fill the gap" with an assumed input/output ratio — an invented number that looks authoritative is worse than a `—`.
+- Aggregation is a **JS reduction over one query**, not `groupBy`: every dimension the panel needs (user, task type) lives on the parent `AiConversation`, and Prisma can't group across a relation.
+- The users table (`/api/admin/users`) reports **all-time** usage; `ai-stats` is the date-scoped view.
+
+#### The trend chart
+
+`timeline` feeds `AiUsageTrendChart` (stacked columns, one band per bucket, split by model):
+
+- Buckets switch from daily to **weekly** past `DAILY_BUCKET_LIMIT = 92` days — a year of daily columns is unreadable.
+- `bucketKeys()` emits **every** bucket in the span including empty ones. A chart that skips quiet days compresses them away and overstates how steady the spend was.
+- Bucketing uses `localDayKey` / `localWeekKey` (**local** components, not `toISOString()`): "which day did this cost land on" is a question about the admin's calendar, and UTC slicing would push evening usage into the next day.
+- `series[].color_index` is the model's position in the **all-time alphabetical** model list, not its rank in range. Ranking by cost would repaint every band whenever the date filter changes, and a reader who learned "sonnet is blue" would be misled by the next range they pick.
+- Models past `SERIES_LIMIT = 4` fold into one `Otros` series (colour outside the palette — it isn't an identity). Never generate more hues.
+- Series colours are the **validated** dark categorical slots; they pass all six checks against this app's surface (`#0f172a`). Re-run `scripts/validate_palette.js` from the `dataviz` skill before changing any of them.
+- `month_to_date` is deliberately **not** range-scoped: "what will this month cost" is a fixed question, and a projection over an arbitrary filter is meaningless.
+- A near-zero bar is left visually near-invisible rather than clamped to a minimum height — clamping would put the top of the stack somewhere other than the true total on the axis. The band-wide hover target and the chart's table view carry the value instead.
+
 ### Settings & User model
 
 The `User` model in Prisma stores `hevy_api_key`. The `OPENAI_API_KEY` is read exclusively from `.env` via `config.openaiApiKey` — it is never stored in the database. `settings.get.ts` and `settings.post.ts` handle profile and Hevy API key updates. The Hevy key is masked before being returned to the frontend (`maskKey` in `settings.get.ts`). The POST endpoint skips updating a field if the submitted value contains `••••` (i.e., the masked placeholder was not changed).
@@ -160,5 +201,9 @@ Only one mesocycle can be `active` at a time. Both `index.post.ts` (create) and 
 
 - Data fetching uses Nuxt's `useFetch()` for SSR-compatible calls; mutations use `$fetch()` directly.
 - No global state store (no Pinia). Each page manages its own local `ref()` state.
+- Token counts, costs and dates in the admin panel are formatted with the shared helpers in `app/utils/format.ts` (auto-imported): `formatTokens`, `formatCost`, `formatDateTime`, `formatDateShort`, `NO_VALUE`. Costs use 4 decimals below a cent — 2 would render most per-interaction rows as `0,00 $`. A value that can't be computed renders as `NO_VALUE` (`—`), never `0`.
+- Admin analytics components live in `app/components/admin/` (`AiRangeFilter`, `AiRunRateCard`, `AiUsageTrendChart`, `AiModelPricesCard`, `AiUsageByModelCard`, `AiUsageByUserCard`, `AiTopInteractionsCard`, `AiUsageLogCard`); `admin/index.vue` is the orchestrator and owns the selected date range, mirroring how `calendar.vue` owns the date `CalendarGrid` emits.
+- Charts are hand-rolled inline SVG (no chart library) — `AiUsageTrendChart` and `charts/LineChart.vue`. Conventions: hairline **solid** gridlines (`#1e293b`) and axis text `#64748b`, marks capped at 24px with a 2px surface gap between stacked segments, a legend whenever there are ≥2 series, and a table view so no value is reachable only by hovering. Load the `dataviz` skill before adding or restyling one.
+- Child components call `useFetch()` **without `await`** — a top-level await makes the component async and forces a Suspense boundary. Nuxt resolves pending `useFetch` calls before SSR renders either way.
 - Markdown from AI responses is rendered via `v-html` with the shared `renderMarkdown()` in `app/utils/markdown.ts` (auto-imported). It is line-based, escapes HTML first, and handles headings, both list types, tables, code, quotes and rules. Use it rather than adding another local regex chain — it replaced four divergent copies.
 - The `CalendarGrid` component emits `select-date` upward; the parent `calendar.vue` page owns the selected date state.

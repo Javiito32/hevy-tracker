@@ -2,7 +2,7 @@ import { buildLeanSystemPrompt } from './ai-context'
 import { AI_TOOLS, executeTool } from './ai-tools'
 import { prisma } from './prisma'
 import { CHAT_HISTORY_WINDOW, MAX_OUTPUT_TOKENS, MAX_TOOL_ITERATIONS } from './ai-config'
-import { createAiProvider, type AiKeys, type ChatMessage } from './ai-provider'
+import { addUsage, createAiProvider, EMPTY_USAGE, type AiKeys, type ChatMessage, type TokenUsage } from './ai-provider'
 import { CHAT_CONTEXT_TYPE, deriveConversationTitle } from './conversations'
 
 /**
@@ -33,7 +33,8 @@ export interface ChatTurnResult {
   reply: string
   model: string
   title: string | null
-  totalTokens: number
+  /** Summed across every provider call the turn made (one per tool-call round). */
+  usage: TokenUsage
   toolsInvoked: string[]
 }
 
@@ -96,7 +97,9 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
   ]
 
   const toolsInvoked: string[] = []
-  let totalTokens = 0
+  // Every iteration of the loop below is a separate billed provider call, so
+  // usage accumulates across them rather than being overwritten.
+  let usage: TokenUsage = EMPTY_USAGE
   let finalReply: string | null = null
 
   try {
@@ -125,7 +128,7 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
           } else if (event.type === 'toolCalls') {
             toolCalls = event.toolCalls
           } else if (event.type === 'usage') {
-            totalTokens += event.totalTokens
+            usage = addUsage(usage, event.usage)
           }
         }
         text = buffered || null
@@ -133,10 +136,10 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
         const result = await provider.generate(messages, generateOptions)
         text = result.text
         toolCalls = result.toolCalls
-        totalTokens += result.totalTokens
+        usage = addUsage(usage, result.usage)
       }
 
-      if (import.meta.dev) console.log(`[chat] iteration=${i} tool_calls=${toolCalls.length} tokens=${totalTokens}`)
+      if (import.meta.dev) console.log(`[chat] iteration=${i} tool_calls=${toolCalls.length} tokens=${usage.totalTokens} (in=${usage.inputTokens} out=${usage.outputTokens})`)
 
       if (toolCalls.length === 0) {
         finalReply = text || 'Lo siento, no pude generar una respuesta.'
@@ -172,7 +175,9 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
       conversation_id: convoId,
       role: 'assistant',
       content: finalReply,
-      tokens_used: totalTokens || null,
+      tokens_used: usage.totalTokens || null,
+      input_tokens: usage.inputTokens || null,
+      output_tokens: usage.outputTokens || null,
       model_used: provider.model
     }
   })
@@ -189,7 +194,7 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
     reply: finalReply,
     model: provider.model,
     title: updated.title,
-    totalTokens,
+    usage,
     toolsInvoked
   }
 }

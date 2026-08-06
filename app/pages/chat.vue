@@ -214,14 +214,10 @@ const sendMessage = async () => {
   isTyping.value = true
 
   try {
-    const historyContext = chatHistory.value.slice(-7, -1).map(m => ({
-      role: m.role,
-      content: m.content
-    }))
-
+    // Conversation history is loaded server-side from the DB.
     const res = await $fetch<{ success: boolean; message: string; role: string; conversationId?: string }>('/api/chat', {
       method: 'POST',
-      body: { message: text, historyContext, conversationId: conversationId.value }
+      body: { message: text, conversationId: conversationId.value }
     })
 
     if (!res) throw new Error('API return empty')

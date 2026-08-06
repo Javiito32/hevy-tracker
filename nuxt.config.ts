@@ -16,6 +16,7 @@ export default defineNuxtConfig({
   runtimeConfig: {
     hevyApiKey: process.env.HEVY_API_KEY,
     openaiApiKey: process.env.OPENAI_API_KEY,
+    openrouterApiKey: process.env.OPENROUTER_API_KEY,
     session: {
       password: process.env.NUXT_SESSION_PASSWORD || 'change-me-in-production-min-32-chars!!',
     }

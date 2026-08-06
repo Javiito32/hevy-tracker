@@ -1,8 +1,9 @@
-import OpenAI from 'openai'
 import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
 import { buildAthleteProfile, buildWorkoutData, type FinalSummaryPayload } from '../../../utils/ai-payload'
-import { AI_MODEL } from '../../../utils/ai-config'
+import { runAiTask, aiKeysFromConfig } from '../../../utils/ai-service'
+import { FINAL_SUMMARY_PROMPT } from '../../../utils/ai-prompts'
+import { MAX_OUTPUT_TOKENS } from '../../../utils/ai-config'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -13,10 +14,6 @@ export default defineEventHandler(async (event) => {
 
   const mesocycle = await prisma.mesocycle.findFirst({ where: { id, user_id: userId } })
   if (!mesocycle) throw createError({ statusCode: 404, statusMessage: 'Mesocycle not found' })
-
-  if (!config.openaiApiKey || config.openaiApiKey.includes('your_openai_api_key')) {
-    throw createError({ statusCode: 503, statusMessage: 'OpenAI API Key no configurada' })
-  }
 
   const [athlete, allWorkouts, allEvaluations, allNotes] = await Promise.all([
     buildAthleteProfile(userId),
@@ -79,45 +76,16 @@ export default defineEventHandler(async (event) => {
     }))
   }
 
-  const openai = new OpenAI({ apiKey: config.openaiApiKey })
-  const completion = await openai.chat.completions.create({
-    model: AI_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `Eres un entrenador personal experto en hipertrofia. Genera análisis finales de bloques de entrenamiento con rigor científico. Sé conciso, constructivo y orientado a lo accionable. Responde en español con formato Markdown.
-
-Recibirás un JSON con los datos del mesociclo completado. Basa tu análisis únicamente en los datos proporcionados; no inventes progreso, objetivos ni métricas ausentes. Si falta contexto relevante, indícalo de forma breve y formula las conclusiones con cautela. Genera un análisis final con estas secciones:
-
-## Conclusiones del mesociclo
-(Evaluación global: ¿Se cumplieron los objetivos? 3-4 frases)
-
-## Progresión conseguida
-(Comparativa inicio vs final: volumen, cargas, RPE)
-
-## Logros destacados
-
-## Puntos de mejora para el siguiente bloque
-
-## Recomendaciones para el próximo mesociclo
-(Ajustes de volumen, intensidad, split o ejercicios)
-
-Antes de finalizar, verifica que cada afirmación esté respaldada por el JSON y que no falte ninguna sección solicitada.`
-      },
-      { role: 'user', content: JSON.stringify(payload, null, 2) }
-    ],
-    max_completion_tokens: 5000
+  const { content: finalSummary, model } = await runAiTask({
+    keys: aiKeysFromConfig(config),
+    userId,
+    contextType: 'final_summary',
+    systemPrompt: FINAL_SUMMARY_PROMPT,
+    payload,
+    maxOutputTokens: MAX_OUTPUT_TOKENS.finalSummary
   })
 
-  const tokensUsed = completion.usage?.total_tokens ?? null
-  const finalSummary = completion.choices[0]?.message?.content ?? ''
+  await prisma.mesocycle.update({ where: { id }, data: { final_summary: finalSummary, final_summary_model: model } })
 
-  if (tokensUsed) {
-    const convo = await prisma.aiConversation.create({ data: { context_type: 'final_summary', user_id: userId } })
-    await prisma.aiMessage.create({ data: { conversation_id: convo.id, role: 'assistant', content: finalSummary, tokens_used: tokensUsed, model_used: AI_MODEL } })
-  }
-
-  await prisma.mesocycle.update({ where: { id }, data: { final_summary: finalSummary, final_summary_model: AI_MODEL } })
-
-  return { success: true, final_summary: finalSummary, model: AI_MODEL }
+  return { success: true, final_summary: finalSummary, model }
 })

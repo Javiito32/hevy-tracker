@@ -1,5 +1,10 @@
 import { prisma } from './prisma'
 
+/**
+ * Context builders for the chat endpoint (text-formatted, Spanish).
+ * Structured JSON payloads for the stateless endpoints live in ai-payload.ts.
+ */
+
 function getWeekStartKey(date: Date): string {
   const d = new Date(date)
   const day = d.getDay()
@@ -29,58 +34,16 @@ function computeWeeklyWeights(
     }))
 }
 
-function fmtDuration(seconds: number): string {
-  const h = Math.floor(seconds / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  const s = Math.floor(seconds % 60)
-  if (h > 0) return `${h}h ${m}m`
-  if (s === 0) return `${m}m`
-  return `${m}:${String(s).padStart(2, '0')}`
-}
-
-function fmtDistance(meters: number): string {
-  return meters >= 1000 ? `${(meters / 1000).toFixed(2)} km` : `${meters} m`
-}
-
 /**
  * Lightweight workout line — only date, name, total volume and RPE.
- * Used for previous-week summaries in weekly evaluations to reduce token usage
- * while still conveying load progression at a glance.
  */
-export const formatWorkoutSummary = (w: any): string => {
+const formatWorkoutSummary = (w: any): string => {
   const dateStr = new Date(w.date).toLocaleDateString('es-ES')
   const parts: string[] = []
   if (w.total_volume) parts.push(`Vol: ${Math.round(Number(w.total_volume)).toLocaleString('es-ES')}kg`)
   if (w.rpe_avg) parts.push(`RPE: ${w.rpe_avg}`)
   if (w.notes) parts.push(`Notas: ${w.notes}`)
   return `  [${dateStr}] ${w.name}${parts.length ? ' | ' + parts.join(' | ') : ''}`
-}
-
-export const formatWorkoutFull = (w: any): string => {
-  const exSummary: any[] = w.exercises_summary ? JSON.parse(w.exercises_summary) : []
-  const dateStr = new Date(w.date).toLocaleDateString('es-ES')
-  const exercisesText = exSummary.map((ex: any) => {
-    const isCardio = ex.type === 'cardio' || ex.type === 'duration'
-    const setsText = (ex.sets_details || []).map((s: any, i: number) => {
-      const rpe = s.rpe ? ` RPE ${s.rpe}` : ''
-      if (isCardio || (s.duration_seconds && !s.weight && !s.reps)) {
-        const dist = s.distance_meters ? ` ${fmtDistance(s.distance_meters)}` : ''
-        const dur = s.duration_seconds ? ` ${fmtDuration(s.duration_seconds)}` : ''
-        return `      Set ${i + 1}:${dist}${dur}${rpe}`
-      }
-      return `      Set ${i + 1}: ${s.weight ?? '-'}kg × ${s.reps ?? '-'} reps${rpe}`
-    }).join('\n')
-    let exMeta: string
-    if (isCardio) {
-      const dist = ex.total_distance_meters ? ` Dist: ${fmtDistance(ex.total_distance_meters)},` : ''
-      const dur = ex.total_duration_seconds ? ` Tiempo: ${fmtDuration(ex.total_duration_seconds)}` : ''
-      exMeta = `${dist}${dur}`
-    } else {
-      exMeta = ` Vol: ${ex.total_volume ?? 0}kg${ex.estimated_1rm ? `, 1RM est: ${parseFloat(ex.estimated_1rm).toFixed(1)}kg` : ''}`
-    }
-    return `    • ${ex.name} (${ex.sets} sets,${exMeta})\n${setsText}`
-  }).join('\n')
-  return `  [${dateStr}] ${w.name} | Vol: ${w.total_volume || 0}kg | RPE: ${w.rpe_avg || 'N/A'}${w.notes ? ` | Notas: ${w.notes}` : ''}\n${exercisesText}`
 }
 
 interface MetricSnapshot {
@@ -122,98 +85,6 @@ function formatSnapshot(s: MetricSnapshot): string | null {
   if (calves) parts.push(`gemelos ${calves}cm`)
   if (!parts.length) return null
   return `  ${s.label} (${dateStr}): ${parts.join(', ')}`
-}
-
-// Keywords to identify compound/multi-joint exercises (Spanish + English common names)
-const COMPOUND_KEYWORDS = [
-  'banca', 'bench press', 'press banca', 'press de banca',
-  'sentadilla', 'squat',
-  'peso muerto', 'deadlift',
-  'press militar', 'press sobre cabeza', 'overhead press', 'ohp', 'press de hombros',
-  'remo con barra', 'barbell row', 'remo', 'seal row',
-  'hip thrust',
-  'dominadas', 'pull-up', 'pullup', 'jalón al pecho',
-  'fondos', 'dips',
-  'press inclinado', 'incline press', 'press inclinado con barra',
-  'peso muerto rumano', 'romanian deadlift', 'rdl',
-  'zancadas', 'lunges',
-  'leg press', 'prensa',
-  'press arnold', 'press mancuernas'
-]
-
-/**
- * Extracts the best estimated 1RM for each compound exercise found across the
- * provided workouts. Used in ai-generate to give the model concrete strength
- * baselines when designing a new mesocycle.
- */
-export const extractCompoundLifts = (workouts: any[]): string => {
-  const best = new Map<string, { rm: number; date: string }>()
-  for (const w of workouts) {
-    if (!w.exercises_summary) continue
-    let exs: any[]
-    try { exs = JSON.parse(w.exercises_summary) } catch { continue }
-    for (const ex of exs) {
-      if (!ex.estimated_1rm || ex.type === 'cardio' || ex.type === 'duration') continue
-      const nameLower = (ex.name as string).toLowerCase()
-      if (!COMPOUND_KEYWORDS.some(kw => nameLower.includes(kw))) continue
-      const rm = parseFloat(ex.estimated_1rm)
-      if (isNaN(rm)) continue
-      const existing = best.get(ex.name)
-      if (!existing || rm > existing.rm) {
-        best.set(ex.name, { rm, date: new Date(w.date).toLocaleDateString('es-ES') })
-      }
-    }
-  }
-  if (best.size === 0) return '  (Sin datos de ejercicios multiarticulares en los últimos entrenamientos)'
-  return Array.from(best.entries())
-    .sort((a, b) => b[1].rm - a[1].rm)
-    .map(([name, { rm, date }]) => `  - ${name}: 1RM est. ${rm.toFixed(1)} kg (${date})`)
-    .join('\n')
-}
-
-/**
- * Fetches the last completed mesocycle and returns a concise summary
- * (split, goal, volume target, weekly evaluation progression).
- * Used in ai-feedback as a "baseline" so the model can compare
- * the new plan against what the athlete actually did before.
- */
-export const buildLastCompletedMesocycleSummary = async (userId: string): Promise<string | null> => {
-  const meso = await prisma.mesocycle.findFirst({
-    where: { user_id: userId, status: 'completed' },
-    orderBy: { end_date: 'desc' },
-    select: {
-      name: true,
-      goal: true,
-      split_description: true,
-      target_volume_weekly: true,
-      start_date: true,
-      end_date: true,
-      evaluations: {
-        orderBy: { week_number: 'asc' },
-        select: { week_number: true, summary: true, volume_trend: true }
-      }
-    }
-  })
-  if (!meso) return null
-
-  const durationWeeks = (meso.end_date && meso.start_date)
-    ? Math.round((new Date(meso.end_date).getTime() - new Date(meso.start_date).getTime()) / (7 * 24 * 60 * 60 * 1000))
-    : null
-
-  const lines = [
-    `- Nombre: ${meso.name}`,
-    `- Objetivo: ${meso.goal ?? 'No especificado'}`,
-    `- Split: ${meso.split_description ?? 'No especificado'}`,
-    `- Sesiones/semana objetivo: ${meso.target_volume_weekly ?? 'No especificado'}`,
-  ]
-  if (durationWeeks) lines.push(`- Duración: ~${durationWeeks} semanas`)
-  if (meso.evaluations.length) {
-    lines.push(`- Progresión semanal (${meso.evaluations.length} evaluaciones):`)
-    meso.evaluations.forEach(e => {
-      lines.push(`  Sem ${e.week_number}: ${e.summary ?? 'Sin resumen'} (volumen: ${e.volume_trend ?? 'N/A'})`)
-    })
-  }
-  return lines.join('\n')
 }
 
 export const buildUserProfileBlock = (
@@ -382,6 +253,7 @@ Tienes acceso a herramientas para consultar más datos bajo demanda. Úsalas sol
 - Comparaciones históricas, semanas concretas, progresión de ejercicios, métricas corporales pasadas, mesociclos anteriores → invoca la herramienta apropiada.
 - Para series detalladas de un entreno concreto usa get_workout_detail, no get_workouts_in_range con detail=full.
 - Encadena varias herramientas si la pregunta lo requiere, pero evita llamadas redundantes.
+- Si una herramienta devuelve un error o datos vacíos, dilo claramente en lugar de inventar cifras.
 - Usa \`save_user_note\` cuando el usuario mencione preferencias, contexto temporal (viajes, eventos, estrés), objetivos concretos, restricciones nuevas o contexto nutricional que no esté ya en su perfil. Hazlo en el mismo turno en que el usuario lo menciona.
 - Usa \`deactivate_user_note\` con el ID entre corchetes cuando el usuario confirme que la situación se resolvió, la fecha de la nota ya pasó, o el usuario la contradiga directamente. Si hay duda, no la desactives.
 

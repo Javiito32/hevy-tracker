@@ -24,10 +24,11 @@ Copy `.env` and fill in both keys before running:
 ```
 DATABASE_URL="file:./dev.db"
 HEVY_API_KEY=your_hevy_api_key_here
-OPENAI_API_KEY=your_openai_api_key_here
+OPENROUTER_API_KEY=your_openrouter_api_key_here   # default AI provider
+OPENAI_API_KEY=your_openai_api_key_here           # only if AI_PROVIDER=openai
 ```
 
-Both keys are exposed to server-side code via `useRuntimeConfig()` as `config.hevyApiKey` and `config.openaiApiKey`. They are declared in `nuxt.config.ts` under `runtimeConfig` (server-only, not `public`).
+Keys are exposed to server-side code via `useRuntimeConfig()` as `config.hevyApiKey`, `config.openrouterApiKey`, and `config.openaiApiKey`. They are declared in `nuxt.config.ts` under `runtimeConfig` (server-only, not `public`).
 
 ## Architecture
 
@@ -37,7 +38,7 @@ Both keys are exposed to server-side code via `useRuntimeConfig()` as `config.he
 app/            ← Nuxt frontend (pages, components, layouts)
 server/
   api/          ← Nitro API route handlers (file = route)
-  utils/        ← Shared server utilities (prisma, hevy-client, ai-context, ai-payload, ai-tools, ai-config, volume-calculator)
+  utils/        ← Shared server utilities (prisma, hevy-client, ai-provider, ai-service, ai-prompts, ai-context, ai-payload, ai-tools, ai-config, volume-calculator)
   plugins/      ← Nitro plugins (cron job)
 prisma/
   schema.prisma ← SQLite schema
@@ -71,18 +72,25 @@ Per-workout computed fields stored in DB:
 
 ### AI integration
 
-All AI calls use the model defined in `server/utils/ai-config.ts` (`AI_MODEL`). Every endpoint gates on `config.openaiApiKey` and throws a 503 when the key is missing or unconfigured.
+The AI subsystem is **provider-agnostic**. No endpoint imports a vendor SDK directly:
+
+- `server/utils/ai-provider.ts` — neutral `AiProvider` interface (`generate(messages, options)`) with neutral `ChatMessage` / `ToolDefinition` / `ToolCall` types, plus an OpenAI-compatible adapter that serves two providers: **`openrouter`** (default — routes to any vendor's model via OpenRouter slugs like `anthropic/claude-sonnet-5`; key: `OPENROUTER_API_KEY`) and **`openai`** (direct; key: `OPENAI_API_KEY`). Swapping vendors/models = changing `AI_PROVIDER`/`AI_MODEL` in `ai-config.ts`.
+- `server/utils/ai-config.ts` — all tunables: `AI_PROVIDER`, `AI_MODEL` (OpenRouter slug when provider is openrouter), `AI_REASONING_EFFORT` (null for models without it), `MAX_TOOL_ITERATIONS`, `CHAT_HISTORY_WINDOW`, `MAX_OUTPUT_TOKENS` per task type.
+- `server/utils/ai-service.ts` — `runAiTask()` shared runner for the stateless endpoints (builds messages, calls the provider, persists usage to `AiConversation`/`AiMessage`) + `aiKeysFromConfig()` helper.
+- `server/utils/ai-prompts.ts` — all stateless system prompts, built from a shared persona + grounding rules + task instructions.
+
+`createAiProvider()` throws a 503 when the active provider's API key is missing or unconfigured — endpoints no longer gate individually.
 
 #### Two architectural patterns
 
 **1. Chat** (`POST /api/chat`) — conversational, stateful across turns.
-- Takes `{ message, historyContext, conversationId }`.
+- Takes `{ message, conversationId }`. Conversation history is loaded **server-side from the DB** (last `CHAT_HISTORY_WINDOW = 8` messages); the client never sends history.
 - System prompt built by `buildLeanSystemPrompt` in `server/utils/ai-context.ts`: athlete profile + active mesocycle + last 3 workout summaries embedded as formatted text.
-- Uses **OpenAI tool calling** (`server/utils/ai-tools.ts`) so the model fetches additional data on demand. Tool-call loop capped at `MAX_TOOL_ITERATIONS = 5`. `historyContext` trimmed to last 8 messages.
+- Uses tool calling (`server/utils/ai-tools.ts`) so the model fetches additional data on demand. Tool-call loop capped at `MAX_TOOL_ITERATIONS = 5`; on the final iteration `toolChoice: 'none'` forces the model to answer with the data gathered so far.
 - Chat turns persisted to `AiConversation` / `AiMessage`.
 
-**2. Stateless analysis/generation endpoints** — one-shot, no conversation history.
-- System message = persona + instructions only (no data).
+**2. Stateless analysis/generation endpoints** — one-shot, no conversation history, all via `runAiTask()`.
+- System message = persona + instructions only (no data), from `ai-prompts.ts`.
 - User message = `JSON.stringify(payload, null, 2)` with all structured data.
 - Payload types and builder functions live in `server/utils/ai-payload.ts`.
 
@@ -94,7 +102,7 @@ All AI calls use the model defined in `server/utils/ai-config.ts` (`AI_MODEL`). 
 | `POST /api/mesocycles/ai-feedback` | Plan feedback | `MesocycleFeedbackPayload` |
 | `POST /api/mesocycles/ai-generate` | Mesocycle generation | `MesocycleGeneratePayload` |
 
-`ai-generate` uses `response_format: { type: 'json_object' }` and expects the model to return a structured mesocycle plan. All other stateless endpoints return Markdown.
+`ai-generate` passes `jsonMode: true` (mapped to the vendor's JSON mode by the adapter) and expects the model to return a structured mesocycle plan. All other stateless endpoints return Markdown.
 
 #### `server/utils/ai-payload.ts`
 
@@ -109,20 +117,22 @@ Shared builders used by the stateless endpoints:
 
 #### `server/utils/ai-tools.ts`
 
-8 tools available to the chat endpoint:
+10 tools available to the chat endpoint (defined provider-neutrally as `AI_TOOLS: ToolDefinition[]`):
 
 | Tool | Returns |
 |---|---|
-| `get_workouts_in_range` | Workouts in date range. Summary includes exercise names, sets and volume per exercise. Full adds all sets with weight/reps/RPE. |
+| `get_workouts_in_range` | Workouts in date range. Summary includes exercise names, sets and volume per exercise (max 40 workouts). Full adds all sets with weight/reps/RPE (max 12 workouts). Truncation is reported to the model with a `truncated` flag. |
 | `get_workout_detail` | Full detail of a single workout by `workout_id` or `date`. |
 | `list_exercises` | All exercises ever logged: name, type, session count, last date, best 1RM. Use before `get_exercise_progression` when the exact name is unknown. |
-| `get_exercise_progression` | Per-session history for one exercise: 1RM, total volume, top set. |
+| `get_exercise_progression` | Per-session history for one exercise: 1RM, total volume, top set. Prefers exact name matches; substring fallback returns `matched_exercises` and a warning if several distinct exercises matched. |
 | `get_body_metrics_range` | All body metrics in a date range: weight, body fat %, lean mass, all circumferences (bilateral left/right for biceps flexed/relaxed, forearms, thighs, calves), HRV, resting HR. Only non-null fields are emitted. |
 | `get_mesocycle_evaluations` | Weekly evaluations of a mesocycle (defaults to active). |
 | `get_previous_mesocycles` | Completed/paused mesocycles with final summary. |
 | `get_weekly_aggregates` | Per-week: sessions, total volume, avg RPE, and volume+sets breakdown by exercise. |
+| `save_user_note` | Persists a memory note about the user (`AiNote`) surfaced in future system prompts. |
+| `deactivate_user_note` | Marks a saved note inactive by id. |
 
-Tool implementations enforce `user_id` scoping — they never access another user's data. Adding new tools requires updating both `TOOL_IMPLS` and `OPENAI_TOOLS` in `ai-tools.ts`.
+Tool implementations enforce `user_id` scoping — they never access another user's data. Adding new tools requires updating both `TOOL_IMPLS` and `AI_TOOLS` in `ai-tools.ts`.
 
 ### Settings & User model
 

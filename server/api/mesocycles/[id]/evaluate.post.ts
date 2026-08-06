@@ -1,8 +1,9 @@
-import OpenAI from 'openai'
 import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
 import { buildAthleteProfile, buildWorkoutData, type WeekEvaluationPayload } from '../../../utils/ai-payload'
-import { AI_MODEL } from '../../../utils/ai-config'
+import { runAiTask, aiKeysFromConfig } from '../../../utils/ai-service'
+import { WEEK_EVALUATION_PROMPT } from '../../../utils/ai-prompts'
+import { MAX_OUTPUT_TOKENS } from '../../../utils/ai-config'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -13,10 +14,6 @@ export default defineEventHandler(async (event) => {
 
   const mesocycle = await prisma.mesocycle.findFirst({ where: { id, user_id: userId } })
   if (!mesocycle) throw createError({ statusCode: 404, statusMessage: 'Mesocycle not found' })
-
-  if (!config.openaiApiKey || config.openaiApiKey.includes('your_openai_api_key')) {
-    throw createError({ statusCode: 503, statusMessage: 'OpenAI API Key no configurada' })
-  }
 
   const now = new Date()
   const msPerDay = 1000 * 60 * 60 * 24
@@ -120,40 +117,19 @@ export default defineEventHandler(async (event) => {
     }))
   }
 
-  const openai = new OpenAI({ apiKey: config.openaiApiKey })
-  const completion = await openai.chat.completions.create({
-    model: AI_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: `Eres un entrenador personal experto en hipertrofia. Evalúa semanas de entrenamiento con rigor científico. Sé conciso, constructivo y orientado a lo accionable. Responde en español con formato Markdown.
-
-Recibirás un JSON con los datos de la semana a evaluar. Basa tu análisis únicamente en los datos proporcionados; no inventes progreso, objetivos ni métricas ausentes. Si falta contexto relevante, indícalo de forma breve y formula las conclusiones con cautela. Responde con estas secciones (breve, sin repetir datos que ya tienes):
-
-## Resumen
-## Volumen e intensidad
-## Puntos fuertes
-## Áreas de atención
-## Recomendaciones próxima semana
-
-Antes de finalizar, verifica que cada afirmación esté respaldada por el JSON y que no falte ninguna sección solicitada.`
-      },
-      { role: 'user', content: JSON.stringify(payload, null, 2) }
-    ],
-    max_completion_tokens: 3000
+  const { content: aiAnalysis, model } = await runAiTask({
+    keys: aiKeysFromConfig(config),
+    userId,
+    contextType: 'evaluate',
+    systemPrompt: WEEK_EVALUATION_PROMPT,
+    payload,
+    maxOutputTokens: MAX_OUTPUT_TOKENS.analysis
   })
 
-  const tokensUsed = completion.usage?.total_tokens ?? null
-  const aiAnalysis = completion.choices[0]?.message?.content ?? ''
   const summaryMatch = aiAnalysis.match(/## Resumen\n+([\s\S]*?)(?=\n##|$)/)
   const summary = summaryMatch?.[1]?.trim().split('\n')[0] ?? ''
   const recsMatch = aiAnalysis.match(/## Recomendaciones[\s\S]*?\n+([\s\S]*?)(?=\n##|$)/)
   const recommendations = recsMatch?.[1]?.trim() ?? ''
-
-  if (tokensUsed) {
-    const convo = await prisma.aiConversation.create({ data: { context_type: 'evaluate', user_id: userId } })
-    await prisma.aiMessage.create({ data: { conversation_id: convo.id, role: 'assistant', content: aiAnalysis, tokens_used: tokensUsed, model_used: AI_MODEL } })
-  }
 
   return prisma.mesocycleEvaluation.create({
     data: {
@@ -164,7 +140,7 @@ Antes de finalizar, verifica que cada afirmación esté respaldada por el JSON y
       volume_trend: volumeTrend,
       progress_score: null,
       ai_analysis: aiAnalysis,
-      ai_model: AI_MODEL,
+      ai_model: model,
       recommendations
     }
   })

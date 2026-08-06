@@ -1,6 +1,11 @@
 import { prisma } from './prisma'
+import type { ToolDefinition } from './ai-provider'
 
 type ToolFn = (userId: string, args: any) => Promise<any>
+
+// Caps to keep tool outputs from flooding the model context.
+const MAX_WORKOUTS_SUMMARY = 40
+const MAX_WORKOUTS_FULL = 12
 
 const parseDate = (s: string | undefined, fallback?: Date): Date | undefined => {
   if (!s) return fallback
@@ -77,15 +82,23 @@ const getWorkoutsInRange: ToolFn = async (userId, args) => {
   const start = parseDate(args.start_date, daysAgo(14))!
   const end = parseDate(args.end_date, new Date())!
   const detail = args.detail === 'full' ? 'full' : 'summary'
+  const cap = detail === 'full' ? MAX_WORKOUTS_FULL : MAX_WORKOUTS_SUMMARY
   const workouts = await prisma.workout.findMany({
     where: { user_id: userId, date: { gte: start, lte: end } },
-    orderBy: { date: 'asc' },
+    orderBy: { date: 'desc' },
+    take: cap + 1,
     select: { id: true, name: true, date: true, total_volume: true, rpe_avg: true, notes: true, exercises_summary: true }
   })
+  const truncated = workouts.length > cap
+  const visible = workouts.slice(0, cap).reverse()
   return {
     range: { start: fmtDate(start), end: fmtDate(end) },
-    count: workouts.length,
-    workouts: workouts.map(detail === 'full' ? fullWorkout : summarizeWorkout)
+    count: visible.length,
+    ...(truncated && {
+      truncated: true,
+      note: `Se muestran solo los ${cap} entrenamientos más recientes del rango. Pide un rango más corto${detail === 'full' ? ' o usa detail=summary' : ''} para ver el resto.`
+    }),
+    workouts: visible.map(detail === 'full' ? fullWorkout : summarizeWorkout)
   }
 }
 
@@ -152,13 +165,24 @@ const getExerciseProgression: ToolFn = async (userId, args) => {
     orderBy: { date: 'asc' },
     select: { date: true, exercises_summary: true }
   })
+  // Two passes: prefer exact-name matches so a generic query like "remo" doesn't
+  // silently mix sessions from different exercises. Fall back to substring match.
+  const parsed = workouts
+    .map(w => {
+      if (!w.exercises_summary) return null
+      try { return { date: w.date, exs: JSON.parse(w.exercises_summary) as any[] } } catch { return null }
+    })
+    .filter(Boolean) as Array<{ date: Date; exs: any[] }>
+
+  const hasExact = parsed.some(w => w.exs.some(e => (e.name as string).toLowerCase() === name))
+  const matchedNames = new Set<string>()
   const sessions: any[] = []
-  for (const w of workouts) {
-    if (!w.exercises_summary) continue
-    let exs: any[]
-    try { exs = JSON.parse(w.exercises_summary) } catch { continue }
-    const match = exs.find(e => (e.name as string).toLowerCase().includes(name))
+  for (const w of parsed) {
+    const match = hasExact
+      ? w.exs.find(e => (e.name as string).toLowerCase() === name)
+      : w.exs.find(e => (e.name as string).toLowerCase().includes(name))
     if (!match) continue
+    matchedNames.add(match.name)
     sessions.push({
       date: fmtDate(w.date),
       sets: match.sets,
@@ -180,7 +204,16 @@ const getExerciseProgression: ToolFn = async (userId, args) => {
       })()
     })
   }
-  return { exercise_query: args.exercise_name, weeks_back: weeksBack, sessions_found: sessions.length, sessions }
+  return {
+    exercise_query: args.exercise_name,
+    matched_exercises: Array.from(matchedNames),
+    ...(matchedNames.size > 1 && {
+      warning: 'La búsqueda coincide con varios ejercicios distintos y las sesiones están mezcladas. Usa list_exercises y repite con el nombre exacto.'
+    }),
+    weeks_back: weeksBack,
+    sessions_found: sessions.length,
+    sessions
+  }
 }
 
 const getBodyMetricsRange: ToolFn = async (userId, args) => {
@@ -369,124 +402,103 @@ const TOOL_IMPLS: Record<string, ToolFn> = {
   deactivate_user_note: deactivateUserNote
 }
 
-export const OPENAI_TOOLS = [
+/**
+ * Provider-neutral tool definitions (plain JSON Schema, no vendor wrapper).
+ * The provider adapter translates these to the vendor's tool format.
+ * Adding a tool = one entry here + one impl in TOOL_IMPLS.
+ */
+export const AI_TOOLS: ToolDefinition[] = [
   {
-    type: 'function',
-    function: {
-      name: 'get_workouts_in_range',
-      description: 'Obtiene entrenamientos en un rango de fechas. Summary incluye nombre de ejercicios, series y volumen por ejercicio. Full añade todas las series con peso/reps/RPE. Úsalo para revisar semanas concretas, comparar periodos o ver qué ejercicios se hicieron.',
-      parameters: {
-        type: 'object',
-        properties: {
-          start_date: { type: 'string', description: 'Fecha inicio YYYY-MM-DD' },
-          end_date: { type: 'string', description: 'Fecha fin YYYY-MM-DD' },
-          detail: { type: 'string', enum: ['summary', 'full'], description: 'summary = fecha/nombre/volumen/RPE + ejercicios con series y volumen. full = todas las series con peso/reps/RPE. Usa full solo si necesitas series detalladas.' }
-        },
-        required: ['start_date', 'end_date']
+    name: 'get_workouts_in_range',
+    description: `Obtiene entrenamientos en un rango de fechas. Summary incluye nombre de ejercicios, series y volumen por ejercicio (máx ${MAX_WORKOUTS_SUMMARY} entrenos). Full añade todas las series con peso/reps/RPE (máx ${MAX_WORKOUTS_FULL} entrenos; para más, usa rangos cortos). Úsalo para revisar semanas concretas, comparar periodos o ver qué ejercicios se hicieron.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        start_date: { type: 'string', description: 'Fecha inicio YYYY-MM-DD' },
+        end_date: { type: 'string', description: 'Fecha fin YYYY-MM-DD' },
+        detail: { type: 'string', enum: ['summary', 'full'], description: 'summary = fecha/nombre/volumen/RPE + ejercicios con series y volumen. full = todas las series con peso/reps/RPE. Usa full solo si necesitas series detalladas.' }
+      },
+      required: ['start_date', 'end_date']
+    }
+  },
+  {
+    name: 'get_workout_detail',
+    description: 'Detalle completo de un entrenamiento concreto con todas sus series. Usa workout_id si lo tienes (viene en get_workouts_in_range), si no pasa date (YYYY-MM-DD).',
+    parameters: {
+      type: 'object',
+      properties: {
+        workout_id: { type: 'string' },
+        date: { type: 'string', description: 'YYYY-MM-DD' }
       }
     }
   },
   {
-    type: 'function',
-    function: {
-      name: 'get_workout_detail',
-      description: 'Detalle completo de un entrenamiento concreto con todas sus series. Usa workout_id si lo tienes (viene en get_workouts_in_range), si no pasa date (YYYY-MM-DD).',
-      parameters: {
-        type: 'object',
-        properties: {
-          workout_id: { type: 'string' },
-          date: { type: 'string', description: 'YYYY-MM-DD' }
-        }
+    name: 'list_exercises',
+    description: 'Lista todos los ejercicios registrados con nº de sesiones, última fecha y mejor 1RM estimado. Úsalo antes de get_exercise_progression cuando no sepas el nombre exacto del ejercicio, o cuando el usuario pregunte qué ejercicios hace habitualmente.',
+    parameters: {
+      type: 'object',
+      properties: {
+        weeks_back: { type: 'number', description: 'Semanas hacia atrás a considerar (1-156, default 52)' }
       }
     }
   },
   {
-    type: 'function',
-    function: {
-      name: 'list_exercises',
-      description: 'Lista todos los ejercicios registrados con nº de sesiones, última fecha y mejor 1RM estimado. Úsalo antes de get_exercise_progression cuando no sepas el nombre exacto del ejercicio, o cuando el usuario pregunte qué ejercicios hace habitualmente.',
-      parameters: {
-        type: 'object',
-        properties: {
-          weeks_back: { type: 'number', description: 'Semanas hacia atrás a considerar (1-156, default 52)' }
-        }
+    name: 'get_exercise_progression',
+    description: 'Progresión histórica de UN ejercicio concreto: 1RM estimado, volumen total y mejor serie por sesión. Útil para analizar estancamientos o progreso en movimientos específicos. Prioriza coincidencias exactas de nombre; si tu keyword coincide con varios ejercicios, devuelve un aviso — usa list_exercises para obtener el nombre exacto.',
+    parameters: {
+      type: 'object',
+      properties: {
+        exercise_name: { type: 'string', description: 'Nombre exacto del ejercicio (preferido) o palabra clave (ej: "press banca", "squat")' },
+        weeks_back: { type: 'number', description: 'Semanas hacia atrás (1-52, default 12)' }
+      },
+      required: ['exercise_name']
+    }
+  },
+  {
+    name: 'get_body_metrics_range',
+    description: 'Métricas corporales en un rango de fechas: peso, % grasa, masa magra y todas las medidas de circunferencia (cuello, hombros, pecho, cintura, abdomen, caderas, bíceps izq/der flexionado/relajado, antebrazo, muslo, gemelo) más HRV y FC en reposo. Solo incluye los campos que tienen datos registrados.',
+    parameters: {
+      type: 'object',
+      properties: {
+        start_date: { type: 'string', description: 'YYYY-MM-DD' },
+        end_date: { type: 'string', description: 'YYYY-MM-DD' }
+      },
+      required: ['start_date', 'end_date']
+    }
+  },
+  {
+    name: 'get_mesocycle_evaluations',
+    description: 'Evaluaciones semanales de un mesociclo (por defecto el activo). Devuelve resumen, tendencia de volumen y recomendaciones por semana.',
+    parameters: {
+      type: 'object',
+      properties: {
+        mesocycle_id: { type: 'string', description: 'Opcional. Si se omite, usa el mesociclo activo.' }
       }
     }
   },
   {
-    type: 'function',
-    function: {
-      name: 'get_exercise_progression',
-      description: 'Progresión histórica de un ejercicio concreto: 1RM estimado, volumen total y mejor serie por sesión. Útil para analizar estancamientos o progreso en movimientos específicos. Usa list_exercises si no conoces el nombre exacto.',
-      parameters: {
-        type: 'object',
-        properties: {
-          exercise_name: { type: 'string', description: 'Nombre o palabra clave del ejercicio (ej: "banca", "squat", "press militar")' },
-          weeks_back: { type: 'number', description: 'Semanas hacia atrás (1-52, default 12)' }
-        },
-        required: ['exercise_name']
+    name: 'get_previous_mesocycles',
+    description: 'Lista mesociclos completados o pausados con su resumen final. Úsalo cuando el usuario pregunte por bloques anteriores o quiera comparar con el pasado.',
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Máx mesociclos a devolver (1-20, default 5)' }
       }
     }
   },
   {
-    type: 'function',
-    function: {
-      name: 'get_body_metrics_range',
-      description: 'Métricas corporales en un rango de fechas: peso, % grasa, masa magra y todas las medidas de circunferencia (cuello, hombros, pecho, cintura, abdomen, caderas, bíceps izq/der flexionado/relajado, antebrazo, muslo, gemelo) más HRV y FC en reposo. Solo incluye los campos que tienen datos registrados.',
-      parameters: {
-        type: 'object',
-        properties: {
-          start_date: { type: 'string', description: 'YYYY-MM-DD' },
-          end_date: { type: 'string', description: 'YYYY-MM-DD' }
-        },
-        required: ['start_date', 'end_date']
+    name: 'get_weekly_aggregates',
+    description: 'Agregados semanales: sesiones, volumen total, RPE medio y desglose de volumen y series por ejercicio. Útil para ver tendencias de carga, adherencia o qué ejercicios acumulan más volumen.',
+    parameters: {
+      type: 'object',
+      properties: {
+        weeks_back: { type: 'number', description: 'Semanas hacia atrás (1-26, default 8)' }
       }
     }
   },
   {
-    type: 'function',
-    function: {
-      name: 'get_mesocycle_evaluations',
-      description: 'Evaluaciones semanales de un mesociclo (por defecto el activo). Devuelve resumen, tendencia de volumen y recomendaciones por semana.',
-      parameters: {
-        type: 'object',
-        properties: {
-          mesocycle_id: { type: 'string', description: 'Opcional. Si se omite, usa el mesociclo activo.' }
-        }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_previous_mesocycles',
-      description: 'Lista mesociclos completados o pausados con su resumen final. Úsalo cuando el usuario pregunte por bloques anteriores o quiera comparar con el pasado.',
-      parameters: {
-        type: 'object',
-        properties: {
-          limit: { type: 'number', description: 'Máx mesociclos a devolver (1-20, default 5)' }
-        }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'get_weekly_aggregates',
-      description: 'Agregados semanales: sesiones, volumen total, RPE medio y desglose de volumen y series por ejercicio. Útil para ver tendencias de carga, adherencia o qué ejercicios acumulan más volumen.',
-      parameters: {
-        type: 'object',
-        properties: {
-          weeks_back: { type: 'number', description: 'Semanas hacia atrás (1-26, default 8)' }
-        }
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'save_user_note',
-      description: `Guarda una nota persistente sobre el usuario que se recordará en futuras conversaciones.
+    name: 'save_user_note',
+    description: `Guarda una nota persistente sobre el usuario que se recordará en futuras conversaciones.
 CUÁNDO USARLA: cuando el usuario mencione algo que no está en su perfil y sea útil recordar más adelante:
 - Preferencias: ejercicios que le gustan/no gustan, equipamiento disponible, horarios de entrenamiento
 - Contexto temporal: viaje próximo, evento social, época de estrés laboral, vacaciones
@@ -494,41 +506,37 @@ CUÁNDO USARLA: cuando el usuario mencione algo que no está en su perfil y sea 
 - Contexto nutricional: corte/volumen, dieta especial, cambio de calorías
 - Restricciones nuevas no formalizadas en el perfil: molestia reciente, limitación temporal
 NO USARLA para: información ya en el perfil (peso, altura, lesiones_notas), preguntas puntuales, saludos o charla casual.`,
-      parameters: {
-        type: 'object',
-        properties: {
-          content: {
-            type: 'string',
-            description: 'Nota concisa en tercera persona. Incluye fecha si es relevante. Ej: "Tiene viaje a Londres del 20 al 30 de mayo, sin acceso a gimnasio." Máximo 300 caracteres.'
-          }
-        },
-        required: ['content']
-      }
+    parameters: {
+      type: 'object',
+      properties: {
+        content: {
+          type: 'string',
+          description: 'Nota concisa en tercera persona. Incluye fecha si es relevante. Ej: "Tiene viaje a Londres del 20 al 30 de mayo, sin acceso a gimnasio." Máximo 300 caracteres.'
+        }
+      },
+      required: ['content']
     }
   },
   {
-    type: 'function',
-    function: {
-      name: 'deactivate_user_note',
-      description: `Marca una nota como inactiva cuando ya no es relevante.
+    name: 'deactivate_user_note',
+    description: `Marca una nota como inactiva cuando ya no es relevante.
 CUÁNDO USARLA:
 - El usuario indica que la situación cambió o se resolvió ("ya volví del viaje", "la competición se canceló")
 - La nota tiene fecha límite y esa fecha ya pasó (compara con HOY en el contexto)
 - El usuario proporciona información que contradice directamente la nota
 NO USARLA si hay duda: mejor mantener una nota antigua que perder información relevante.`,
-      parameters: {
-        type: 'object',
-        properties: {
-          note_id: {
-            type: 'string',
-            description: 'ID de la nota a desactivar, tal como aparece entre corchetes en NOTAS RECORDADAS: [uuid]'
-          }
-        },
-        required: ['note_id']
-      }
+    parameters: {
+      type: 'object',
+      properties: {
+        note_id: {
+          type: 'string',
+          description: 'ID de la nota a desactivar, tal como aparece entre corchetes en NOTAS RECORDADAS: [uuid]'
+        }
+      },
+      required: ['note_id']
     }
   }
-] as const
+]
 
 export async function executeTool(name: string, userId: string, args: any): Promise<any> {
   const impl = TOOL_IMPLS[name]

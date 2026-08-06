@@ -221,7 +221,7 @@ export function createAiProvider(keys: AiKeys): AiProvider {
   switch (AI_PROVIDER) {
     case 'openrouter':
       return new OpenAiCompatibleProvider(keys.openrouterApiKey!, 'https://openrouter.ai/api/v1', {
-        'HTTP-Referer': 'https://hevy-tracker.local',
+        'HTTP-Referer': 'https://htracker.javiito.com',
         'X-Title': 'HevyTracker AI'
       })
     case 'openai':

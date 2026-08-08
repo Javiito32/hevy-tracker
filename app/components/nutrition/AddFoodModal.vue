@@ -3,20 +3,20 @@
     <Teleport to="body">
       <div
         v-if="open"
-        class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+        class="fixed inset-0 bg-bg/80 backdrop-blur-sm z-[90] flex items-center justify-center p-4"
         @click.self="$emit('close')"
       >
-        <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-lg max-h-[90vh] flex flex-col shadow-2xl">
-          <div class="flex items-center justify-between px-6 py-4 border-b border-slate-800 flex-shrink-0">
+        <div class="bg-surface border border-line-strong rounded-card w-full max-w-lg max-h-[90vh] flex flex-col">
+          <div class="flex items-center justify-between px-5 py-3.5 border-b border-line flex-shrink-0">
             <div>
-              <h3 class="font-semibold text-slate-100">Añadir alimento</h3>
-              <p class="text-xs text-slate-500 mt-0.5">{{ meal?.name }}</p>
+              <h3 class="font-semibold text-ink">Añadir alimento</h3>
+              <p class="text-xs text-ink-3 mt-0.5">{{ meal?.name }}</p>
             </div>
-            <button @click="$emit('close')" class="text-slate-500 hover:text-slate-300 text-2xl leading-none transition">×</button>
+            <button @click="$emit('close')" class="text-ink-3 hover:text-ink-2 text-2xl leading-none transition">×</button>
           </div>
 
           <div class="overflow-y-auto flex-grow p-6 space-y-4">
-            <div v-if="error" class="bg-rose-950/60 border border-rose-800 text-rose-400 px-4 py-3 rounded-lg text-sm">
+            <div v-if="error" class="bg-danger/10 border border-danger/40 text-danger px-4 py-3 rounded-lg text-sm">
               {{ error }}
             </div>
 
@@ -25,63 +25,63 @@
                 v-model="query"
                 type="search"
                 placeholder="Buscar en tu catálogo..."
-                class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition"
+                class="w-full bg-surface-2 border border-line-strong hover:border-ink-3 rounded-lg px-3 py-2 text-sm text-ink placeholder:text-ink-3 focus:outline-none focus:ring-2 focus:ring-focus focus:border-transparent transition"
               />
 
               <div v-if="pending" class="flex justify-center py-8">
-                <div class="animate-spin w-6 h-6 rounded-full border-4 border-indigo-500 border-t-transparent"></div>
+                <UiSpinner class="text-ink-3" />
               </div>
 
-              <div v-else-if="matches.length" class="divide-y divide-slate-800 border border-slate-800 rounded-lg overflow-hidden max-h-72 overflow-y-auto">
+              <div v-else-if="matches.length" class="divide-y divide-line border border-line rounded-lg overflow-hidden max-h-72 overflow-y-auto">
                 <button
                   v-for="food in matches"
                   :key="food.id"
                   type="button"
                   @click="select(food)"
-                  class="w-full text-left px-4 py-2.5 hover:bg-slate-800/50 transition flex items-center justify-between gap-3"
+                  class="w-full text-left px-4 py-2.5 hover:bg-surface-2/50 transition flex items-center justify-between gap-3"
                 >
                   <div class="min-w-0">
-                    <div class="text-sm text-slate-200 truncate">{{ food.name }}</div>
-                    <div class="text-xs text-slate-500 truncate">
+                    <div class="text-sm text-ink truncate">{{ food.name }}</div>
+                    <div class="text-xs text-ink-3 truncate">
                       <span v-if="food.brand">{{ food.brand }} · </span>por 100 g
                     </div>
                   </div>
-                  <span class="text-xs text-slate-400 flex-shrink-0">{{ formatNutrientValue(food.kcal, 'kcal') }} kcal</span>
+                  <span class="text-xs text-ink-2 flex-shrink-0">{{ formatNutrientValue(food.kcal, 'kcal') }} kcal</span>
                 </button>
               </div>
 
-              <p v-else class="text-sm text-slate-500 text-center py-6">
+              <p v-else class="text-sm text-ink-3 text-center py-6">
                 {{ query ? 'Ningún alimento coincide.' : 'Tu catálogo está vacío.' }}
               </p>
 
-              <div class="border-t border-slate-800 pt-4">
-                <NuxtLink to="/nutrition/foods" class="text-sm text-indigo-400 hover:text-indigo-300 transition">
+              <div class="border-t border-line pt-4">
+                <NuxtLink to="/nutrition/foods" class="text-sm text-ink-3 hover:text-ink transition">
                   Gestionar catálogo y buscar en Open Food Facts →
                 </NuxtLink>
               </div>
             </template>
 
             <template v-else>
-              <div class="bg-slate-800/50 border border-slate-700 rounded-xl p-4 space-y-3">
+              <div class="bg-surface-2 border border-line rounded-card p-4 space-y-3">
                 <div>
-                  <div class="text-slate-100 font-medium">{{ selected.name }}</div>
-                  <div class="text-xs text-slate-500">
+                  <div class="text-ink font-medium">{{ selected.name }}</div>
+                  <div class="text-xs text-ink-3">
                     <span v-if="selected.brand">{{ selected.brand }} · </span>
                     {{ formatNutrientValue(selected.kcal, 'kcal') }} kcal / 100 g
                   </div>
                 </div>
 
                 <div>
-                  <label class="block text-sm font-medium text-slate-400 mb-1.5">Cantidad</label>
-                  <div class="flex items-center bg-slate-800 border border-slate-700 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-indigo-500 transition">
+                  <label class="block text-sm font-medium text-ink-2 mb-1.5">Cantidad</label>
+                  <div class="flex items-center bg-surface-2 border border-line-strong hover:border-ink-3 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-focus transition">
                     <input
                       v-model="quantity"
                       type="number"
                       min="0"
                       step="1"
-                      class="flex-1 bg-transparent px-3 py-2 text-slate-100 text-sm focus:outline-none min-w-0"
+                      class="flex-1 bg-transparent px-3 py-2 text-ink text-sm focus:outline-none min-w-0"
                     />
-                    <span class="px-2.5 text-xs text-slate-600 flex-shrink-0">g</span>
+                    <span class="px-2.5 text-xs text-ink-3 flex-shrink-0">g</span>
                   </div>
                   <div v-if="selected.serving_size_g" class="flex gap-2 mt-2">
                     <button
@@ -89,32 +89,32 @@
                       :key="units"
                       type="button"
                       @click="quantity = String(selected.serving_size_g * units)"
-                      class="px-2.5 py-1 text-xs rounded-lg bg-slate-800 border border-slate-700 text-slate-400 hover:bg-slate-700 transition"
+                      class="px-2.5 py-1 text-xs rounded-lg bg-surface-2 border border-line-strong hover:border-ink-3 text-ink-2 transition"
                     >
                       {{ units }} × {{ selected.serving_label || 'ración' }}
-                      <span class="text-slate-600">({{ formatGrams(selected.serving_size_g * units) }})</span>
+                      <span class="text-ink-3">({{ formatGrams(selected.serving_size_g * units) }})</span>
                     </button>
                   </div>
                 </div>
 
                 <div class="grid grid-cols-4 gap-2 text-center">
-                  <div v-for="key in MACRO_KEYS" :key="key" class="bg-slate-900 rounded-lg py-2">
-                    <div class="text-sm text-slate-200">{{ formatNutrientValue(scaled[key], key) }}</div>
-                    <div class="text-[10px] text-slate-500 uppercase tracking-wider">{{ NUTRIENT_SHORT_LABELS[key] }}</div>
+                  <div v-for="key in MACRO_KEYS" :key="key" class="bg-surface rounded-lg py-2">
+                    <div class="text-sm text-ink">{{ formatNutrientValue(scaled[key], key) }}</div>
+                    <div class="text-[10px] text-ink-3 uppercase tracking-wider">{{ NUTRIENT_SHORT_LABELS[key] }}</div>
                   </div>
                 </div>
               </div>
             </template>
           </div>
 
-          <div v-if="selected" class="px-6 py-4 border-t border-slate-800 flex gap-3 justify-end flex-shrink-0">
-            <button @click="selected = null" class="px-4 py-2 text-sm text-slate-400 hover:text-slate-200 transition">
+          <div v-if="selected" class="px-6 py-4 border-t border-line flex gap-3 justify-end flex-shrink-0">
+            <button @click="selected = null" class="px-4 py-2 text-sm text-ink-2 hover:text-ink transition">
               Cambiar alimento
             </button>
             <button
               @click="add"
               :disabled="saving || !(Number(quantity) > 0)"
-              class="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-lg transition disabled:opacity-60"
+              class="px-5 py-2 bg-accent text-accent-ink hover:opacity-85 text-sm font-semibold rounded-lg transition disabled:opacity-60"
             >
               {{ saving ? 'Añadiendo...' : 'Añadir' }}
             </button>

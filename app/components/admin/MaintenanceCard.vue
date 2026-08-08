@@ -1,8 +1,8 @@
 <template>
-  <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden mb-8">
-    <div class="px-6 py-4 border-b border-slate-800">
-      <h2 class="text-lg font-semibold text-slate-100">Mantenimiento de datos</h2>
-      <p class="text-xs text-slate-500 mt-1">
+  <div class="bg-surface rounded-card border border-line overflow-hidden mb-8">
+    <div class="px-5 py-3.5 border-b border-line">
+      <h2 class="font-display text-sm font-semibold tracking-tight text-ink">Mantenimiento de datos</h2>
+      <p class="text-xs text-ink-3 mt-1">
         Todas las operaciones son reejecutables: se derivan de los datos crudos de Hevy, que nunca se modifican.
       </p>
     </div>
@@ -11,16 +11,16 @@
       <!-- Target user. The catalogue is global and ignores this. -->
       <div class="flex flex-wrap items-end gap-4">
         <div>
-          <label class="block text-xs font-medium text-slate-500 mb-1.5">Usuario objetivo</label>
+          <label class="block text-xs font-medium text-ink-3 mb-1.5">Usuario objetivo</label>
           <select
             v-model="targetUser"
-            class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition"
+            class="bg-surface-2 border border-line-strong hover:border-ink-3 rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-focus transition"
           >
             <option value="__all__">Todos los usuarios</option>
             <option v-for="u in users" :key="u.id" :value="u.id">{{ u.name }}</option>
           </select>
         </div>
-        <p class="text-xs text-slate-500 pb-2.5">
+        <p class="text-xs text-ink-3 pb-2.5">
           El catálogo de ejercicios es global y no depende de esta selección.
         </p>
       </div>
@@ -32,30 +32,30 @@
           :key="op.kind"
           @click="confirmAndRun(op)"
           :disabled="busy || (op.blockedBy ? !completed.has(op.blockedBy) && !op.allowAnyway : false)"
-          class="text-left bg-slate-800/60 border border-slate-700 rounded-xl p-4 hover:border-indigo-700 hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition group"
+          class="text-left bg-surface-2 border border-line rounded-card p-4 hover:border-line-strong disabled:opacity-40 disabled:cursor-not-allowed transition group"
         >
           <div class="flex items-start justify-between gap-3 mb-1.5">
-            <span class="font-medium text-slate-200 text-sm group-hover:text-indigo-300 transition">
+            <span class="font-medium text-ink text-sm group-hover:text-ink-2 transition">
               {{ op.order }}. {{ op.label }}
             </span>
             <span
               class="text-[10px] font-mono px-1.5 py-0.5 rounded whitespace-nowrap"
               :class="op.online
-                ? 'bg-sky-950/60 text-sky-400 border border-sky-900'
-                : 'bg-slate-800 text-slate-500 border border-slate-700'"
+                ? 'bg-surface-2/60 text-ink-2 border border-line-strong'
+                : 'bg-surface-2 text-ink-3 border border-line-strong'"
             >{{ op.online ? 'red' : 'offline' }}</span>
           </div>
-          <p class="text-xs text-slate-500 leading-relaxed">{{ op.description }}</p>
-          <p v-if="op.warning" class="text-xs text-amber-500/80 mt-2">⚠ {{ op.warning }}</p>
+          <p class="text-xs text-ink-3 leading-relaxed">{{ op.description }}</p>
+          <p v-if="op.warning" class="text-xs text-warn/80 mt-2">⚠ {{ op.warning }}</p>
         </button>
       </div>
 
       <!-- Live progress + history -->
-      <div v-if="jobs.length" class="border-t border-slate-800 pt-5">
+      <div v-if="jobs.length" class="border-t border-line pt-5">
         <div class="flex items-center justify-between mb-3">
-          <h3 class="text-sm font-semibold text-slate-300">Trabajos recientes</h3>
-          <span v-if="anyRunning" class="text-xs text-indigo-400 flex items-center gap-1.5">
-            <span class="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-pulse"></span>
+          <h3 class="font-display text-sm font-semibold tracking-tight text-ink">Trabajos recientes</h3>
+          <span v-if="anyRunning" class="text-xs text-ink-2 flex items-center gap-1.5">
+            <span class="w-1.5 h-1.5 rounded-full bg-ink-2 animate-pulse"></span>
             en curso
           </span>
         </div>
@@ -64,45 +64,45 @@
           <div
             v-for="job in jobs"
             :key="job.id"
-            class="bg-slate-800/40 border border-slate-800 rounded-lg px-4 py-3"
+            class="bg-surface-2/40 border border-line rounded-lg px-4 py-3"
           >
             <div class="flex items-center justify-between gap-3 flex-wrap">
               <div class="flex items-center gap-2 min-w-0">
                 <span
                   class="w-2 h-2 rounded-full flex-shrink-0"
                   :class="{
-                    'bg-indigo-400 animate-pulse': job.status === 'running' || job.status === 'pending',
-                    'bg-emerald-400': job.status === 'done',
-                    'bg-rose-400': job.status === 'error'
+                    'bg-ink-2 animate-pulse': job.status === 'running' || job.status === 'pending',
+                    'bg-positive': job.status === 'done',
+                    'bg-danger': job.status === 'error'
                   }"
                 ></span>
-                <span class="text-sm text-slate-300 truncate">{{ job.label }}</span>
-                <span v-if="job.user_name" class="text-xs text-slate-600 truncate">· {{ job.user_name }}</span>
+                <span class="text-sm text-ink-2 truncate">{{ job.label }}</span>
+                <span v-if="job.user_name" class="text-xs text-ink-3 truncate">· {{ job.user_name }}</span>
               </div>
-              <span class="text-xs text-slate-600 font-mono">{{ formatDateTime(job.created_at) }}</span>
+              <span class="text-xs text-ink-3 font-mono">{{ formatDateTime(job.created_at) }}</span>
             </div>
 
             <!-- Determinate bar only when a total is known; otherwise the label
                  carries the state rather than a bar that fakes a percentage. -->
             <div v-if="job.status === 'running'" class="mt-2">
-              <p class="text-xs text-slate-500 mb-1">
+              <p class="text-xs text-ink-3 mb-1">
                 {{ job.message }}
                 <span v-if="job.progress_total > 0" class="font-mono">
                   ({{ job.progress_current }}/{{ job.progress_total }})
                 </span>
               </p>
-              <div v-if="job.progress_total > 0" class="w-full bg-slate-800 rounded-full h-1">
+              <div v-if="job.progress_total > 0" class="w-full bg-surface-2 rounded-full h-1">
                 <div
-                  class="bg-indigo-500 h-1 rounded-full transition-all"
+                  class="bg-accent h-1 rounded-full transition-all"
                   :style="{ width: Math.min(100, (job.progress_current / job.progress_total) * 100) + '%' }"
                 ></div>
               </div>
             </div>
 
-            <p v-else-if="job.status === 'done' && job.result" class="text-xs text-emerald-400/80 mt-1.5 font-mono">
+            <p v-else-if="job.status === 'done' && job.result" class="text-xs text-positive/80 mt-1.5 font-mono">
               {{ describeResult(job.result) }}
             </p>
-            <p v-else-if="job.status === 'error'" class="text-xs text-rose-400 mt-1.5">{{ job.error }}</p>
+            <p v-else-if="job.status === 'error'" class="text-xs text-danger mt-1.5">{{ job.error }}</p>
           </div>
         </div>
       </div>
@@ -112,6 +112,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+
+const toast = useToast()
 
 const props = defineProps<{ users: Array<{ id: string; name: string }> }>()
 
@@ -225,7 +227,7 @@ const confirmAndRun = async (op: Operation) => {
     await loadJobs()
     startPolling()
   } catch (err: any) {
-    alert(err?.data?.message ?? 'No se pudo lanzar la operación.')
+    toast.error(err?.data?.message ?? 'No se pudo lanzar la operación.')
   } finally {
     busy.value = false
   }

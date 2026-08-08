@@ -1,54 +1,47 @@
 <template>
-  <div>
-    <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
-      <h2 class="text-lg font-semibold text-slate-200">Evolución del peso</h2>
-      <span v-if="metrics?.length" class="text-xs text-slate-500">{{ metrics.length }} registros</span>
+  <UiCard eyebrow="Composición" title="Evolución del peso" flush>
+    <template #actions>
+      <span v-if="metrics?.length" class="font-data text-xs text-ink-3">{{ metrics.length }} registros</span>
+    </template>
+
+    <div v-if="pending" class="flex items-center justify-center h-48 text-ink-3">
+      <UiSpinner />
     </div>
 
-    <div class="p-4">
-      <div v-if="pending" class="flex items-center justify-center h-48">
-        <div class="animate-spin w-6 h-6 rounded-full border-4 border-indigo-500 border-t-transparent"></div>
+    <UiEmptyState
+      v-else-if="!metrics?.length"
+      title="Sin datos de peso"
+      description="Registra tu peso en Hevy y sincroniza para verlo aquí."
+    />
+
+    <div v-else class="p-4">
+      <!-- Min, max and net change read as a row of measurements, so they are set
+           in the data face. The net change carries no verdict colour: whether
+           gaining is good depends on the block, which this component cannot know. -->
+      <div class="flex justify-between font-data text-xs text-ink-3 mb-4 px-1">
+        <span>Mín <span class="text-ink-2">{{ minWeight }} kg</span></span>
+        <span>Δ <span class="text-ink">{{ totalChange >= 0 ? '+' : '' }}{{ totalChange }} kg</span></span>
+        <span>Máx <span class="text-ink-2">{{ maxWeight }} kg</span></span>
       </div>
 
-      <div v-else-if="!metrics?.length" class="flex items-center justify-center h-48 flex-col text-slate-500">
-        <svg class="w-12 h-12 mb-2 text-slate-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z"/>
-        </svg>
-        <p class="text-sm">Sin datos de peso</p>
+      <ChartsLineChart
+        :points="chartPoints"
+        :show-trend="true"
+        :show-area="true"
+        :format-y="(v) => `${v.toFixed(1)}`"
+        :H="200"
+      />
+
+      <div class="flex items-center gap-4 mt-3 text-[11px] text-ink-3 px-1">
+        <span class="flex items-center gap-1.5">
+          <span class="w-4 h-0.5 bg-ink inline-block rounded" /> Peso registrado
+        </span>
+        <span class="flex items-center gap-1.5">
+          <span class="w-4 border-t border-dashed border-ink-3 inline-block" /> Tendencia
+        </span>
       </div>
-
-      <template v-else>
-        <!-- Summary row -->
-        <div class="flex justify-between text-xs text-slate-400 mb-3 px-1">
-          <span>Mín: <strong>{{ minWeight }}kg</strong></span>
-          <span :class="totalChange >= 0 ? 'text-rose-400' : 'text-emerald-400'">
-            Total: {{ totalChange >= 0 ? '+' : '' }}{{ totalChange }}kg
-          </span>
-          <span>Máx: <strong>{{ maxWeight }}kg</strong></span>
-        </div>
-
-        <ChartsLineChart
-          :points="chartPoints"
-          color="#10b981"
-          trend-color="#6366f1"
-          :show-trend="true"
-          :show-area="true"
-          :format-y="(v) => `${v.toFixed(1)}kg`"
-          :H="200"
-        />
-
-        <!-- Trend legend -->
-        <div class="flex items-center gap-4 mt-3 text-xs text-slate-500 px-1">
-          <span class="flex items-center gap-1.5">
-            <span class="w-4 h-0.5 bg-emerald-500 inline-block rounded"></span> Peso real
-          </span>
-          <span class="flex items-center gap-1.5">
-            <span class="w-4 border-t border-dashed border-indigo-500 inline-block"></span> Tendencia
-          </span>
-        </div>
-      </template>
     </div>
-  </div>
+  </UiCard>
 </template>
 
 <script setup lang="ts">

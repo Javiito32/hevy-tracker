@@ -1,84 +1,86 @@
 <template>
   <div>
-    <h1 class="text-3xl font-bold mb-6 text-slate-100">Dashboard</h1>
+    <UiPageHeader title="Dashboard" />
 
-    <div v-if="pending" class="text-center py-10">
-      <div class="animate-spin w-8 h-8 rounded-full border-4 border-indigo-500 border-t-transparent mx-auto"></div>
+    <div v-if="pending" class="flex justify-center py-16 text-ink-3">
+      <UiSpinner size="lg" />
     </div>
 
-    <div v-else-if="error" class="bg-rose-950/60 border border-rose-800 text-rose-400 text-sm px-4 py-3 rounded-lg">
-      No se pudo cargar el panel. Reintenta en unos segundos.
-    </div>
+    <UiCard v-else-if="error" padded>
+      <p class="text-sm text-danger flex items-start gap-2">
+        <span aria-hidden="true">⚠</span>No se pudo cargar el panel. Reintenta en unos segundos.
+      </p>
+    </UiCard>
 
     <template v-else-if="data">
       <!-- Detected problems come before the summary tiles: what needs attention
            should not sit below what is merely informative. -->
       <DashboardTrainingAlerts />
 
-      <!-- Top metric cards -->
-      <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-        <!-- Active Mesocycle -->
-        <DashboardMetricCard title="Mesociclo Activo" color="blue">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <UiCard eyebrow="Bloque" title="Mesociclo activo">
           <template v-if="data.activeMesocycle">
-            <p class="font-medium text-slate-100">{{ data.activeMesocycle.name }}</p>
-            <p class="text-sm text-slate-500 mb-3 line-clamp-2">{{ data.activeMesocycle.goal }}</p>
-            <div class="flex justify-between items-center text-sm flex-wrap gap-2">
-              <div class="flex gap-2">
-                <span class="bg-indigo-950/60 text-indigo-400 py-0.5 px-2 rounded text-xs">Semana {{ data.currentWeek }}</span>
-                <span v-if="data.daysRemaining !== null" class="bg-slate-800 text-slate-400 py-0.5 px-2 rounded text-xs">
-                  {{ data.daysRemaining }}d restantes
+            <p class="text-sm font-medium text-ink">{{ data.activeMesocycle.name }}</p>
+            <p class="text-xs text-ink-3 mt-1 line-clamp-2">{{ data.activeMesocycle.goal }}</p>
+            <div class="flex justify-between items-center gap-2 flex-wrap mt-4">
+              <div class="flex gap-1.5">
+                <span class="font-data text-[11px] bg-surface-2 text-ink-2 py-0.5 px-2 rounded">
+                  Semana {{ data.currentWeek }}
+                </span>
+                <span v-if="data.daysRemaining !== null" class="font-data text-[11px] bg-surface-2 text-ink-3 py-0.5 px-2 rounded">
+                  {{ data.daysRemaining }} d restantes
                 </span>
               </div>
-              <NuxtLink :to="`/mesocycles/${data.activeMesocycle.id}`" class="text-indigo-400 hover:text-indigo-300 text-xs transition">Ver detalle</NuxtLink>
+              <UiLink :to="`/mesocycles/${data.activeMesocycle.id}`" class="text-xs">Ver detalle</UiLink>
             </div>
           </template>
           <template v-else>
-            <p class="text-slate-500 mb-4">Sin mesociclo activo.</p>
-            <NuxtLink to="/mesocycles/new" class="inline-block bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-500 text-sm transition">Crear uno</NuxtLink>
+            <p class="text-sm text-ink-3 mb-4">Sin mesociclo activo.</p>
+            <UiButton to="/mesocycles/new" size="sm">Crear un mesociclo</UiButton>
           </template>
-        </DashboardMetricCard>
+        </UiCard>
 
-        <!-- Weight -->
-        <DashboardMetricCard title="Peso Actual" color="green">
-          <template v-if="data.weight?.current">
-            <div class="flex items-end mb-3">
-              <span class="text-3xl font-bold text-slate-100">{{ data.weight.current }}</span>
-              <span class="text-slate-500 ml-1 mb-1">kg</span>
-              <span v-if="data.weight.diff !== 0" class="ml-3 text-sm flex items-center" :class="data.weight.diff > 0 ? 'text-rose-400' : 'text-emerald-400'">
-                {{ data.weight.diff > 0 ? '▲' : '▼' }} {{ Math.abs(data.weight.diff) }}kg
-              </span>
-            </div>
-            <p class="text-xs text-slate-500">Actualizado: {{ new Date(data.weight.lastUpdated).toLocaleDateString('es-ES') }}</p>
-          </template>
-          <template v-else>
-            <p class="text-slate-500">Sin datos de peso.</p>
-          </template>
-        </DashboardMetricCard>
+        <UiCard eyebrow="Composición" title="Peso actual">
+          <UiStat
+            v-if="data.weight?.current"
+            :value="data.weight.current"
+            unit="kg"
+            :decimals="1"
+            :delta="data.weight.diff"
+            delta-unit=" kg"
+            :polarity="weightPolarity"
+            :hint="`Actualizado el ${formatDateShort(data.weight.lastUpdated)}`"
+          />
+          <p v-else class="text-sm text-ink-3">Sin datos de peso. Sincroniza para traerlos de Hevy.</p>
+        </UiCard>
 
-        <!-- This week -->
-        <DashboardMetricCard title="Esta Semana" color="purple">
-          <div class="flex items-end mb-3">
-            <span class="text-3xl font-bold text-slate-100">{{ data.thisWeekWorkouts.completed }}</span>
-            <span class="text-slate-500 ml-1 mb-1">/ {{ data.thisWeekWorkouts.target }} entrenos</span>
-          </div>
-          <div class="w-full bg-slate-800 rounded-full h-1.5">
-            <div
-              class="bg-violet-500 h-1.5 rounded-full transition-all"
-              :style="{ width: Math.min(100, (data.thisWeekWorkouts.completed / data.thisWeekWorkouts.target) * 100) + '%' }"
-            ></div>
-          </div>
-          <p class="text-xs text-slate-500 mt-2">
-            {{ data.thisWeekWorkouts.completed >= data.thisWeekWorkouts.target ? '✅ Objetivo cumplido' : `Faltan ${data.thisWeekWorkouts.target - data.thisWeekWorkouts.completed}` }}
-          </p>
-        </DashboardMetricCard>
+        <UiCard eyebrow="Adherencia" title="Esta semana">
+          <!-- The signature, in its plainest use: sessions done, measured
+               against the target this block prescribes. -->
+          <UiTickScale
+            :value="data.thisWeekWorkouts.completed"
+            :max="Math.max(data.thisWeekWorkouts.target, data.thisWeekWorkouts.completed)"
+            :step="1"
+            :landmarks="[{ value: data.thisWeekWorkouts.target, label: 'Objetivo semanal', short: 'Objetivo' }]"
+            :verdict="weekVerdict"
+            :caption="weekCaption"
+            :unit="`/ ${data.thisWeekWorkouts.target} entrenos`"
+            aria-label="Entrenos completados esta semana"
+          />
+        </UiCard>
       </div>
 
-      <!-- Mesocycle volume progress -->
-      <div v-if="data.mesocycleWeeklyVolume?.length" class="bg-slate-900 rounded-xl border border-slate-800 p-6 mb-8">
-        <div class="flex items-center justify-between mb-4">
-          <h2 class="text-base font-semibold text-slate-200">Volumen por semana del mesociclo</h2>
-          <span class="text-xs text-slate-500">{{ data.mesocycleWeeklyVolume.length }} semanas</span>
-        </div>
+      <UiCard
+        v-if="data.mesocycleWeeklyVolume?.length"
+        eyebrow="Mesociclo"
+        title="Volumen por semana"
+        hint="Volumen de trabajo, sin series de calentamiento."
+        class="mb-6"
+      >
+        <template #actions>
+          <span class="font-data text-xs text-ink-3">{{ data.mesocycleWeeklyVolume.length }} semanas</span>
+        </template>
+
         <!-- Values are printed above every bar rather than revealed on hover:
              a hover-only label is unreachable on the phone this app is used on. -->
         <div class="flex items-end gap-2 h-32">
@@ -88,32 +90,31 @@
             class="flex-1 flex flex-col justify-end items-center"
             :title="`Semana ${week.week}: ${week.volume.toLocaleString('es-ES')} kg · ${week.workoutCount} sesiones${week.avgRpe ? ` · RPE ${week.avgRpe}` : ''}`"
           >
-            <span class="text-[10px] font-medium text-slate-400 tabular-nums mb-1 whitespace-nowrap">
+            <span class="font-data text-[10px] text-ink-3 mb-1 whitespace-nowrap">
               {{ (week.volume / 1000).toFixed(1) }}t
             </span>
+            <!-- The current week is picked out by contrast, not by a hue: this
+                 is a "you are here" marker, not a verdict on the week. -->
             <div
-              class="w-full rounded-t-[4px] transition-all"
-              :class="week.week === data.currentWeek ? 'bg-indigo-500' : 'bg-indigo-900'"
+              class="w-full rounded-t-[3px] transition-all"
+              :class="week.week === data.currentWeek ? 'bg-ink' : 'bg-ink-3/45'"
               :style="{ height: `${Math.max(2, (week.volume / maxWeekVolume) * 90)}px` }"
-            ></div>
-            <span class="text-[10px] mt-1 text-slate-600">S{{ week.week }}</span>
+            />
+            <span class="font-data text-[10px] mt-1.5 text-ink-3">S{{ week.week }}</span>
           </div>
         </div>
-        <div class="flex items-center gap-4 mt-3 text-xs text-slate-500">
-          <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-indigo-500 inline-block"></span> Semana actual</span>
-          <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-indigo-900 inline-block"></span> Semanas anteriores</span>
-          <span class="ml-auto">Volumen de trabajo, sin calentamiento</span>
-        </div>
-      </div>
 
-      <!-- Recent workouts + weight chart -->
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div class="flex items-center gap-4 mt-4 pt-3 border-t border-line text-[11px] text-ink-3">
+          <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-ink inline-block" /> Semana actual</span>
+          <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-ink-3/45 inline-block" /> Semanas anteriores</span>
+        </div>
+      </UiCard>
+
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
         <div class="lg:col-span-2">
           <DashboardRecentWorkouts :workouts="data.recentWorkouts" @sync="refresh" />
         </div>
-        <div class="bg-slate-900 rounded-xl border border-slate-800 lg:col-span-1">
-          <DashboardWeightChart />
-        </div>
+        <DashboardWeightChart />
       </div>
     </template>
   </div>
@@ -127,5 +128,25 @@ const { data, pending, error, refresh } = useFetch('/api/dashboard')
 const maxWeekVolume = computed(() => {
   if (!data.value?.mesocycleWeeklyVolume?.length) return 1
   return Math.max(...data.value.mesocycleWeeklyVolume.map((w: any) => w.volume), 1)
+})
+
+/**
+ * Body weight has no universally good direction — it depends on the block's
+ * goal — so the delta is shown without a verdict rather than being coloured
+ * green for "down", which would be wrong during a bulk.
+ */
+const weightPolarity = 'neutral' as const
+
+const weekVerdict = computed(() => {
+  const w = data.value?.thisWeekWorkouts
+  if (!w) return 'neutral' as const
+  return w.completed >= w.target ? ('positive' as const) : ('neutral' as const)
+})
+
+const weekCaption = computed(() => {
+  const w = data.value?.thisWeekWorkouts
+  if (!w) return ''
+  const missing = w.target - w.completed
+  return missing <= 0 ? 'Objetivo cumplido' : `Faltan ${missing}`
 })
 </script>

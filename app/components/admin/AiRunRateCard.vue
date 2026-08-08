@@ -2,29 +2,29 @@
   <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
     <!-- Month-to-date is deliberately NOT scoped to the selected range: "what
          will this month cost" is a fixed question. -->
-    <div class="bg-slate-900 rounded-xl border border-slate-800 border-t-4 border-t-violet-500 p-5">
-      <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Gasto del mes en curso</p>
-      <p class="text-3xl font-bold text-slate-100">{{ formatCost(mtd?.cost) }}</p>
-      <p class="text-xs text-slate-500 mt-1">
+    <div class="bg-surface rounded-card border border-line border-t-4 border-t-violet-500 p-5">
+      <p class="text-xs font-semibold text-ink-3 uppercase tracking-wider mb-2">Gasto del mes en curso</p>
+      <p class="font-data text-2xl text-ink">{{ formatCost(mtd?.cost) }}</p>
+      <p class="text-xs text-ink-3 mt-1">
         {{ mtd ? `día ${mtd.days_elapsed} de ${mtd.days_in_month}` : '—' }} ·
         {{ formatTokens(mtd?.tokens) }} tokens
       </p>
     </div>
 
-    <div class="bg-slate-900 rounded-xl border border-slate-800 border-t-4 border-t-amber-500 p-5">
-      <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Proyección a fin de mes</p>
-      <p class="text-3xl font-bold text-slate-100">{{ formatCost(mtd?.projected_cost) }}</p>
-      <p class="text-xs text-slate-500 mt-1">
+    <div class="bg-surface rounded-card border border-line border-t-4 border-t-amber-500 p-5">
+      <p class="text-xs font-semibold text-ink-3 uppercase tracking-wider mb-2">Proyección a fin de mes</p>
+      <p class="font-data text-2xl text-ink">{{ formatCost(mtd?.projected_cost) }}</p>
+      <p class="text-xs text-ink-3 mt-1">
         Media diaria actual · {{ formatCost(dailyAverage) }}/día
       </p>
     </div>
 
-    <div class="bg-slate-900 rounded-xl border border-slate-800 border-t-4 border-t-indigo-500 p-5">
-      <p class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Coste medio por interacción</p>
-      <p class="text-3xl font-bold text-slate-100">{{ formatCost(avgPerInteraction) }}</p>
-      <p class="text-xs text-slate-500 mt-1">
+    <div class="bg-surface rounded-card border border-line border-t-4 border-t-indigo-500 p-5">
+      <p class="text-xs font-semibold text-ink-3 uppercase tracking-wider mb-2">Coste medio por interacción</p>
+      <p class="font-data text-2xl text-ink">{{ formatCost(avgPerInteraction) }}</p>
+      <p class="text-xs text-ink-3 mt-1">
         {{ costableCount === null ? '—' : `sobre ${formatTokens(costableCount)} interacciones con coste` }}
-        <span v-if="excludedCount > 0" class="text-amber-500/80">· {{ excludedCount }} sin coste</span>
+        <span v-if="excludedCount > 0" class="text-warn/80">· {{ excludedCount }} sin coste</span>
       </p>
     </div>
   </div>

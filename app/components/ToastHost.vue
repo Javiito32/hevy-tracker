@@ -13,15 +13,17 @@
       <div
         v-for="toast in toasts"
         :key="toast.id"
-        class="pointer-events-auto rounded-xl border shadow-xl px-4 py-3 flex items-start gap-3 backdrop-blur"
+        class="pointer-events-auto rounded-card border bg-surface px-4 py-3 flex items-start gap-3"
         :class="STYLES[toast.kind].container"
       >
-        <span class="text-sm leading-5 flex-shrink-0" aria-hidden="true">{{ STYLES[toast.kind].glyph }}</span>
-        <p class="text-sm flex-1 min-w-0" :class="STYLES[toast.kind].text">{{ toast.message }}</p>
+        <span class="text-sm leading-5 flex-shrink-0" :class="STYLES[toast.kind].text" aria-hidden="true">
+          {{ STYLES[toast.kind].glyph }}
+        </span>
+        <p class="text-sm flex-1 min-w-0 text-ink">{{ toast.message }}</p>
         <button
-          @click="dismiss(toast.id)"
-          class="text-slate-500 hover:text-slate-200 text-lg leading-none flex-shrink-0 transition"
+          class="text-ink-3 hover:text-ink text-lg leading-none flex-shrink-0 transition"
           aria-label="Cerrar aviso"
+          @click="dismiss(toast.id)"
         >×</button>
       </div>
     </TransitionGroup>
@@ -31,22 +33,17 @@
 <script setup lang="ts">
 const { toasts, dismiss } = useToast()
 
-/** Glyph alongside colour so the kind survives a colour-blind reading. */
+/**
+ * Glyph alongside colour so the kind survives a colour-blind reading.
+ *
+ * The toast body is a plain surface with a hairline; only the glyph and the
+ * left border carry the hue. A fully tinted panel was legible on the old dark-
+ * only theme but on chalk it reads as a coloured block with text in it, and it
+ * spent a verdict colour on what is mostly just a receipt.
+ */
 const STYLES = {
-  success: {
-    glyph: '✓',
-    container: 'bg-emerald-950/90 border-emerald-800',
-    text: 'text-emerald-200'
-  },
-  error: {
-    glyph: '⚠',
-    container: 'bg-rose-950/90 border-rose-800',
-    text: 'text-rose-200'
-  },
-  info: {
-    glyph: 'ℹ',
-    container: 'bg-slate-900/95 border-slate-700',
-    text: 'text-slate-200'
-  }
+  success: { glyph: '✓', container: 'border-positive/40', text: 'text-positive' },
+  error:   { glyph: '⚠', container: 'border-danger/40',   text: 'text-danger' },
+  info:    { glyph: 'ℹ', container: 'border-line-strong', text: 'text-ink-3' }
 } as const
 </script>

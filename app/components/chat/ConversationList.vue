@@ -1,29 +1,20 @@
 <template>
-  <div class="flex flex-col h-full bg-slate-950/70">
-    <div class="p-3 border-b border-slate-800">
-      <button
-        @click="emit('new')"
-        class="w-full bg-violet-600 hover:bg-violet-500 text-white text-sm font-medium px-3 py-2 rounded-lg transition flex items-center justify-center gap-2"
-      >
-        <span class="text-base leading-none">+</span> Nueva conversación
-      </button>
+  <div class="flex flex-col h-full bg-bg">
+    <div class="p-3 border-b border-line">
+      <UiButton size="sm" block @click="emit('new')">Nueva conversación</UiButton>
     </div>
 
-    <div class="flex-grow overflow-y-auto custom-scrollbar p-2 space-y-1">
-      <p v-if="loading" class="text-xs text-slate-500 text-center py-4">Cargando…</p>
-      <p v-else-if="!conversations.length" class="text-xs text-slate-600 text-center py-4 px-2">
+    <div class="flex-grow overflow-y-auto custom-scrollbar p-2 space-y-0.5">
+      <p v-if="loading" class="text-xs text-ink-3 text-center py-4">Cargando…</p>
+      <p v-else-if="!conversations.length" class="text-xs text-ink-3 text-center py-4 px-2">
         Aún no tienes conversaciones guardadas.
       </p>
 
       <div
         v-for="convo in conversations"
         :key="convo.id"
-        :class="[
-          'group rounded-lg px-3 py-2 cursor-pointer transition border',
-          convo.id === activeId
-            ? 'bg-violet-950/50 border-violet-800'
-            : 'bg-transparent border-transparent hover:bg-slate-900'
-        ]"
+        class="group rounded-lg px-3 py-2 cursor-pointer transition"
+        :class="convo.id === activeId ? 'bg-surface-2' : 'hover:bg-surface-2/60'"
         @click="emit('select', convo.id)"
       >
         <!-- Inline rename -->
@@ -31,39 +22,29 @@
           <input
             ref="renameInput"
             v-model="renameDraft"
-            class="flex-grow bg-slate-800 border border-violet-600 rounded px-2 py-1 text-xs text-slate-100 outline-none min-w-0"
+            class="flex-grow bg-surface border border-line-strong rounded px-2 py-1 text-xs text-ink outline-none min-w-0"
             @keydown.enter.prevent="commitRename(convo.id)"
             @keydown.esc="cancelRename"
           />
-          <button class="text-emerald-400 hover:text-emerald-300 text-xs px-1" title="Guardar" @click="commitRename(convo.id)">✓</button>
-          <button class="text-slate-500 hover:text-slate-300 text-xs px-1" title="Cancelar" @click="cancelRename">✕</button>
+          <button class="text-positive text-xs px-1" title="Guardar" @click="commitRename(convo.id)">✓</button>
+          <button class="text-ink-3 hover:text-ink text-xs px-1" title="Cancelar" @click="cancelRename">✕</button>
         </div>
 
         <template v-else>
           <div class="flex items-start justify-between gap-1">
             <p
-              :class="[
-                'text-xs font-medium truncate flex-grow min-w-0',
-                convo.id === activeId ? 'text-violet-200' : 'text-slate-300'
-              ]"
-            >
-              {{ convo.title || 'Sin título' }}
-            </p>
-            <div class="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition flex-shrink-0" @click.stop>
-              <button
-                class="text-slate-500 hover:text-violet-400 text-[11px] px-1"
-                title="Renombrar"
-                @click="startRename(convo)"
-              >✎</button>
-              <button
-                class="text-slate-500 hover:text-rose-400 text-[11px] px-1"
-                title="Borrar"
-                @click="emit('delete', convo.id)"
-              >🗑</button>
+              class="text-xs truncate flex-grow min-w-0"
+              :class="convo.id === activeId ? 'text-ink font-medium' : 'text-ink-2'"
+            >{{ convo.title || 'Sin título' }}</p>
+            <!-- The row actions stay reachable on touch, where there is no
+                 hover to reveal them. -->
+            <div class="flex items-center gap-0.5 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition flex-shrink-0" @click.stop>
+              <button class="text-ink-3 hover:text-ink text-[11px] px-1" title="Renombrar" @click="startRename(convo)">✎</button>
+              <button class="text-ink-3 hover:text-danger text-[11px] px-1" title="Borrar" @click="emit('delete', convo.id)">✕</button>
             </div>
           </div>
-          <p class="text-[10px] text-slate-600 truncate mt-0.5">{{ convo.preview }}</p>
-          <p class="text-[10px] text-slate-700 mt-0.5">{{ formatDate(convo.updated_at) }}</p>
+          <p class="text-[10px] text-ink-3 truncate mt-0.5">{{ convo.preview }}</p>
+          <p class="font-data text-[10px] text-ink-3 mt-0.5">{{ formatDate(convo.updated_at) }}</p>
         </template>
       </div>
     </div>
@@ -126,16 +107,3 @@ const formatDate = (iso: string) => {
     : new Intl.DateTimeFormat('es-ES', { day: '2-digit', month: 'short' }).format(date)
 }
 </script>
-
-<style scoped>
-.custom-scrollbar::-webkit-scrollbar {
-  width: 6px;
-}
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
-}
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background-color: rgba(100, 116, 139, 0.3);
-  border-radius: 10px;
-}
-</style>

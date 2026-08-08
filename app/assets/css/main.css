@@ -1,0 +1,278 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ===========================================================================
+   HevyTracker — dirección visual «Instrumento» (hierro y tiza)
+   ---------------------------------------------------------------------------
+   Esta app mide: kg, RPE, series efectivas, MEV/MAV/MRV, macros. Su mundo es el
+   de los instrumentos de medida, no el de las apps de fitness.
+
+   TESIS: la interfaz es acromática. El color queda reservado en exclusiva a los
+   veredictos (--positive / --warn / --danger) y a las series de datos. No hay
+   color de marca. El botón primario es una inversión de contraste, no un azul.
+
+   Por qué: el trabajo de esta app es emitir juicios — ¿estoy en rango?, ¿me he
+   pasado del MRV?, ¿se está estancando esto? Si un acento decorativo pinta
+   botones, enlaces y bordes activos, el ojo aprende a ignorar el color justo
+   cuando el color significa algo.
+
+   Los tokens se declaran como tripletes RGB sin envolver para que Tailwind
+   pueda aplicarles opacidad (`bg-surface/60`) vía <alpha-value>.
+
+   Los grises son neutros y ligeramente cálidos. Deliberadamente NO son la rampa
+   `slate` de Tailwind, que tiene tinte azul y se reconoce al instante como el
+   ajuste por defecto.
+   =========================================================================== */
+
+@layer base {
+  /* ---- Tiza (claro) — es también el valor base antes de hidratar ---- */
+  :root {
+    --bg: 247 247 245;
+    --surface: 255 255 255;
+    --surface-2: 240 240 236;
+    --line: 228 228 222;
+    --line-strong: 198 198 190;
+
+    --ink: 22 22 26;
+    --ink-2: 85 85 90;
+    --ink-3: 110 110 116;
+
+    /* Inversión de contraste: el «primario» es tinta sólida. */
+    --accent: 22 22 26;
+    --accent-ink: 247 247 245;
+    --focus: 22 22 26;
+
+    /* Veredictos. Verificados sobre --bg y --surface: todos ≥ 4.5:1. */
+    --positive: 16 110 67;
+    --warn: 125 82 0;
+    --danger: 168 34 25;
+
+    /* La regla graduada: marca mayor y marca menor. */
+    --tick: 198 198 190;
+    --tick-minor: 228 228 222;
+
+    /* ---------------------------------------------------------------------
+       Series de datos — la ÚNICA excepción a la interfaz acromática, junto a
+       los veredictos. Identidad categórica, asignada por orden fijo y nunca
+       ciclada.
+
+       Ambos temas están *elegidos*, no volteados: son los mismos cinco tonos
+       escalonados para cada superficie. Verificado con
+       `node scripts/validate_palette.js` (ver README de la orden en CLAUDE.md).
+
+       Tiza sobre #F7F7F5 — pasos oscurecidos respecto a la columna clara de
+       referencia. La columna de referencia avisaba por contraste (< 3:1 en 4
+       de 5), y en una app con gráficas de línea eso significa una línea de 2px
+       que no se ve. Estos pasos despejan 3:1; a cambio el peor par adyacente
+       queda en ΔE 7.9 (protan), dentro de la banda 6–8 que exige codificación
+       secundaria: estas gráficas la llevan (leyenda siempre presente y vista
+       de tabla).
+       --------------------------------------------------------------------- */
+    --series-1: 42 120 214;   /* azul     */
+    --series-2: 194 82 31;    /* naranja  */
+    --series-3: 18 133 92;    /* aqua     */
+    --series-4: 154 106 0;    /* amarillo */
+    --series-5: 192 75 118;   /* magenta  */
+    /* La cola plegada («Otros») queda deliberadamente fuera de la paleta: no
+       es una identidad. */
+    --series-other: 134 134 140;
+
+    color-scheme: light;
+  }
+
+  /* ---- Hierro (oscuro) ---- */
+  .dark {
+    --bg: 19 19 22;
+    --surface: 26 26 30;
+    --surface-2: 33 33 39;
+    --line: 46 46 54;
+    --line-strong: 67 67 78;
+
+    --ink: 242 242 239;
+    --ink-2: 168 168 164;
+    --ink-3: 130 130 138;
+
+    --accent: 242 242 239;
+    --accent-ink: 19 19 22;
+    --focus: 242 242 239;
+
+    --positive: 70 201 127;
+    --warn: 227 169 60;
+    --danger: 240 98 92;
+
+    --tick: 67 67 78;
+    --tick-minor: 46 46 54;
+
+    /* Hierro sobre #131316 — las seis comprobaciones pasan sin avisos. */
+    --series-1: 57 135 229;   /* azul     */
+    --series-2: 217 89 38;    /* naranja  */
+    --series-3: 25 158 112;   /* aqua     */
+    --series-4: 201 133 0;    /* amarillo */
+    --series-5: 213 81 129;   /* magenta  */
+    --series-other: 110 110 114;
+
+    color-scheme: dark;
+  }
+
+  html {
+    /* Evita el salto horizontal al aparecer/desaparecer la barra de scroll. */
+    scrollbar-gutter: stable;
+  }
+
+  body {
+    @apply bg-bg text-ink font-sans antialiased;
+  }
+
+  /* Un foco visible es requisito, no adorno. Al ser la interfaz acromática, el
+     anillo usa la tinta a contraste pleno en lugar de un hue de marca. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-focus ring-offset-2 ring-offset-bg rounded-[3px];
+  }
+
+  /* Las cifras se alinean en columna: esto es un cuaderno de registro. */
+  .font-data,
+  table,
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::selection {
+    background: rgb(var(--ink) / 0.16);
+  }
+}
+
+@layer components {
+  /* Antes duplicado byte a byte en chat.vue y ConversationList.vue. */
+  .custom-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--line-strong)) transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgb(var(--line-strong));
+    border-radius: 3px;
+  }
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgb(var(--ink-3));
+  }
+
+  /* Superficie común de los controles de formulario. Vive en CSS y no en cada
+     SFC porque la comparten Input, Select y Textarea: tres copias de la misma
+     cadena es exactamente como el marcado acabó con ~25 grafías distintas del
+     mismo input. */
+  .ui-control {
+    @apply w-full bg-surface-2 border border-line-strong rounded-lg
+           px-3 py-2.5 text-sm text-ink placeholder:text-ink-3
+           transition-colors;
+    min-height: 44px;
+  }
+  .ui-control:hover:not(:disabled) {
+    @apply border-ink-3;
+  }
+  .ui-control:disabled {
+    @apply opacity-50 cursor-not-allowed;
+  }
+  /* Los campos numéricos son la mayoría en esta app: kg, repeticiones, gramos. */
+  .ui-control[type='number'],
+  .ui-control[inputmode='decimal'],
+  .ui-control[inputmode='numeric'] {
+    @apply font-data;
+  }
+  /* Los spinners nativos de number no caben en un pulgar y truncan el valor. */
+  .ui-control[type='number']::-webkit-outer-spin-button,
+  .ui-control[type='number']::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .ui-control[type='number'] {
+    -moz-appearance: textfield;
+  }
+
+  /* -------------------------------------------------------------------------
+     Markdown generado por la IA.
+     `renderMarkdown()` emite HTML sin una sola clase; todo el estilo vive aquí.
+     Antes iba incrustado como clases Tailwind en 15 puntos de markdown.ts, lo
+     que hacía imposible tematizarlo. El contenedor debe llevar `class="md"`.
+     ------------------------------------------------------------------------- */
+  .md {
+    @apply text-sm leading-relaxed text-ink-2;
+  }
+  .md > :first-child { @apply mt-0; }
+  .md > :last-child  { @apply mb-0; }
+
+  .md p { @apply my-2; }
+
+  .md h1 { @apply font-display text-base font-semibold tracking-tight text-ink mt-5 mb-2; }
+  .md h2 { @apply font-display text-sm font-semibold tracking-tight text-ink mt-5 mb-2; }
+  .md h3 { @apply text-sm font-semibold text-ink mt-4 mb-1; }
+  .md h4 { @apply text-xs font-semibold uppercase tracking-[0.12em] text-ink-3 mt-3 mb-1; }
+
+  .md strong { @apply font-semibold text-ink; }
+  .md em { @apply italic; }
+
+  .md ul { @apply list-disc pl-5 space-y-1 my-2; }
+  .md ol { @apply list-decimal pl-5 space-y-1 my-2; }
+  .md li::marker { color: rgb(var(--ink-3)); }
+
+  .md a { @apply text-ink underline decoration-line-strong underline-offset-[3px] hover:decoration-ink; }
+
+  .md code { @apply font-data text-[0.9em] bg-surface-2 text-ink rounded px-1 py-0.5; }
+  .md pre {
+    @apply font-data text-xs bg-surface-2 border border-line rounded-lg p-3 my-3 overflow-x-auto text-ink-2;
+  }
+  .md pre code { @apply bg-transparent p-0; }
+
+  /* La cita es el único sitio donde la IA marca un aparte. Una regla vertical
+     de tinta lo hace sin recurrir a un hue. */
+  .md blockquote { @apply border-l-2 border-line-strong pl-3 my-3 text-ink-3; }
+
+  .md hr { @apply border-0 border-t border-line my-4; }
+
+  /* La tabla se desplaza dentro de su propio contenedor: el cuerpo de la
+     página nunca debe hacer scroll horizontal en el móvil. */
+  .md .md-table { @apply overflow-x-auto my-3; }
+  .md table { @apply w-full text-xs border-collapse; }
+  .md th {
+    @apply px-2 py-1.5 text-left font-semibold text-ink border-b border-line-strong
+           whitespace-nowrap;
+  }
+  .md td { @apply px-2 py-1.5 border-b border-line text-ink-2 align-top; }
+  /* Las columnas numéricas se alinean a la derecha por la monoespaciada. */
+  .md td:not(:first-child) { @apply font-data; }
+
+  /* -------------------------------------------------------------------------
+     LA FIRMA — la regla graduada.
+     El gimnasio está cuantizado a 2,5 kg y esta app ya redondea a ese
+     incremento. Toda magnitud contrastada contra un umbral se dibuja sobre una
+     regla con marcas mayores y menores.
+
+     Regla de uso: los ticks aparecen ÚNICAMENTE donde hay un valor medido
+     contra un umbral. No son divisores decorativos ni adorno de cabecera. Un
+     motivo que aparece en todas partes deja de significar algo.
+     ------------------------------------------------------------------------- */
+  .tick-rule {
+    background-image: repeating-linear-gradient(
+      to right,
+      rgb(var(--tick-minor)) 0 1px,
+      transparent 1px var(--tick-step, 10%)
+    );
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

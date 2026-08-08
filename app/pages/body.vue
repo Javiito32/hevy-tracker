@@ -4,52 +4,52 @@
     <!-- Header -->
     <div class="flex items-center justify-between">
       <div>
-        <h1 class="text-3xl font-bold text-slate-100">Métricas Corporales</h1>
-        <p v-if="metrics.length" class="text-sm text-slate-500 mt-1">
+        <h1 class="font-display text-2xl sm:text-[28px] font-semibold tracking-[-0.02em] text-ink leading-none">Métricas Corporales</h1>
+        <p v-if="metrics.length" class="text-sm text-ink-3 mt-1">
           {{ metrics.length }} registros · último {{ latestDate }}
         </p>
       </div>
       <button @click="openModal(null)"
-        class="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-semibold transition">
+        class="flex items-center gap-2 bg-accent text-accent-ink hover:opacity-85 px-4 py-2 rounded-lg text-sm font-semibold transition">
         + Añadir medida
       </button>
     </div>
 
     <!-- Loading -->
     <div v-if="pending" class="flex justify-center py-20">
-      <div class="animate-spin w-8 h-8 rounded-full border-4 border-indigo-500 border-t-transparent" />
+      <UiSpinner size="lg" class="text-ink-3" />
     </div>
 
     <template v-else>
       <!-- Empty -->
       <div v-if="!metrics.length"
-        class="bg-slate-900 rounded-xl border border-slate-800 p-20 text-center">
+        class="bg-surface rounded-card border border-line p-20 text-center">
         <p class="text-5xl mb-4">📏</p>
-        <p class="text-slate-300 font-medium mb-1">Sin datos corporales</p>
-        <p class="text-sm text-slate-500">Sincroniza con Hevy o añade una medida manual.</p>
+        <p class="text-ink-2 font-medium mb-1">Sin datos corporales</p>
+        <p class="text-sm text-ink-3">Sincroniza con Hevy o añade una medida manual.</p>
       </div>
 
       <template v-else>
 
         <!-- ── HRV Status Badge ───────────────────────────────────────────── -->
         <div v-if="hrvStatus"
-          class="rounded-xl border p-5 flex items-center gap-5"
+          class="rounded-card border p-5 flex items-center gap-5"
           :class="{
-            'border-emerald-500/30 bg-emerald-950/20': hrvStatus.level === 'optimal',
-            'border-amber-500/30 bg-amber-950/20':    hrvStatus.level === 'caution',
-            'border-rose-500/30 bg-rose-950/20':      hrvStatus.level === 'fatigued',
+            'border-positive/40 bg-positive/10': hrvStatus.level === 'optimal',
+            'border-warn/40 bg-warn/10':    hrvStatus.level === 'caution',
+            'border-danger/40 bg-danger/10':      hrvStatus.level === 'fatigued',
           }">
           <div class="w-14 h-14 rounded-full flex items-center justify-center flex-shrink-0 ring-2"
             :class="{
-              'bg-emerald-500/15 ring-emerald-500/40': hrvStatus.level === 'optimal',
-              'bg-amber-500/15 ring-amber-500/40':    hrvStatus.level === 'caution',
-              'bg-rose-500/15 ring-rose-500/40':      hrvStatus.level === 'fatigued',
+              'bg-positive/15 ring-positive/40': hrvStatus.level === 'optimal',
+              'bg-warn/15 ring-warn/40':    hrvStatus.level === 'caution',
+              'bg-danger/15 ring-danger/40':      hrvStatus.level === 'fatigued',
             }">
             <svg viewBox="0 0 24 24" class="w-7 h-7" fill="none" stroke="currentColor" stroke-width="2.5"
               :class="{
-                'text-emerald-400': hrvStatus.level === 'optimal',
-                'text-amber-400':   hrvStatus.level === 'caution',
-                'text-rose-400':    hrvStatus.level === 'fatigued',
+                'text-positive': hrvStatus.level === 'optimal',
+                'text-warn':   hrvStatus.level === 'caution',
+                'text-danger':    hrvStatus.level === 'fatigued',
               }">
               <path v-if="hrvStatus.level === 'optimal'"
                 stroke-linecap="round" stroke-linejoin="round"
@@ -66,27 +66,27 @@
             <div class="flex items-center gap-2 mb-1 flex-wrap">
               <span class="text-lg font-bold"
                 :class="{
-                  'text-emerald-400': hrvStatus.level === 'optimal',
-                  'text-amber-400':   hrvStatus.level === 'caution',
-                  'text-rose-400':    hrvStatus.level === 'fatigued',
+                  'text-positive': hrvStatus.level === 'optimal',
+                  'text-warn':   hrvStatus.level === 'caution',
+                  'text-danger':    hrvStatus.level === 'fatigued',
                 }">{{ hrvStatus.label }}</span>
               <span class="text-xs px-2 py-0.5 rounded-full font-medium border"
                 :class="{
-                  'bg-emerald-500/10 text-emerald-400 border-emerald-500/30': hrvStatus.level === 'optimal',
-                  'bg-amber-500/10 text-amber-400 border-amber-500/30':       hrvStatus.level === 'caution',
-                  'bg-rose-500/10 text-rose-400 border-rose-500/30':          hrvStatus.level === 'fatigued',
+                  'bg-positive/10 text-positive border-positive/40': hrvStatus.level === 'optimal',
+                  'bg-warn/10 text-warn border-warn/40':       hrvStatus.level === 'caution',
+                  'bg-danger/10 text-danger border-danger/40':          hrvStatus.level === 'fatigued',
                 }">{{ hrvStatus.sublabel }}</span>
             </div>
-            <p class="text-sm text-slate-400">{{ hrvStatus.text }}</p>
+            <p class="text-sm text-ink-2">{{ hrvStatus.text }}</p>
           </div>
           <div class="text-right flex-shrink-0 pl-2">
-            <p class="text-3xl font-bold text-slate-100 leading-none">{{ hrvStatus.hrv.toFixed(0) }}</p>
-            <p class="text-xs text-slate-500 mt-1">ms · HRV</p>
+            <p class="font-data text-3xl text-ink leading-none">{{ hrvStatus.hrv.toFixed(0) }}</p>
+            <p class="text-xs text-ink-3 mt-1">ms · HRV</p>
             <p class="text-xs mt-1 font-medium"
               :class="{
-                'text-emerald-400': hrvStatus.level === 'optimal',
-                'text-amber-400':   hrvStatus.level === 'caution',
-                'text-rose-400':    hrvStatus.level === 'fatigued',
+                'text-positive': hrvStatus.level === 'optimal',
+                'text-warn':   hrvStatus.level === 'caution',
+                'text-danger':    hrvStatus.level === 'fatigued',
               }">
               {{ hrvStatus.pct > 0 ? '+' : '' }}{{ (hrvStatus.pct * 100).toFixed(1) }}% vs media
             </p>
@@ -97,66 +97,66 @@
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
 
           <!-- Chart 1: Peso & Composición -->
-          <div class="bg-slate-900 rounded-xl border border-slate-800 p-5">
-            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Peso &amp; Composición</p>
-            <div v-if="!c1" class="h-40 flex items-center justify-center text-slate-600 text-sm">Sin datos</div>
+          <div class="bg-surface rounded-card border border-line p-5">
+            <p class="text-xs font-semibold text-ink-2 uppercase tracking-wider mb-4">Peso &amp; Composición</p>
+            <div v-if="!c1" class="h-40 flex items-center justify-center text-ink-3 text-sm">Sin datos</div>
             <svg v-else :viewBox="`0 0 ${W} ${H}`" class="w-full" :style="`height:${H}px`">
               <!-- Grid -->
               <line v-for="y in gridYs" :key="y" :x1="pL" :y1="y" :x2="W - pR" :y2="y"
-                stroke="#1e293b" stroke-width="1" />
+                class="stroke-line" stroke-width="1" />
               <!-- Left Y labels (kg) -->
               <text v-for="l in c1.leftLabels" :key="l.y" :x="pL - 4" :y="l.y + 3.5"
-                text-anchor="end" font-size="9" fill="#475569">{{ l.label }}</text>
+                text-anchor="end" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
               <!-- Right Y labels (%) -->
               <text v-for="l in c1.rightLabels" :key="'r'+l.y" :x="W - pR + 4" :y="l.y + 3.5"
-                text-anchor="start" font-size="9" fill="#b45309">{{ l.label }}%</text>
+                text-anchor="start" font-size="9" class="fill-series-4 font-data">{{ l.label }}%</text>
               <!-- Paths -->
-              <path v-if="c1.weight.path" :d="c1.weight.path" fill="none" stroke="#6366f1" stroke-width="1.8" stroke-linejoin="round" />
-              <path v-if="c1.lean.path" :d="c1.lean.path" fill="none" stroke="#22d3ee" stroke-width="1.8" stroke-linejoin="round" />
-              <path v-if="c1.fat.path" :d="c1.fat.path" fill="none" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4 2" stroke-linejoin="round" />
+              <path v-if="c1.weight.path" :d="c1.weight.path" fill="none" class="stroke-series-1" stroke-width="1.8" stroke-linejoin="round" />
+              <path v-if="c1.lean.path" :d="c1.lean.path" fill="none" class="stroke-series-3" stroke-width="1.8" stroke-linejoin="round" />
+              <path v-if="c1.fat.path" :d="c1.fat.path" fill="none" class="stroke-series-4" stroke-width="1.5" stroke-dasharray="4 2" stroke-linejoin="round" />
               <!-- Dots -->
-              <circle v-for="p in c1.weight.points" :key="`w${p.x}`" :cx="p.x" :cy="p.y" r="2.5" fill="#6366f1" />
-              <circle v-for="p in c1.lean.points" :key="`l${p.x}`" :cx="p.x" :cy="p.y" r="2.5" fill="#22d3ee" />
+              <circle v-for="p in c1.weight.points" :key="`w${p.x}`" :cx="p.x" :cy="p.y" r="2.5" class="fill-series-1" />
+              <circle v-for="p in c1.lean.points" :key="`l${p.x}`" :cx="p.x" :cy="p.y" r="2.5" class="fill-series-3" />
               <!-- X labels -->
               <text v-for="l in c1.xLabels" :key="l.x" :x="l.x" :y="H - 4"
-                text-anchor="middle" font-size="9" fill="#475569">{{ l.label }}</text>
+                text-anchor="middle" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
             </svg>
             <div class="flex flex-wrap gap-3 mt-3 text-xs">
-              <span class="flex items-center gap-1.5 text-indigo-400"><span class="w-3 h-px bg-indigo-400 inline-block"/>Peso</span>
-              <span class="flex items-center gap-1.5 text-cyan-400"><span class="w-3 h-px bg-cyan-400 inline-block"/>Masa magra</span>
-              <span class="flex items-center gap-1.5 text-amber-400"><span class="w-3 h-px bg-amber-400 inline-block opacity-60"/>% Grasa</span>
+              <span class="flex items-center gap-1.5 text-ink-2"><span class="w-3 h-px bg-series-1 inline-block"/>Peso</span>
+              <span class="flex items-center gap-1.5 text-ink-2"><span class="w-3 h-px bg-series-3 inline-block"/>Masa magra</span>
+              <span class="flex items-center gap-1.5 text-ink-2"><span class="w-3 h-px bg-series-4 inline-block"/>% Grasa</span>
             </div>
           </div>
 
           <!-- Chart 2: Perímetros -->
-          <div class="bg-slate-900 rounded-xl border border-slate-800 p-5">
-            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">Perímetros Principales</p>
-            <div v-if="!c2" class="h-40 flex items-center justify-center text-slate-600 text-sm">Sin datos</div>
+          <div class="bg-surface rounded-card border border-line p-5">
+            <p class="text-xs font-semibold text-ink-2 uppercase tracking-wider mb-4">Perímetros Principales</p>
+            <div v-if="!c2" class="h-40 flex items-center justify-center text-ink-3 text-sm">Sin datos</div>
             <svg v-else :viewBox="`0 0 ${W} ${H}`" class="w-full" :style="`height:${H}px`">
               <line v-for="y in gridYs" :key="y" :x1="pL" :y1="y" :x2="W - pR2" :y2="y"
-                stroke="#1e293b" stroke-width="1" />
+                class="stroke-line" stroke-width="1" />
               <text v-for="l in c2.labels" :key="l.y" :x="pL - 4" :y="l.y + 3.5"
-                text-anchor="end" font-size="9" fill="#475569">{{ l.label }}</text>
-              <path v-if="c2.waist.path" :d="c2.waist.path" fill="none" stroke="#f43f5e" stroke-width="1.8" />
-              <path v-if="c2.hips.path" :d="c2.hips.path" fill="none" stroke="#a78bfa" stroke-width="1.8" />
-              <path v-if="c2.chest.path" :d="c2.chest.path" fill="none" stroke="#34d399" stroke-width="1.8" />
-              <circle v-for="p in c2.waist.points" :key="`w${p.x}`" :cx="p.x" :cy="p.y" r="2.5" fill="#f43f5e" />
-              <circle v-for="p in c2.hips.points" :key="`h${p.x}`" :cx="p.x" :cy="p.y" r="2.5" fill="#a78bfa" />
-              <circle v-for="p in c2.chest.points" :key="`c${p.x}`" :cx="p.x" :cy="p.y" r="2.5" fill="#34d399" />
+                text-anchor="end" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
+              <path v-if="c2.waist.path" :d="c2.waist.path" fill="none" class="stroke-series-2" stroke-width="1.8" />
+              <path v-if="c2.hips.path" :d="c2.hips.path" fill="none" class="stroke-series-5" stroke-width="1.8" />
+              <path v-if="c2.chest.path" :d="c2.chest.path" fill="none" class="stroke-series-3" stroke-width="1.8" />
+              <circle v-for="p in c2.waist.points" :key="`w${p.x}`" :cx="p.x" :cy="p.y" r="2.5" class="fill-series-2" />
+              <circle v-for="p in c2.hips.points" :key="`h${p.x}`" :cx="p.x" :cy="p.y" r="2.5" class="fill-series-5" />
+              <circle v-for="p in c2.chest.points" :key="`c${p.x}`" :cx="p.x" :cy="p.y" r="2.5" class="fill-series-3" />
               <text v-for="l in c2.xLabels" :key="l.x" :x="l.x" :y="H - 4"
-                text-anchor="middle" font-size="9" fill="#475569">{{ l.label }}</text>
+                text-anchor="middle" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
             </svg>
             <div class="flex flex-wrap gap-3 mt-3 text-xs">
-              <span class="flex items-center gap-1.5 text-rose-400"><span class="w-3 h-px bg-rose-400 inline-block"/>Cintura</span>
-              <span class="flex items-center gap-1.5 text-violet-400"><span class="w-3 h-px bg-violet-400 inline-block"/>Caderas</span>
-              <span class="flex items-center gap-1.5 text-emerald-400"><span class="w-3 h-px bg-emerald-400 inline-block"/>Pecho</span>
+              <span class="flex items-center gap-1.5 text-ink-2"><span class="w-3 h-px bg-series-2 inline-block"/>Cintura</span>
+              <span class="flex items-center gap-1.5 text-ink-2"><span class="w-3 h-px bg-series-5 inline-block"/>Caderas</span>
+              <span class="flex items-center gap-1.5 text-ink-2"><span class="w-3 h-px bg-series-3 inline-block"/>Pecho</span>
             </div>
           </div>
 
           <!-- Chart 3: HRV · Últimos 30 días -->
-          <div class="bg-slate-900 rounded-xl border border-slate-800 p-5">
-            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-4">HRV · Últimos 30 días</p>
-            <div v-if="!c3" class="h-40 flex items-center justify-center text-slate-600 text-sm">Sin datos de recuperación</div>
+          <div class="bg-surface rounded-card border border-line p-5">
+            <p class="text-xs font-semibold text-ink-2 uppercase tracking-wider mb-4">HRV · Últimos 30 días</p>
+            <div v-if="!c3" class="h-40 flex items-center justify-center text-ink-3 text-sm">Sin datos de recuperación</div>
             <svg v-else :viewBox="`0 0 ${W} ${H}`" class="w-full" :style="`height:${H}px`">
               <!-- Normal zone band -->
               <rect v-if="c3.bandRect"
@@ -166,47 +166,47 @@
               <!-- Mean line -->
               <line v-if="c3.meanLineY != null"
                 :x1="pL" :y1="c3.meanLineY" :x2="W - pR" :y2="c3.meanLineY"
-                stroke="#6366f1" stroke-width="1" stroke-dasharray="3 3" opacity="0.6" />
+                class="stroke-ink-3" stroke-width="1" stroke-dasharray="3 3" opacity="0.6" />
               <!-- Grid -->
               <line v-for="y in gridYs" :key="y" :x1="pL" :y1="y" :x2="W - pR" :y2="y"
-                stroke="#1e293b" stroke-width="1" />
+                class="stroke-line" stroke-width="1" />
               <!-- Y labels -->
               <text v-for="l in c3.leftLabels" :key="l.y" :x="pL - 4" :y="l.y + 3.5"
-                text-anchor="end" font-size="9" fill="#475569">{{ l.label }}</text>
+                text-anchor="end" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
               <text v-for="l in c3.rightLabels" :key="'r'+l.y" :x="W - pR + 4" :y="l.y + 3.5"
-                text-anchor="start" font-size="9" fill="#64748b">{{ l.label }}</text>
+                text-anchor="start" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
               <!-- Resting HR path (secondary) -->
-              <path v-if="c3.hr.path" :d="c3.hr.path" fill="none" stroke="#fb7185"
+              <path v-if="c3.hr.path" :d="c3.hr.path" fill="none" class="stroke-series-2"
                 stroke-width="1.3" stroke-dasharray="4 2" opacity="0.45" />
               <!-- HRV path -->
-              <path v-if="c3.hrv.path" :d="c3.hrv.path" fill="none" stroke="#818cf8" stroke-width="1.8" />
+              <path v-if="c3.hrv.path" :d="c3.hrv.path" fill="none" class="stroke-series-1" stroke-width="1.8" />
               <!-- Resting HR dots -->
-              <circle v-for="p in c3.hr.points" :key="`hr${p.x}`" :cx="p.x" :cy="p.y" r="2" fill="#fb7185" opacity="0.45" />
+              <circle v-for="p in c3.hr.points" :key="`hr${p.x}`" :cx="p.x" :cy="p.y" r="2" class="fill-series-2" opacity="0.45" />
               <!-- HRV colored dots -->
               <circle v-for="p in c3.hrvPoints" :key="`hrv${p.x}`" :cx="p.x" :cy="p.y" r="3" :fill="p.color" />
               <!-- X labels -->
               <text v-for="l in c3.xLabels" :key="l.x" :x="l.x" :y="H - 4"
-                text-anchor="middle" font-size="9" fill="#475569">{{ l.label }}</text>
+                text-anchor="middle" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
             </svg>
-            <div class="flex flex-wrap gap-3 mt-3 text-xs text-slate-500">
-              <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-emerald-500 inline-block"/>Óptimo</span>
-              <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-amber-500 inline-block"/>Precaución</span>
-              <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-rose-500 inline-block"/>Fatigado</span>
-              <span class="flex items-center gap-1.5 opacity-50"><span class="w-3 h-px bg-rose-400 inline-block"/>FC reposo</span>
+            <div class="flex flex-wrap gap-3 mt-3 text-xs text-ink-3">
+              <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-positive inline-block"/>Óptimo</span>
+              <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-warn inline-block"/>Precaución</span>
+              <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-danger inline-block"/>Fatigado</span>
+              <span class="flex items-center gap-1.5 opacity-50"><span class="w-3 h-px bg-series-2 inline-block"/>FC reposo</span>
             </div>
           </div>
         </div>
 
         <!-- ── Snapshot ───────────────────────────────────────────────────── -->
-        <div class="bg-slate-900 rounded-xl border border-slate-800 p-6">
-          <h2 class="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-5">
+        <div class="bg-surface rounded-card border border-line p-6">
+          <h2 class="text-xs font-semibold text-ink-2 uppercase tracking-wider mb-5">
             Última medición · {{ latestDate }}
           </h2>
           <div class="space-y-6">
 
             <!-- Composición -->
             <div>
-              <p class="text-xs text-slate-500 mb-3">Composición corporal</p>
+              <p class="text-xs text-ink-3 mb-3">Composición corporal</p>
               <div class="grid grid-cols-3 gap-3">
                 <SnapCell label="Peso" :v="snap('weight')" unit="kg" />
                 <SnapCell label="Masa magra" :v="snap('lean_mass')" unit="kg" :higherIsBetter="true" />
@@ -216,7 +216,7 @@
 
             <!-- Torso -->
             <div>
-              <p class="text-xs text-slate-500 mb-3">Torso</p>
+              <p class="text-xs text-ink-3 mb-3">Torso</p>
               <div class="grid grid-cols-3 sm:grid-cols-6 gap-3">
                 <SnapCell label="Cuello" :v="snap('neck')" unit="cm" />
                 <SnapCell label="Hombros" :v="snap('shoulder')" unit="cm" />
@@ -229,7 +229,7 @@
 
             <!-- Brazos -->
             <div>
-              <p class="text-xs text-slate-500 mb-3">Brazos</p>
+              <p class="text-xs text-ink-3 mb-3">Brazos</p>
               <div class="grid grid-cols-3 sm:grid-cols-6 gap-3">
                 <SnapCell label="Bícep flex. izq." :v="snap('left_bicep')" unit="cm" :higherIsBetter="true" />
                 <SnapCell label="Bícep flex. der." :v="snap('right_bicep')" unit="cm" :higherIsBetter="true" />
@@ -242,7 +242,7 @@
 
             <!-- Piernas -->
             <div>
-              <p class="text-xs text-slate-500 mb-3">Piernas</p>
+              <p class="text-xs text-ink-3 mb-3">Piernas</p>
               <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <SnapCell label="Muslo izq." :v="snap('left_thigh')" unit="cm" :higherIsBetter="true" />
                 <SnapCell label="Muslo der." :v="snap('right_thigh')" unit="cm" :higherIsBetter="true" />
@@ -253,7 +253,7 @@
 
             <!-- Recuperación -->
             <div>
-              <p class="text-xs text-slate-500 mb-3">Recuperación</p>
+              <p class="text-xs text-ink-3 mb-3">Recuperación</p>
               <div class="grid grid-cols-2 gap-3 max-w-xs">
                 <SnapCell label="HRV" :v="snap('hrv')" unit="ms" :higherIsBetter="true" :decimals="0" />
                 <SnapCell label="FC reposo" :v="snap('resting_hr')" unit="bpm" :lowerIsBetter="true" :decimals="0" />
@@ -263,15 +263,15 @@
         </div>
 
         <!-- ── History table ──────────────────────────────────────────────── -->
-        <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
-          <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
-            <h2 class="text-sm font-semibold text-slate-300">Historial</h2>
-            <span class="text-xs text-slate-500">{{ metrics.length }} entradas</span>
+        <div class="bg-surface rounded-card border border-line overflow-hidden">
+          <div class="px-5 py-3.5 border-b border-line flex items-center justify-between">
+            <h2 class="font-display text-sm font-semibold tracking-tight text-ink">Historial</h2>
+            <span class="text-xs text-ink-3">{{ metrics.length }} entradas</span>
           </div>
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
               <thead>
-                <tr class="border-b border-slate-800 text-xs text-slate-500 uppercase tracking-wider">
+                <tr class="border-b border-line text-[11px] text-ink-3 uppercase tracking-wide">
                   <th class="px-6 py-3 text-left">Fecha</th>
                   <th class="px-4 py-3 text-right">Peso</th>
                   <th class="px-4 py-3 text-right">% Grasa</th>
@@ -283,39 +283,39 @@
               <tbody>
                 <tr v-for="m in pagedMetrics" :key="m.id"
                   @click="openModal(m)"
-                  class="border-b border-slate-800/50 hover:bg-slate-800/40 cursor-pointer transition group">
-                  <td class="px-6 py-3 text-slate-300 font-medium">{{ m.date }}</td>
-                  <td class="px-4 py-3 text-right text-slate-400">
+                  class="border-b border-line/50 hover:bg-surface-2/40 cursor-pointer transition group">
+                  <td class="px-6 py-3 text-ink-2 font-medium">{{ m.date }}</td>
+                  <td class="px-4 py-3 text-right text-ink-2">
                     {{ m.weight != null ? m.weight.toFixed(1) + ' kg' : '—' }}
                   </td>
-                  <td class="px-4 py-3 text-right text-slate-400">
+                  <td class="px-4 py-3 text-right text-ink-2">
                     {{ m.body_fat_percentage != null ? m.body_fat_percentage.toFixed(1) + '%' : '—' }}
                   </td>
-                  <td class="px-4 py-3 text-right text-slate-400">
+                  <td class="px-4 py-3 text-right text-ink-2">
                     {{ m.waist != null ? m.waist.toFixed(1) + ' cm' : '—' }}
                   </td>
-                  <td class="px-4 py-3 text-right text-slate-400">
+                  <td class="px-4 py-3 text-right text-ink-2">
                     <span v-if="m.left_bicep != null || m.right_bicep != null">
                       {{ m.left_bicep?.toFixed(1) ?? '—' }} / {{ m.right_bicep?.toFixed(1) ?? '—' }}
                     </span>
                     <span v-else>—</span>
                   </td>
-                  <td class="px-4 py-3 text-right text-slate-400">
+                  <td class="px-4 py-3 text-right text-ink-2">
                     {{ m.hrv != null ? m.hrv.toFixed(0) + ' ms' : '—' }}
                   </td>
                 </tr>
               </tbody>
             </table>
           </div>
-          <div class="px-6 py-3 border-t border-slate-800 flex items-center justify-between">
-            <span class="text-xs text-slate-500">Página {{ page + 1 }} de {{ totalPages }}</span>
+          <div class="px-6 py-3 border-t border-line flex items-center justify-between">
+            <span class="text-xs text-ink-3">Página {{ page + 1 }} de {{ totalPages }}</span>
             <div class="flex gap-2">
               <button @click="page = Math.max(0, page - 1)" :disabled="page === 0"
-                class="px-3 py-1 text-xs rounded-lg bg-slate-800 border border-slate-700 text-slate-400 disabled:opacity-30 hover:bg-slate-700 transition">
+                class="px-3 py-1 text-xs rounded-lg bg-surface-2 border border-line-strong hover:border-ink-3 text-ink-2 disabled:opacity-30 transition">
                 ←
               </button>
               <button @click="page = Math.min(totalPages - 1, page + 1)" :disabled="page >= totalPages - 1"
-                class="px-3 py-1 text-xs rounded-lg bg-slate-800 border border-slate-700 text-slate-400 disabled:opacity-30 hover:bg-slate-700 transition">
+                class="px-3 py-1 text-xs rounded-lg bg-surface-2 border border-line-strong hover:border-ink-3 text-ink-2 disabled:opacity-30 transition">
                 →
               </button>
             </div>
@@ -329,52 +329,52 @@
     <ClientOnly>
     <Teleport to="body">
       <div v-if="modalOpen"
-        class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+        class="fixed inset-0 bg-bg/80 backdrop-blur-sm z-[90] flex items-center justify-center p-4"
         @click.self="closeModal">
-        <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col shadow-2xl">
-          <div class="flex items-center justify-between px-6 py-4 border-b border-slate-800 flex-shrink-0">
-            <h3 class="font-semibold text-slate-100">
+        <div class="bg-surface border border-line-strong rounded-card w-full max-w-2xl max-h-[90vh] flex flex-col">
+          <div class="flex items-center justify-between px-5 py-3.5 border-b border-line flex-shrink-0">
+            <h3 class="font-semibold text-ink">
               {{ editEntry ? 'Editar medida' : 'Añadir medida' }}
             </h3>
-            <button @click="closeModal" class="text-slate-500 hover:text-slate-300 text-2xl leading-none transition">×</button>
+            <button @click="closeModal" class="text-ink-3 hover:text-ink-2 text-2xl leading-none transition">×</button>
           </div>
 
           <div class="overflow-y-auto flex-grow p-6 space-y-6">
             <!-- Date -->
             <div>
-              <label class="block text-xs text-slate-500 uppercase tracking-wider mb-1.5">Fecha</label>
+              <label class="block text-[11px] text-ink-3 uppercase tracking-wide mb-1.5">Fecha</label>
               <input type="date" v-model="form.date"
-                class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 transition" />
+                class="w-full bg-surface-2 border border-line-strong hover:border-ink-3 rounded-lg px-3 py-2 text-ink text-sm focus:outline-none focus:ring-2 focus:ring-focus transition" />
             </div>
 
             <!-- Sections -->
             <div v-for="section in formSections" :key="section.title">
-              <p class="text-xs font-medium text-slate-500 uppercase tracking-wider mb-3">{{ section.title }}</p>
+              <p class="text-xs font-medium text-ink-3 uppercase tracking-wider mb-3">{{ section.title }}</p>
               <div class="grid grid-cols-2 gap-3">
                 <div v-for="field in section.fields" :key="field.key">
-                  <label class="block text-xs text-slate-500 mb-1">{{ field.label }}</label>
-                  <div class="flex items-center bg-slate-800 border border-slate-700 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-indigo-500 transition">
+                  <label class="block text-xs text-ink-3 mb-1">{{ field.label }}</label>
+                  <div class="flex items-center bg-surface-2 border border-line-strong hover:border-ink-3 rounded-lg overflow-hidden focus-within:ring-2 focus-within:ring-focus transition">
                     <input
                       type="number"
                       :step="field.int ? '1' : '0.1'"
                       :min="0"
                       v-model="(form as any)[field.key]"
                       placeholder="—"
-                      class="flex-1 bg-transparent px-3 py-2 text-slate-100 text-sm focus:outline-none min-w-0" />
-                    <span class="px-2.5 text-xs text-slate-600 flex-shrink-0">{{ field.unit }}</span>
+                      class="flex-1 bg-transparent px-3 py-2 text-ink text-sm focus:outline-none min-w-0" />
+                    <span class="px-2.5 text-xs text-ink-3 flex-shrink-0">{{ field.unit }}</span>
                   </div>
                 </div>
               </div>
             </div>
           </div>
 
-          <div class="px-6 py-4 border-t border-slate-800 flex gap-3 justify-end flex-shrink-0">
+          <div class="px-6 py-4 border-t border-line flex gap-3 justify-end flex-shrink-0">
             <button @click="closeModal"
-              class="px-4 py-2 text-sm text-slate-400 hover:text-slate-200 transition">
+              class="px-4 py-2 text-sm text-ink-2 hover:text-ink transition">
               Cancelar
             </button>
             <button @click="saveMetric" :disabled="saving"
-              class="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold rounded-lg transition disabled:opacity-60">
+              class="px-5 py-2 bg-accent text-accent-ink hover:opacity-85 text-sm font-semibold rounded-lg transition disabled:opacity-60">
               {{ saving ? 'Guardando...' : 'Guardar' }}
             </button>
           </div>
@@ -387,6 +387,8 @@
 </template>
 
 <script setup lang="ts">
+
+const toast = useToast()
 type Metric = {
   id: string; date: string
   weight: number | null; lean_mass: number | null; body_fat_percentage: number | null
@@ -530,9 +532,9 @@ const c3 = computed(() => {
   // Color each HRV point by deviation from mean
   const rawHrvPoints = buildPath(d, 'hrv', l.min, l.max, pR).points
   const hrvPoints = rawHrvPoints.map(p => {
-    if (hrvMean == null) return { ...p, color: '#818cf8' }
+    if (hrvMean == null) return { ...p, color: "rgb(var(--series-1))" }
     const pct = (p.v - hrvMean) / Math.abs(hrvMean)
-    const color = pct >= -0.05 ? '#22c55e' : pct >= -0.15 ? '#f59e0b' : '#ef4444'
+    const color = pct >= -0.05 ? "rgb(var(--positive))" : pct >= -0.15 ? "rgb(var(--warn))" : "rgb(var(--danger))"
     return { ...p, color }
   })
 
@@ -601,10 +603,10 @@ const SnapCell = defineComponent({
   setup(props) {
     const diffClass = computed(() => {
       const d = props.v?.diff
-      if (d == null || d === 0) return 'text-slate-600'
-      if (props.higherIsBetter) return d > 0 ? 'text-emerald-400' : 'text-rose-400'
-      if (props.lowerIsBetter) return d < 0 ? 'text-emerald-400' : 'text-rose-400'
-      return d > 0 ? 'text-slate-400' : 'text-slate-400'
+      if (d == null || d === 0) return 'text-ink-3'
+      if (props.higherIsBetter) return d > 0 ? 'text-positive' : 'text-danger'
+      if (props.lowerIsBetter) return d < 0 ? 'text-positive' : 'text-danger'
+      return d > 0 ? 'text-ink-2' : 'text-ink-2'
     })
     const diffText = computed(() => {
       const d = props.v?.diff
@@ -614,11 +616,11 @@ const SnapCell = defineComponent({
     return { diffClass, diffText }
   },
   template: `
-    <div class="bg-slate-800/60 rounded-lg px-3 py-2.5 border border-slate-700/50">
-      <p class="text-xs text-slate-500 mb-1 truncate">{{ label }}</p>
-      <p class="text-slate-100 font-semibold text-sm">
+    <div class="bg-surface-2/60 rounded-lg px-3 py-2.5 border border-line-strong/50">
+      <p class="text-xs text-ink-3 mb-1 truncate">{{ label }}</p>
+      <p class="text-ink font-semibold text-sm">
         {{ v?.cur != null ? v.cur.toFixed(decimals) : '—' }}
-        <span class="text-xs font-normal text-slate-500">{{ v?.cur != null ? unit : '' }}</span>
+        <span class="text-xs font-normal text-ink-3">{{ v?.cur != null ? unit : '' }}</span>
       </p>
       <p v-if="diffText" :class="['text-xs mt-0.5', diffClass]">{{ diffText }}</p>
     </div>
@@ -674,7 +676,7 @@ async function saveMetric() {
     await refresh()
     closeModal()
   } catch {
-    alert('Error al guardar la medida.')
+    toast.error('Error al guardar la medida.')
   } finally {
     saving.value = false
   }

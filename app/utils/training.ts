@@ -24,20 +24,20 @@ interface SetTypeStyle {
 const SET_TYPE_STYLES: Record<SetType, SetTypeStyle> = {
   normal: {
     mark: '', label: 'Serie efectiva',
-    badge: 'text-slate-500', row: ''
+    badge: 'text-ink-3', row: ''
   },
   warmup: {
     mark: 'C', label: 'Calentamiento',
-    badge: 'bg-amber-950/60 text-amber-500 border border-amber-900/70',
+    badge: 'bg-warn/10 text-warn border border-warn/40',
     row: 'opacity-60'
   },
   dropset: {
     mark: 'D', label: 'Drop set',
-    badge: 'bg-sky-950/60 text-sky-400 border border-sky-900/70', row: ''
+    badge: 'bg-surface-2/60 text-ink-2 border border-line-strong/70', row: ''
   },
   failure: {
     mark: 'F', label: 'Al fallo',
-    badge: 'bg-rose-950/60 text-rose-400 border border-rose-900/70', row: ''
+    badge: 'bg-danger/10 text-danger border border-danger/40', row: ''
   }
 }
 

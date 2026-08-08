@@ -81,25 +81,24 @@ export const NUTRIENT_UNITS: Record<NutrientKey, string> = {
 
 /** Macro accent colours, reused by bars, dots and the totals strip. */
 export const MACRO_COLORS: Record<string, string> = {
-  protein_g: 'bg-emerald-500',
-  carbs_g: 'bg-sky-500',
-  fat_g: 'bg-amber-500'
+  protein_g: 'bg-positive',
+  carbs_g: 'bg-surface-2',
+  fat_g: 'bg-warn'
 }
 
 /**
  * Chart series colours for the history timeline, one per metric.
  *
- * These are the **validated** dark categorical slots: they pass all six checks
- * from the `dataviz` skill against this app's surface (`#0f172a`) — the same
- * rule the admin trend chart follows. The Tailwind-500 versions of emerald,
- * sky and amber fail the dark lightness band (L 0.48–0.67), which is why these
- * are the 600 steps. Re-run `scripts/validate_palette.js` before changing any.
+ * These are slots off the shared palette in `app/utils/series.ts`, not hexes of
+ * their own: they used to be four literals validated against a single dark
+ * surface, which meant this file and the admin chart each held a private copy
+ * of "the categorical palette" and only one theme worked.
  */
 export const METRIC_COLORS: Record<string, string> = {
-  kcal: '#6366f1',
-  protein_g: '#059669',
-  carbs_g: '#0284c7',
-  fat_g: '#d97706'
+  kcal: seriesColor(0),
+  protein_g: seriesColor(1),
+  carbs_g: seriesColor(2),
+  fat_g: seriesColor(3)
 }
 
 /**
@@ -172,7 +171,7 @@ export const VERSION_STATUS_LABELS: Record<string, string> = {
 }
 
 export const VERSION_STATUS_BADGES: Record<string, string> = {
-  draft: 'bg-amber-950/60 text-amber-400',
-  active: 'bg-emerald-950/60 text-emerald-400',
-  superseded: 'bg-slate-800 text-slate-500'
+  draft: 'bg-warn/10 text-warn',
+  active: 'bg-positive/10 text-positive',
+  superseded: 'bg-surface-2 text-ink-3'
 }

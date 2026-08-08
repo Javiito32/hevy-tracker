@@ -1,6 +1,6 @@
 <template>
   <div class="relative w-full select-none">
-    <div v-if="!points.length" class="flex items-center justify-center h-40 text-slate-500 text-sm">
+    <div v-if="!points.length" class="flex items-center justify-center h-40 text-ink-3 text-sm">
       Sin datos suficientes para mostrar la gráfica.
     </div>
     <svg
@@ -11,16 +11,18 @@
       @mousemove="onMouseMove"
       @mouseleave="hoveredIndex = null"
     >
-      <!-- Y grid lines + labels -->
+      <!-- Y grid lines + labels. Chrome is drawn with the theme tokens through
+           Tailwind's stroke/fill utilities: a presentation attribute cannot
+           take a `var()`, which is why these are classes and not attributes. -->
       <g v-for="(tick, i) in yTicks" :key="`y${i}`">
         <line
           :x1="PAD_L" :y1="yScale(tick)"
           :x2="W - PAD_R" :y2="yScale(tick)"
-          stroke="#334155" stroke-width="1"
+          class="stroke-line" stroke-width="1"
         />
         <text
           :x="PAD_L - 6" :y="yScale(tick) + 4"
-          text-anchor="end" font-size="10" fill="#64748b"
+          text-anchor="end" font-size="10" class="fill-ink-3 font-data"
         >{{ formatY(tick) }}</text>
       </g>
 
@@ -28,39 +30,43 @@
       <g v-for="(pt, i) in xTickPoints" :key="`x${i}`">
         <text
           :x="xScale(i_to_x(pt.i))" :y="H - 4"
-          text-anchor="middle" font-size="10" fill="#64748b"
+          text-anchor="middle" font-size="10" class="fill-ink-3 font-data"
         >{{ formatDate(pt.date) }}</text>
       </g>
 
-      <!-- Trend line (linear regression) -->
+      <!-- Trend line (linear regression). Told apart from the series by its
+           dash and weight rather than by a second hue. -->
       <line
         v-if="trend && points.length > 2"
         :x1="xScale(0)" :y1="yScale(trend.start)"
         :x2="xScale(points.length - 1)" :y2="yScale(trend.end)"
-        :stroke="trendColor" stroke-width="1.5" stroke-dasharray="5,4" opacity="0.7"
+        :style="{ stroke: trendColor }"
+        stroke-width="1.5" stroke-dasharray="5,4" opacity="0.8"
       />
 
       <!-- Area fill -->
       <path
         v-if="showArea"
         :d="areaPath"
-        :fill="color" fill-opacity="0.08"
+        :style="{ fill: color }" fill-opacity="0.08"
       />
 
       <!-- Main line -->
       <polyline
         :points="polylinePoints"
-        :stroke="color" stroke-width="2" fill="none"
+        :style="{ stroke: color }"
+        stroke-width="2" fill="none"
         stroke-linecap="round" stroke-linejoin="round"
       />
 
-      <!-- Data points + hover circles -->
+      <!-- Data points. The ring is a knockout in the card surface, so it has to
+           follow the theme: hardcoded to #0f172a it drew a black halo around
+           every point once the surface turned to chalk. -->
       <g v-for="(pt, i) in points" :key="`pt${i}`">
         <circle
           :cx="xScale(i)" :cy="yScale(pt.value)"
-          r="3.5" :fill="color" stroke="#0f172a" stroke-width="1.5"
-          :opacity="hoveredIndex === i ? 1 : 0.7"
-          class="cursor-pointer"
+          r="3.5" :style="{ fill: color }" class="stroke-surface cursor-pointer" stroke-width="1.5"
+          :opacity="hoveredIndex === i ? 1 : 0.75"
         />
       </g>
 
@@ -69,18 +75,19 @@
         v-if="hoveredIndex !== null"
         :x1="xScale(hoveredIndex)" y1="0"
         :x2="xScale(hoveredIndex)" :y2="H - PAD_B"
-        stroke="#475569" stroke-width="1" stroke-dasharray="3,2"
+        class="stroke-line-strong" stroke-width="1" stroke-dasharray="3,2"
       />
     </svg>
 
     <!-- Tooltip -->
     <div
       v-if="hoveredIndex !== null && points[hoveredIndex]"
-      class="absolute pointer-events-none bg-slate-800 text-slate-100 text-xs px-2.5 py-1.5 rounded shadow-lg z-20 whitespace-nowrap border border-slate-700"
+      class="absolute pointer-events-none bg-surface border border-line-strong text-ink
+             text-xs px-2.5 py-1.5 rounded z-20 whitespace-nowrap"
       :style="tooltipStyle"
     >
-      <div class="font-semibold">{{ formatY(points[hoveredIndex].value) }}</div>
-      <div class="text-slate-400">{{ formatDate(points[hoveredIndex].date) }}</div>
+      <div class="font-data font-semibold">{{ formatY(points[hoveredIndex].value) }}</div>
+      <div class="font-data text-ink-3">{{ formatDate(points[hoveredIndex].date) }}</div>
     </div>
   </div>
 </template>
@@ -99,8 +106,11 @@ const props = withDefaults(defineProps<{
   formatY?: (v: number) => string
   H?: number
 }>(), {
-  color: '#3b82f6',
-  trendColor: '#10b981',
+  // Any CSS colour, so callers can pass a theme token — `rgb(var(--ink))` — and
+  // have the series follow light and dark. A single-series chart in this app is
+  // ink on the card, not a blue line: the palette is spent on verdicts.
+  color: 'rgb(var(--ink))',
+  trendColor: 'rgb(var(--ink-3))',
   showArea: true,
   showTrend: true,
   formatY: (v: number) => v.toFixed(1),

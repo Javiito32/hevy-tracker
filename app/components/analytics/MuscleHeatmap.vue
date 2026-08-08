@@ -1,33 +1,27 @@
 <template>
-  <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
-    <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between gap-4 flex-wrap">
-      <div>
-        <h2 class="text-base font-semibold text-slate-200">Reparto semana a semana</h2>
-        <p class="text-xs text-slate-500 mt-1">Series por grupo muscular en cada semana del periodo.</p>
-      </div>
-      <button
-        @click="showTable = !showTable"
-        class="text-xs text-slate-400 border border-slate-700 rounded-lg px-3 py-1.5 hover:bg-slate-800 transition"
-      >
-        {{ showTable ? 'Ver mapa' : 'Ver tabla' }}
-      </button>
-    </div>
+  <UiCard
+    eyebrow="Volumen"
+    title="Reparto semana a semana"
+    hint="Series por grupo muscular en cada semana del periodo."
+    flush
+  >
+    <template #actions>
+      <UiTabs v-model="view" :tabs="VIEWS" />
+    </template>
 
-    <div v-if="!muscles.length" class="p-10 text-center text-slate-500 text-sm">
-      Sin datos en el periodo.
-    </div>
+    <UiEmptyState v-if="!muscles.length" title="Sin datos en el periodo" />
 
     <div v-else class="overflow-x-auto">
-      <table class="text-sm border-separate" style="border-spacing: 2px" :class="showTable ? 'w-full' : ''">
+      <table class="text-sm border-separate" style="border-spacing: 2px" :class="view === 'table' ? 'w-full' : ''">
         <thead>
           <tr>
-            <th class="sticky left-0 bg-slate-900 z-10 px-3 py-2 text-left text-xs font-medium text-slate-500 uppercase tracking-wider">
+            <th class="sticky left-0 bg-surface z-10 px-3 py-2 text-left text-[11px] font-medium text-ink-3 uppercase tracking-wide">
               Grupo
             </th>
             <th
               v-for="w in weeks"
               :key="w.week"
-              class="px-1 py-2 text-[10px] font-mono font-normal text-slate-600 whitespace-nowrap"
+              class="px-1 py-2 font-data text-[10px] font-normal text-ink-3 whitespace-nowrap"
               :title="`Semana del ${formatDateShort(w.week)} · ${w.sessions} ${w.sessions === 1 ? 'sesión' : 'sesiones'}`"
             >
               {{ shortWeek(w.week) }}
@@ -36,24 +30,20 @@
         </thead>
         <tbody>
           <tr v-for="m in muscles" :key="m">
-            <th class="sticky left-0 bg-slate-900 z-10 px-3 py-1 text-left text-xs font-normal text-slate-400 whitespace-nowrap">
+            <th class="sticky left-0 bg-surface z-10 px-3 py-1 text-left text-xs font-normal text-ink-2 whitespace-nowrap">
               {{ labelFor(m) }}
             </th>
-            <td
-              v-for="w in weeks"
-              :key="w.week + m"
-              class="p-0"
-            >
+            <td v-for="w in weeks" :key="w.week + m" class="p-0">
               <!-- A zero week is left as the bare surface with a hairline, not
-                   painted the darkest step: "no training" and "a little
+                   painted the faintest step: "no training" and "a little
                    training" must not look like neighbours on the same ramp. -->
               <div
-                class="w-7 h-6 rounded-sm flex items-center justify-center text-[10px] tabular-nums transition"
-                :class="cellValue(w, m) > 0 ? 'text-slate-950 font-medium' : 'border border-slate-800'"
-                :style="cellValue(w, m) > 0 ? { background: colorFor(cellValue(w, m)) } : {}"
+                class="w-7 h-6 rounded-sm flex items-center justify-center font-data text-[10px] transition"
+                :class="cellValue(w, m) > 0 ? stepFor(cellValue(w, m)).text : 'border border-line'"
+                :style="cellValue(w, m) > 0 ? { background: stepFor(cellValue(w, m)).bg } : {}"
                 :title="`${labelFor(m)} · semana del ${formatDateShort(w.week)}: ${cellValue(w, m)} series`"
               >
-                <span v-if="showTable">{{ cellValue(w, m) || '' }}</span>
+                <span v-if="view === 'table'">{{ cellValue(w, m) || '' }}</span>
               </div>
             </td>
           </tr>
@@ -61,20 +51,22 @@
       </table>
     </div>
 
-    <div v-if="muscles.length" class="px-6 py-3 border-t border-slate-800 flex items-center gap-3 text-xs text-slate-500">
-      <span>Menos</span>
-      <div class="flex gap-0.5">
-        <span
-          v-for="(c, i) in RAMP"
-          :key="i"
-          class="w-5 h-3 rounded-sm inline-block"
-          :style="{ background: c }"
-        ></span>
+    <template v-if="muscles.length" #footer>
+      <div class="flex items-center gap-3">
+        <span>Menos</span>
+        <div class="flex gap-0.5">
+          <span
+            v-for="(a, i) in RAMP"
+            :key="i"
+            class="w-5 h-3 rounded-sm inline-block"
+            :style="{ background: `rgb(var(--ink) / ${a})` }"
+          />
+        </div>
+        <span>Más</span>
+        <span class="ml-auto font-data">máx {{ maxSets }} series</span>
       </div>
-      <span>Más</span>
-      <span class="ml-auto font-mono">máx {{ maxSets }} series</span>
-    </div>
-  </div>
+    </template>
+  </UiCard>
 </template>
 
 <script setup lang="ts">
@@ -88,16 +80,30 @@ interface Week {
 
 const props = defineProps<{ weeks: Week[] }>()
 
-const showTable = ref(false)
+const VIEWS = [
+  { value: 'map', label: 'Mapa' },
+  { value: 'table', label: 'Tabla' }
+] as const
+
+const view = ref<string>('map')
 
 /**
- * Sequential single-hue ramp, validated against this app's surface (#0f172a):
- * lightness is monotone, every adjacent step clears ΔL 0.06, and the darkest
- * step holds 2.20:1 against the surface. The darker steps below it were
- * rejected — at 1.49:1 they are indistinguishable from an empty cell.
- * Re-run scripts/validate_palette.js from the dataviz skill before changing these.
+ * Sequential ramp as opacities of the ink token, not a fixed hue.
+ *
+ * The previous ramp was five blues validated against one surface (#0f172a) and
+ * running dark→light, which is the wrong direction on chalk: the heaviest weeks
+ * would have come out palest. Expressed as alpha over the card, the ramp is
+ * monotone **by construction** in both themes — more sets is always more
+ * contrast against the surface — and there is no second palette to keep
+ * validated.
+ *
+ * It is also the right call for the thesis: this cell says "how much", not
+ * "good or bad", and the colour budget is spent on verdicts.
+ *
+ * The lowest step stays at 0.14 so a light week still reads as painted rather
+ * than empty; below that it becomes indistinguishable from a zero cell.
  */
-const RAMP = ['#184f95', '#256abf', '#3987e5', '#6da7ec', '#9ec5f4']
+const RAMP = [0.14, 0.32, 0.5, 0.7, 0.9]
 
 const weeks = computed(() => props.weeks)
 
@@ -126,10 +132,18 @@ const maxSets = computed(() => {
   return Math.round(max * 10) / 10
 })
 
-const colorFor = (value: number): string => {
-  if (maxSets.value <= 0) return RAMP[0]
-  const idx = Math.min(RAMP.length - 1, Math.floor((value / maxSets.value) * RAMP.length))
-  return RAMP[Math.max(0, idx)]
+/**
+ * The label flips to the page ground on the top two steps, where the ink wash
+ * is dense enough that ink-on-ink would disappear.
+ */
+const stepFor = (value: number) => {
+  const idx = maxSets.value <= 0
+    ? 0
+    : Math.max(0, Math.min(RAMP.length - 1, Math.floor((value / maxSets.value) * RAMP.length)))
+  return {
+    bg: `rgb(var(--ink) / ${RAMP[idx]})`,
+    text: idx >= 3 ? 'text-bg font-medium' : 'text-ink'
+  }
 }
 
 const shortWeek = (iso: string) => {

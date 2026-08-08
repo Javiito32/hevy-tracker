@@ -6,7 +6,7 @@
       is typically served over plain HTTP on a LAN — so manual entry is the
       primary path and lives in the parent component, always visible.
     -->
-    <div v-if="!supported" class="text-xs text-slate-600">
+    <div v-if="!supported" class="text-xs text-ink-3">
       El escaneo con cámara no está disponible en este navegador
       <span v-if="!secure">porque la página no se sirve por HTTPS</span>. Escribe el código a mano.
     </div>
@@ -16,25 +16,25 @@
         v-if="!scanning"
         type="button"
         @click="start"
-        class="w-full bg-slate-800 border border-slate-700 text-slate-300 px-4 py-2 rounded-lg hover:bg-slate-700 transition text-sm flex items-center justify-center gap-2"
+        class="w-full bg-surface-2 border border-line-strong hover:border-ink-3 text-ink-2 px-4 py-2 rounded-lg transition text-sm flex items-center justify-center gap-2"
       >
         📷 Escanear con la cámara
       </button>
 
       <div v-else class="space-y-2">
-        <div class="relative rounded-lg overflow-hidden border border-slate-700 bg-black">
+        <div class="relative rounded-lg overflow-hidden border border-line-strong bg-black">
           <video ref="videoEl" class="w-full max-h-64 object-cover" muted playsinline></video>
-          <div class="absolute inset-x-6 top-1/2 -translate-y-1/2 h-0.5 bg-indigo-500/70"></div>
+          <div class="absolute inset-x-6 top-1/2 -translate-y-1/2 h-0.5 bg-accent/70"></div>
         </div>
         <div class="flex items-center justify-between">
-          <span class="text-xs text-slate-500">Apunta al código de barras…</span>
-          <button type="button" @click="stop" class="text-xs text-slate-400 hover:text-slate-200 transition">
+          <span class="text-xs text-ink-3">Apunta al código de barras…</span>
+          <button type="button" @click="stop" class="text-xs text-ink-2 hover:text-ink transition">
             Detener
           </button>
         </div>
       </div>
 
-      <p v-if="error" class="text-xs text-rose-400 mt-2">{{ error }}</p>
+      <p v-if="error" class="text-xs text-danger mt-2">{{ error }}</p>
     </div>
   </div>
 </template>

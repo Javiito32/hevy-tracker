@@ -1,21 +1,21 @@
 <template>
   <div class="h-full flex flex-col">
-    <div class="flex justify-between items-center mb-6">
-      <h1 class="text-3xl font-bold text-slate-100">Calendario</h1>
-      <div class="flex items-center gap-2 text-sm text-slate-500 bg-slate-900 border border-slate-800 rounded-lg px-4 py-2">
-        <span class="w-2.5 h-2.5 rounded-full bg-violet-500 block"></span>
-        <span>{{ realWorkouts?.length ?? 0 }} entrenos en el periodo</span>
-      </div>
-    </div>
+    <UiPageHeader title="Calendario">
+      <template #actions>
+        <span class="font-data text-xs text-ink-3 bg-surface border border-line rounded-lg px-3 py-2">
+          {{ realWorkouts?.length ?? 0 }} entrenos en el periodo
+        </span>
+      </template>
+    </UiPageHeader>
 
-    <div v-if="error" class="bg-rose-950/60 border border-rose-800 text-rose-400 text-sm px-4 py-3 rounded-lg mb-4">
-      No se pudieron cargar los entrenamientos. Reintenta o revisa la conexión.
-    </div>
+    <p v-if="error" class="text-sm text-danger flex items-start gap-2 bg-danger/5 border border-danger/30 rounded-lg px-4 py-3 mb-4">
+      <span aria-hidden="true">⚠</span>No se pudieron cargar los entrenamientos. Reintenta o revisa la conexión.
+    </p>
 
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 flex-grow">
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-grow">
       <div class="lg:col-span-2 relative">
-        <div v-if="pending" class="absolute inset-0 bg-slate-900/70 flex items-center justify-center z-10 rounded-xl">
-          <div class="animate-spin inline-block w-8 h-8 border-[3px] border-indigo-500 border-t-transparent rounded-full"></div>
+        <div v-if="pending" class="absolute inset-0 bg-bg/70 flex items-center justify-center z-10 rounded-card text-ink-3">
+          <UiSpinner size="lg" />
         </div>
 
         <CalendarGrid

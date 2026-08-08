@@ -1,56 +1,56 @@
 <template>
-  <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
+  <div class="bg-surface rounded-card border border-line overflow-hidden">
     <button
       @click="$emit('toggle')"
-      class="w-full px-5 py-4 flex items-center justify-between gap-3 hover:bg-slate-800/40 transition text-left"
+      class="w-full px-5 py-4 flex items-center justify-between gap-3 hover:bg-surface-2/40 transition text-left"
     >
       <div class="min-w-0">
         <div class="flex items-center gap-2 flex-wrap">
-          <span class="text-sm font-semibold text-slate-200">v{{ version.version_number }}</span>
+          <span class="text-sm font-semibold text-ink">v{{ version.version_number }}</span>
           <span class="text-xs px-2 py-0.5 rounded-full" :class="VERSION_STATUS_BADGES[version.status]">
             {{ VERSION_STATUS_LABELS[version.status] }}
           </span>
-          <span class="text-xs text-slate-500">{{ dateRange }}</span>
+          <span class="text-xs text-ink-3">{{ dateRange }}</span>
         </div>
-        <p v-if="version.change_note" class="text-sm text-slate-400 mt-1 truncate">{{ version.change_note }}</p>
+        <p v-if="version.change_note" class="text-sm text-ink-2 mt-1 truncate">{{ version.change_note }}</p>
       </div>
 
       <div class="flex items-center gap-4 flex-shrink-0">
         <div class="text-right">
-          <div class="text-sm text-slate-300">{{ formatNutrientValue(version.total_kcal, 'kcal') }} kcal</div>
-          <div class="text-xs text-slate-600">{{ version.meals_count }} comidas</div>
+          <div class="text-sm text-ink-2">{{ formatNutrientValue(version.total_kcal, 'kcal') }} kcal</div>
+          <div class="text-xs text-ink-3">{{ version.meals_count }} comidas</div>
         </div>
-        <span class="text-slate-600 text-xs">{{ expanded ? '▲' : '▼' }}</span>
+        <span class="text-ink-3 text-xs">{{ expanded ? '▲' : '▼' }}</span>
       </div>
     </button>
 
-    <div v-if="expanded" class="border-t border-slate-800 px-5 py-4">
+    <div v-if="expanded" class="border-t border-line px-5 py-4">
       <div class="grid grid-cols-4 gap-2 text-center mb-4">
-        <div v-for="key in MACRO_KEYS" :key="key" class="bg-slate-800/50 rounded-lg py-2">
-          <div class="text-sm text-slate-200">{{ formatNutrientValue(totalFor(key), key) }}</div>
-          <div class="text-[10px] text-slate-500 uppercase tracking-wider">{{ NUTRIENT_SHORT_LABELS[key] }}</div>
+        <div v-for="key in MACRO_KEYS" :key="key" class="bg-surface-2/50 rounded-lg py-2">
+          <div class="text-sm text-ink">{{ formatNutrientValue(totalFor(key), key) }}</div>
+          <div class="text-[10px] text-ink-3 uppercase tracking-wider">{{ NUTRIENT_SHORT_LABELS[key] }}</div>
         </div>
       </div>
 
       <div v-if="pending" class="flex justify-center py-6">
-        <div class="animate-spin w-5 h-5 rounded-full border-2 border-indigo-500 border-t-transparent"></div>
+        <UiSpinner class="text-ink-3" />
       </div>
 
       <div v-else-if="detail" class="space-y-3">
         <div v-for="meal in detail.version.meals" :key="meal.id">
           <div class="flex items-center justify-between text-xs mb-1">
-            <span class="text-slate-400 font-medium">
+            <span class="text-ink-2 font-medium">
               {{ meal.name }}
-              <span v-if="meal.time_of_day" class="text-slate-600 ml-1">{{ meal.time_of_day }}</span>
-              <span v-if="meal.day_type !== 'all'" class="text-slate-600 ml-1">· {{ DAY_TYPE_LABELS[meal.day_type] }}</span>
+              <span v-if="meal.time_of_day" class="text-ink-3 ml-1">{{ meal.time_of_day }}</span>
+              <span v-if="meal.day_type !== 'all'" class="text-ink-3 ml-1">· {{ DAY_TYPE_LABELS[meal.day_type] }}</span>
             </span>
           </div>
-          <ul class="text-sm text-slate-500 space-y-0.5 pl-3 border-l border-slate-800">
+          <ul class="text-sm text-ink-3 space-y-0.5 pl-3 border-l border-line">
             <li v-for="item in meal.items" :key="item.id" class="flex justify-between gap-3">
               <span class="truncate">{{ item.food_name }}</span>
-              <span class="text-slate-600 flex-shrink-0">{{ formatGrams(item.quantity_g) }}</span>
+              <span class="text-ink-3 flex-shrink-0">{{ formatGrams(item.quantity_g) }}</span>
             </li>
-            <li v-if="!meal.items.length" class="text-slate-700 text-xs">Sin alimentos</li>
+            <li v-if="!meal.items.length" class="text-ink-3 text-xs">Sin alimentos</li>
           </ul>
         </div>
       </div>

@@ -1,59 +1,64 @@
 <template>
-  <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
-    <!-- Header -->
-    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-800">
-      <h2 class="text-lg font-semibold text-slate-100 capitalize">
+  <div class="bg-surface rounded-card border border-line overflow-hidden">
+    <div class="flex items-center justify-between px-5 py-3.5 border-b border-line">
+      <h2 class="font-display text-sm font-semibold tracking-tight text-ink capitalize">
         {{ monthName }} {{ year }}
       </h2>
-      <div class="flex space-x-2">
-        <button @click="previousMonth" class="p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-100 transition">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+      <div class="flex gap-1">
+        <button
+          class="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-surface-2 text-ink-3 hover:text-ink transition"
+          aria-label="Mes anterior"
+          @click="previousMonth"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" /></svg>
         </button>
-        <button @click="nextMonth" class="p-2 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-slate-100 transition">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+        <button
+          class="w-9 h-9 flex items-center justify-center rounded-lg hover:bg-surface-2 text-ink-3 hover:text-ink transition"
+          aria-label="Mes siguiente"
+          @click="nextMonth"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" /></svg>
         </button>
       </div>
     </div>
 
-    <!-- Days of week -->
-    <div class="grid grid-cols-7 gap-px bg-slate-800 border-b border-slate-800">
-      <div v-for="day in ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']" :key="day" class="bg-slate-900 py-2 text-center text-xs font-medium text-slate-500 uppercase tracking-wider">
-        {{ day }}
-      </div>
+    <div class="grid grid-cols-7 gap-px bg-line border-b border-line">
+      <div
+        v-for="day in WEEKDAYS"
+        :key="day"
+        class="bg-surface py-2 text-center font-data text-[10px] font-medium text-ink-3 uppercase tracking-wide"
+      >{{ day }}</div>
     </div>
 
-    <!-- Calendar Grid -->
-    <div class="grid grid-cols-7 gap-px bg-slate-800">
+    <div class="grid grid-cols-7 gap-px bg-line">
       <div
         v-for="(day, index) in calendarDays"
         :key="index"
+        class="min-h-[100px] bg-surface p-2 transition cursor-pointer hover:bg-surface-2"
+        :class="[
+          !day.isCurrentMonth && 'opacity-45',
+          isSelected(day.date) && 'ring-1 ring-inset ring-ink bg-surface-2'
+        ]"
         @click="selectDay(day)"
-        class="min-h-[100px] bg-slate-900 p-2 transition cursor-pointer hover:bg-slate-800/70"
-        :class="{
-          'opacity-40': !day.isCurrentMonth,
-          'ring-2 ring-inset ring-indigo-500 bg-indigo-950/30': isSelected(day.date),
-        }"
       >
-        <div class="flex justify-between items-start">
-          <span
-            class="text-sm font-medium w-7 h-7 flex items-center justify-center rounded-full text-slate-400"
-            :class="{ 'bg-indigo-600 text-white': isToday(day.date) }"
-          >
-            {{ day.date.getDate() }}
-          </span>
-        </div>
+        <!-- Today is marked by the contrast inversion, the same device as the
+             primary button: it is the one cell the eye should land on. -->
+        <span
+          class="font-data text-xs w-6 h-6 flex items-center justify-center rounded"
+          :class="isToday(day.date) ? 'bg-accent text-accent-ink font-semibold' : 'text-ink-3'"
+        >{{ day.date.getDate() }}</span>
 
-        <!-- Workout Indicators -->
-        <div v-if="day.workouts && day.workouts.length > 0" class="mt-2 space-y-1">
+        <div v-if="day.workouts && day.workouts.length > 0" class="mt-1.5 space-y-1">
+          <!-- Intensity is an ordered variable, so it is encoded as a ramp of
+               one ink rather than three unrelated hues: low/medium/high are
+               steps on a scale, and three colours implied three categories. -->
           <div
             v-for="workout in day.workouts"
             :key="workout.id"
-            class="text-xs px-2 py-1 rounded truncate text-white"
-            :class="getIntensityClass(workout.intensity)"
-            :title="workout.name"
-          >
-            {{ workout.name }}
-          </div>
+            class="text-[11px] px-1.5 py-1 rounded truncate"
+            :class="intensityClass(workout.intensity)"
+            :title="`${workout.name} · intensidad ${intensityLabel(workout.intensity)}`"
+          >{{ workout.name }}</div>
         </div>
       </div>
     </div>
@@ -97,14 +102,25 @@ const visibleRange = computed(() => {
 
 watch(visibleRange, (range) => emit('month-change', range), { immediate: true })
 
-const getIntensityClass = (intensity: string) => {
-  switch(intensity) {
-    case 'high': return 'bg-violet-600'
-    case 'medium': return 'bg-indigo-500'
-    case 'low': return 'bg-emerald-600'
-    default: return 'bg-slate-600'
-  }
-}
+/**
+ * Monday first. The grid was hardcoded to a Sunday start with English headers
+ * ('Sun'…'Sat') in an app that is otherwise entirely `es-ES` — so every date in
+ * it sat in the wrong column for the person reading it.
+ */
+const WEEKDAYS = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'] as const
+
+/** `getDay()` is 0-Sunday; this shifts it to 0-Monday. */
+const mondayIndex = (date: Date) => (date.getDay() + 6) % 7
+
+const INTENSITY = {
+  low: { class: 'bg-ink-3/20 text-ink-2', label: 'baja' },
+  medium: { class: 'bg-ink-3/50 text-ink', label: 'media' },
+  high: { class: 'bg-ink text-bg font-medium', label: 'alta' }
+} as const
+
+const intensityOf = (i: string) => INTENSITY[i as keyof typeof INTENSITY] ?? INTENSITY.low
+const intensityClass = (i: string) => intensityOf(i).class
+const intensityLabel = (i: string) => intensityOf(i).label
 
 const previousMonth = () => {
   currentDate.value = new Date(currentDate.value.getFullYear(), currentDate.value.getMonth() - 1, 1)
@@ -141,7 +157,7 @@ const calendarDays = computed(() => {
 
   const days = []
 
-  const firstDayWeekday = firstDayOfMonth.getDay()
+  const firstDayWeekday = mondayIndex(firstDayOfMonth)
   for (let i = firstDayWeekday - 1; i >= 0; i--) {
     const prevDate = new Date(year, month, -i)
     days.push(createDayObject(prevDate, false))

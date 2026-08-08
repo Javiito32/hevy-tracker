@@ -8,6 +8,14 @@
  * Line-based rather than a chain of global regexes: that approach mis-handled
  * documents with more than one list (only the first block got wrapped) and had
  * no way to support tables, which the coach emits often for sets/reps.
+ *
+ * The output carries **no classes**. Every visual decision lives in the `.md`
+ * block of `app/assets/css/main.css`, so the AI's prose follows the theme like
+ * everything else. Styling used to be baked in here as Tailwind classes at
+ * fifteen separate points — slate text, violet code spans, indigo links — which
+ * pinned the markdown to one theme and put a colour decision inside a parser.
+ *
+ * Callers must put `class="md"` on the container they `v-html` into.
  */
 
 function escapeHtml(text: string): string {
@@ -22,18 +30,11 @@ function escapeHtml(text: string): string {
 function renderInline(text: string): string {
   return text
     // Code first: its content must not be processed as emphasis.
-    .replace(/`([^`]+)`/g, '<code class="bg-slate-950/60 text-violet-300 rounded px-1 py-0.5 text-[0.9em] font-mono">$1</code>')
-    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-indigo-400 underline hover:text-indigo-300">$1</a>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
     .replace(/~~([^~]+)~~/g, '<s>$1</s>')
-}
-
-const HEADING_CLASSES: Record<number, string> = {
-  1: 'font-bold text-lg text-slate-100 mt-4 mb-2',
-  2: 'font-bold text-base text-slate-100 mt-4 mb-2',
-  3: 'font-semibold text-sm text-slate-200 mt-3 mb-1',
-  4: 'font-semibold text-sm text-slate-300 mt-2 mb-1'
 }
 
 /** Splits a table row into cells, tolerating optional leading/trailing pipes. */
@@ -62,7 +63,7 @@ export function renderMarkdown(text: string | null | undefined): string {
       i++
       while (i < lines.length && !/^\s*```/.test(lines[i]!)) body.push(lines[i]!), i++
       i++ // closing fence
-      out.push(`<pre class="bg-slate-950/70 border border-slate-800 rounded-lg p-3 my-2 overflow-x-auto text-xs font-mono text-slate-300"><code>${body.join('\n')}</code></pre>`)
+      out.push(`<pre><code>${body.join('\n')}</code></pre>`)
       continue
     }
 
@@ -75,11 +76,14 @@ export function renderMarkdown(text: string | null | undefined): string {
         rows.push(splitRow(lines[i]!))
         i++
       }
-      const head = headers.map(h => `<th class="px-2 py-1 text-left font-semibold text-slate-200 border-b border-slate-700">${renderInline(h)}</th>`).join('')
+      const head = headers.map(h => `<th>${renderInline(h)}</th>`).join('')
       const body = rows.map(cells =>
-        `<tr>${cells.map(c => `<td class="px-2 py-1 border-b border-slate-800 text-slate-300">${renderInline(c)}</td>`).join('')}</tr>`
+        `<tr>${cells.map(c => `<td>${renderInline(c)}</td>`).join('')}</tr>`
       ).join('')
-      out.push(`<div class="overflow-x-auto my-3"><table class="w-full text-xs border-collapse"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`)
+      // `md-table` is the one class the parser emits: the scroll container has
+      // no tag of its own to hook, and a wide table must scroll inside itself
+      // rather than making the page scroll sideways on a phone.
+      out.push(`<div class="md-table"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`)
       continue
     }
 
@@ -87,14 +91,14 @@ export function renderMarkdown(text: string | null | undefined): string {
     const heading = trimmed.match(/^(#{1,4})\s+(.*)$/)
     if (heading) {
       const level = heading[1]!.length
-      out.push(`<h${level} class="${HEADING_CLASSES[level]}">${renderInline(heading[2]!)}</h${level}>`)
+      out.push(`<h${level}>${renderInline(heading[2]!)}</h${level}>`)
       i++
       continue
     }
 
     // Horizontal rule
     if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
-      out.push('<hr class="border-slate-800 my-3" />')
+      out.push('<hr />')
       i++
       continue
     }
@@ -106,7 +110,7 @@ export function renderMarkdown(text: string | null | undefined): string {
         body.push(lines[i]!.trim().replace(/^&gt;\s?/, ''))
         i++
       }
-      out.push(`<blockquote class="border-l-2 border-violet-700 pl-3 my-2 text-slate-400 italic">${renderInline(body.join(' '))}</blockquote>`)
+      out.push(`<blockquote>${renderInline(body.join(' '))}</blockquote>`)
       continue
     }
 
@@ -131,8 +135,7 @@ export function renderMarkdown(text: string | null | undefined): string {
         break
       }
       const tag = isOrdered ? 'ol' : 'ul'
-      const listClass = isOrdered ? 'list-decimal' : 'list-disc'
-      out.push(`<${tag} class="${listClass} pl-5 space-y-1 my-2">${items.map(it => `<li>${renderInline(it)}</li>`).join('')}</${tag}>`)
+      out.push(`<${tag}>${items.map(it => `<li>${renderInline(it)}</li>`).join('')}</${tag}>`)
       continue
     }
 
@@ -147,7 +150,7 @@ export function renderMarkdown(text: string | null | undefined): string {
       para.push(t)
       i++
     }
-    if (para.length) out.push(`<p class="mb-2">${renderInline(para.join(' '))}</p>`)
+    if (para.length) out.push(`<p>${renderInline(para.join(' '))}</p>`)
   }
 
   return out.join('')

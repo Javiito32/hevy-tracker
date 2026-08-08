@@ -1,46 +1,46 @@
 <template>
-  <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden mb-6">
-    <div class="px-6 py-4 border-b border-slate-800 flex items-center gap-3">
-      <h2 class="text-lg font-semibold text-slate-100">Uso por modelo</h2>
-      <span class="text-xs bg-violet-950/60 text-violet-400 px-2 py-0.5 rounded font-medium">Solo admin</span>
+  <div class="bg-surface rounded-card border border-line overflow-hidden mb-6">
+    <div class="px-5 py-3.5 border-b border-line flex items-center gap-3">
+      <h2 class="font-display text-sm font-semibold tracking-tight text-ink">Uso por modelo</h2>
+      <span class="text-xs bg-surface-2 text-ink-2 px-2 py-0.5 rounded font-medium">Solo admin</span>
     </div>
 
-    <div v-if="pending" class="p-6 text-center text-slate-500 text-sm">Cargando...</div>
-    <div v-else-if="!rows.length" class="p-6 text-center text-slate-600 text-sm">Sin uso de IA en este periodo.</div>
+    <div v-if="pending" class="py-10 flex justify-center text-ink-3"><UiSpinner /></div>
+    <UiEmptyState v-else-if="!rows.length" title="Sin uso de IA en este periodo." />
     <table v-else class="w-full text-sm">
-      <thead class="bg-slate-800 text-slate-500 uppercase text-xs">
+      <thead class="bg-surface-2 text-ink-3 uppercase text-[11px] tracking-wide">
         <tr>
-          <th class="px-4 py-3 text-left">Modelo</th>
-          <th class="px-4 py-3 text-center">Interacciones</th>
-          <th class="px-4 py-3 text-right">Tokens entrada</th>
-          <th class="px-4 py-3 text-right">Tokens salida</th>
-          <th class="px-4 py-3 text-right">Coste</th>
-          <th class="px-4 py-3 text-left">Último uso</th>
+          <th class="px-4 py-2.5 text-left font-semibold">Modelo</th>
+          <th class="px-4 py-2.5 text-center font-semibold">Interacciones</th>
+          <th class="px-4 py-2.5 text-right font-semibold">Tokens entrada</th>
+          <th class="px-4 py-2.5 text-right font-semibold">Tokens salida</th>
+          <th class="px-4 py-2.5 text-right font-semibold">Coste</th>
+          <th class="px-4 py-2.5 text-left font-semibold">Último uso</th>
         </tr>
       </thead>
-      <tbody class="divide-y divide-slate-800">
-        <tr v-for="r in rows" :key="r.model" class="hover:bg-slate-800/50 transition">
+      <tbody class="divide-y divide-line">
+        <tr v-for="r in rows" :key="r.model" class="hover:bg-surface-2 transition">
           <td class="px-4 py-3">
-            <span class="font-mono text-sm font-semibold text-violet-300">{{ r.model }}</span>
-            <span v-if="!r.priced" class="ml-2 text-xs bg-amber-950/60 text-amber-400 px-1.5 py-0.5 rounded">sin precio</span>
+            <span class="font-mono text-sm font-semibold text-ink-2">{{ r.model }}</span>
+            <span v-if="!r.priced" class="ml-2 text-xs bg-warn/10 text-warn px-1.5 py-0.5 rounded">sin precio</span>
           </td>
-          <td class="px-4 py-3 text-center text-slate-400">{{ formatTokens(r.interactions) }}</td>
-          <td class="px-4 py-3 text-right text-sky-300">{{ formatTokens(r.inputTokens) }}</td>
-          <td class="px-4 py-3 text-right text-emerald-300">{{ formatTokens(r.outputTokens) }}</td>
-          <td class="px-4 py-3 text-right font-medium"
-            :class="r.priced ? 'text-slate-200' : 'text-slate-600'">
+          <td class="px-4 py-2.5 text-center text-ink-2">{{ formatTokens(r.interactions) }}</td>
+          <td class="px-4 py-2.5 text-right text-ink-2">{{ formatTokens(r.inputTokens) }}</td>
+          <td class="px-4 py-2.5 text-right text-positive">{{ formatTokens(r.outputTokens) }}</td>
+          <td class="px-4 py-2.5 text-right font-medium"
+            :class="r.priced ? 'text-ink' : 'text-ink-3'">
             {{ r.priced ? formatCost(r.cost, r.currency) : NO_VALUE }}
           </td>
-          <td class="px-4 py-3 text-slate-500 text-xs">{{ formatDateTime(r.last_used_at) }}</td>
+          <td class="px-4 py-2.5 text-ink-3 text-xs">{{ formatDateTime(r.last_used_at) }}</td>
         </tr>
       </tbody>
-      <tfoot class="bg-slate-800/50 font-semibold">
+      <tfoot class="bg-surface-2/50 font-semibold">
         <tr>
-          <td class="px-4 py-3 text-slate-300">Total</td>
-          <td class="px-4 py-3 text-center text-slate-300">{{ formatTokens(sum('interactions')) }}</td>
-          <td class="px-4 py-3 text-right text-sky-300">{{ formatTokens(sum('inputTokens')) }}</td>
-          <td class="px-4 py-3 text-right text-emerald-300">{{ formatTokens(sum('outputTokens')) }}</td>
-          <td class="px-4 py-3 text-right text-slate-100">{{ formatCost(sum('cost')) }}</td>
+          <td class="px-4 py-2.5 text-ink-2">Total</td>
+          <td class="px-4 py-2.5 text-center text-ink-2">{{ formatTokens(sum('interactions')) }}</td>
+          <td class="px-4 py-2.5 text-right text-ink-2">{{ formatTokens(sum('inputTokens')) }}</td>
+          <td class="px-4 py-2.5 text-right text-positive">{{ formatTokens(sum('outputTokens')) }}</td>
+          <td class="px-4 py-2.5 text-right text-ink">{{ formatCost(sum('cost')) }}</td>
           <td></td>
         </tr>
       </tfoot>

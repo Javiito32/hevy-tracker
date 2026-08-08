@@ -1,41 +1,33 @@
 <template>
-  <div :class="['flex w-full mb-6', isUser ? 'justify-end' : 'justify-start']">
-    <!-- Assistant Avatar -->
-    <div v-if="!isUser" class="flex-shrink-0 mr-3 mt-1">
-      <div class="w-8 h-8 bg-violet-950 rounded-full flex items-center justify-center text-violet-400 text-sm ring-1 ring-violet-800">
-        🤖
+  <!-- The user gets a bubble; the coach gets a column.
+       In an achromatic interface there is no "assistant violet" left to mark the
+       reply with, so the two voices are separated structurally instead: the
+       athlete's words sit right-aligned in a chip, and the coach's answer runs
+       as a full-width block under a mono label. That also reads better, since
+       the coach's replies are long and a 75%-wide bubble wraps them twice. -->
+  <div class="mb-6">
+    <div v-if="isUser" class="flex justify-end">
+      <div class="max-w-[85%] sm:max-w-[75%] bg-surface-2 border border-line rounded-2xl rounded-tr-sm px-4 py-2.5">
+        <!-- Plain text, not markdown: these are the athlete's own words, and an
+             asterisk they typed should stay an asterisk. -->
+        <p class="text-sm text-ink whitespace-pre-wrap">{{ content }}</p>
+        <p v-if="timestamp" class="font-data text-[10px] text-ink-3 mt-1.5 text-right">{{ formatTime(timestamp) }}</p>
       </div>
     </div>
 
-    <!-- Message Content -->
-    <div
-      :class="[
-        'max-w-[85%] sm:max-w-[75%] rounded-2xl px-5 py-3 shadow-sm',
-        isUser
-          ? 'bg-indigo-600 text-white rounded-tr-sm'
-          : 'bg-slate-800 border border-slate-700 text-slate-100 rounded-tl-sm'
-      ]"
-    >
-      <div class="prose prose-sm prose-invert leading-relaxed max-w-none">
-        <span v-html="renderMarkdown(content)"></span><span
+    <div v-else class="border-l-2 border-line pl-4">
+      <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-1.5">Coach</p>
+
+      <div class="md">
+        <span v-html="renderMarkdown(content)" /><span
           v-if="streaming"
-          class="inline-block w-1.5 h-4 -mb-0.5 ml-0.5 bg-violet-400 animate-pulse"
-        ></span>
+          class="inline-block w-1.5 h-4 -mb-0.5 ml-0.5 bg-ink animate-pulse"
+        />
       </div>
-      <div
-        v-if="timestamp && !streaming"
-        :class="['text-[10px] mt-2 text-right opacity-50']"
-      >
-        {{ formatTime(timestamp) }}
-      </div>
-      <p v-if="!isUser && isAdmin && modelUsed && !streaming" class="text-[10px] font-mono text-slate-600 mt-1">Modelo: {{ modelUsed }}</p>
-    </div>
 
-    <!-- User Avatar -->
-    <div v-if="isUser" class="flex-shrink-0 ml-3 mt-1">
-      <div class="w-8 h-8 bg-indigo-950 rounded-full flex items-center justify-center text-indigo-400 font-bold text-xs ring-1 ring-indigo-800">
-        TU
-      </div>
+      <p v-if="timestamp && !streaming" class="font-data text-[10px] text-ink-3 mt-2">
+        {{ formatTime(timestamp) }}<span v-if="isAdmin && modelUsed"> · {{ modelUsed }}</span>
+      </p>
     </div>
   </div>
 </template>
@@ -57,20 +49,6 @@ const isAdmin = computed(() => (session.value?.user as any)?.role === 'admin')
 
 const isUser = computed(() => props.role === 'user')
 
-const formatTime = (date: Date) => {
-  return new Intl.DateTimeFormat('es-ES', { hour: '2-digit', minute: '2-digit' }).format(date)
-}
+const formatTime = (date: Date) =>
+  new Intl.DateTimeFormat('es-ES', { hour: '2-digit', minute: '2-digit' }).format(date)
 </script>
-
-<style>
-.prose p {
-  margin-top: 0.5em;
-  margin-bottom: 0.5em;
-}
-.prose p:first-child {
-  margin-top: 0;
-}
-.prose p:last-child {
-  margin-bottom: 0;
-}
-</style>

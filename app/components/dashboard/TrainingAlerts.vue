@@ -1,63 +1,67 @@
 <template>
-  <div v-if="visible.length" class="mb-8">
-    <div class="flex items-center justify-between mb-3">
-      <h2 class="text-base font-semibold text-slate-200">
-        Avisos
-        <span class="text-xs font-normal text-slate-500 ml-1">detectados automáticamente</span>
-      </h2>
-      <NuxtLink to="/volume" class="text-xs text-indigo-400 hover:text-indigo-300 transition">
-        Ver volumen por músculo →
-      </NuxtLink>
+  <section v-if="visible.length" class="mb-6">
+    <div class="flex items-end justify-between gap-3 mb-3">
+      <div>
+        <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-1">Detectado</p>
+        <h2 class="font-display text-sm font-semibold tracking-tight text-ink">Avisos de entrenamiento</h2>
+      </div>
+      <UiLink to="/volume" class="text-xs">Ver volumen por músculo</UiLink>
     </div>
 
-    <div class="space-y-2">
-      <div
+    <ul class="space-y-2">
+      <li
         v-for="alert in visible"
         :key="alert.id"
-        class="rounded-xl border overflow-hidden"
+        class="bg-surface border rounded-card px-4 py-3.5 flex items-start gap-3"
         :class="styleFor(alert.severity).container"
       >
-        <div class="px-5 py-3.5 flex items-start gap-3">
-          <!-- Glyph + written severity: the colour is never the only cue. -->
-          <span class="text-base leading-6 flex-shrink-0" aria-hidden="true">{{ styleFor(alert.severity).glyph }}</span>
+        <!-- Glyph, written severity and colour. The three glyphs are different
+             shapes, not three coloured dots: a red circle and an orange circle
+             are the same mark twice for a reader who cannot separate the hues. -->
+        <span class="text-sm leading-5 flex-shrink-0" :class="styleFor(alert.severity).text" aria-hidden="true">
+          {{ styleFor(alert.severity).glyph }}
+        </span>
 
-          <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2 flex-wrap">
-              <p class="text-sm font-medium text-slate-100">{{ alert.title }}</p>
-              <span class="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded" :class="styleFor(alert.severity).badge">
-                {{ styleFor(alert.severity).label }}
-              </span>
-              <span v-if="alert.days_open >= 7" class="text-[10px] text-slate-500">
-                hace {{ alert.days_open }} días
-              </span>
-            </div>
-            <p class="text-xs text-slate-400 mt-1 leading-relaxed">{{ alert.detail }}</p>
-
-            <button
-              v-if="alert.evidence"
-              @click="toggle(alert.id)"
-              class="text-[11px] text-slate-500 hover:text-slate-300 mt-1.5 transition"
-            >
-              {{ expanded.has(alert.id) ? '▾ Ocultar datos' : '▸ Ver los datos' }}
-            </button>
-            <dl v-if="expanded.has(alert.id) && alert.evidence" class="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1">
-              <div v-for="(value, key) in alert.evidence" :key="key" class="min-w-0">
-                <dt class="text-[10px] text-slate-600 uppercase tracking-wide truncate">{{ key }}</dt>
-                <dd class="text-xs text-slate-400 font-mono truncate">{{ formatEvidence(value) }}</dd>
-              </div>
-            </dl>
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-2 flex-wrap">
+            <p class="text-sm font-medium text-ink">{{ alert.title }}</p>
+            <span
+              class="text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded"
+              :class="styleFor(alert.severity).badge"
+            >{{ styleFor(alert.severity).label }}</span>
+            <span v-if="alert.days_open >= 7" class="font-data text-[10px] text-ink-3">
+              hace {{ alert.days_open }} días
+            </span>
           </div>
+          <p class="text-xs text-ink-2 mt-1 leading-relaxed">{{ alert.detail }}</p>
 
+          <!-- Every alert can be audited. A verdict the athlete cannot check
+               gets either over-trusted or ignored. -->
           <button
-            @click="dismiss(alert.id)"
-            :disabled="dismissing === alert.id"
-            class="text-slate-600 hover:text-slate-300 text-lg leading-none flex-shrink-0 disabled:opacity-40 transition"
-            title="Descartar aviso"
-          >×</button>
+            v-if="alert.evidence"
+            class="text-[11px] text-ink-3 hover:text-ink mt-2 transition"
+            @click="toggle(alert.id)"
+          >
+            {{ expanded.has(alert.id) ? '▾ Ocultar los datos' : '▸ Ver los datos' }}
+          </button>
+          <dl v-if="expanded.has(alert.id) && alert.evidence" class="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1.5">
+            <div v-for="(value, key) in alert.evidence" :key="key" class="min-w-0">
+              <dt class="text-[10px] text-ink-3 uppercase tracking-wide truncate">{{ key }}</dt>
+              <dd class="font-data text-xs text-ink-2 truncate">{{ formatEvidence(value) }}</dd>
+            </div>
+          </dl>
         </div>
-      </div>
-    </div>
-  </div>
+
+        <button
+          :disabled="dismissing === alert.id"
+          class="text-ink-3 hover:text-ink text-lg leading-none flex-shrink-0 disabled:opacity-40 transition"
+          title="Descartar aviso"
+          aria-label="Descartar aviso"
+          @click="dismiss(alert.id)"
+        >×</button>
+      </li>
+    </ul>
+  </section>
 </template>
 
 <script setup lang="ts">
@@ -85,19 +89,19 @@ const visible = computed(() => (alerts.value ?? []).filter(a => !hidden.value.ha
 
 const STYLES = {
   critical: {
-    glyph: '🔴', label: 'Crítico',
-    container: 'bg-rose-950/30 border-rose-900/50',
-    badge: 'bg-rose-950/70 text-rose-400'
+    glyph: '⚠', label: 'Crítico',
+    container: 'border-danger/40', text: 'text-danger',
+    badge: 'bg-danger/10 text-danger'
   },
   warning: {
-    glyph: '🟠', label: 'Atención',
-    container: 'bg-amber-950/30 border-amber-900/50',
-    badge: 'bg-amber-950/70 text-amber-400'
+    glyph: '△', label: 'Atención',
+    container: 'border-warn/40', text: 'text-warn',
+    badge: 'bg-warn/10 text-warn'
   },
   info: {
-    glyph: '🔵', label: 'Informativo',
-    container: 'bg-slate-900 border-slate-800',
-    badge: 'bg-slate-800 text-slate-400'
+    glyph: 'ℹ', label: 'Informativo',
+    container: 'border-line', text: 'text-ink-3',
+    badge: 'bg-surface-2 text-ink-2'
   }
 } as const
 

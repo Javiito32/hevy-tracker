@@ -6,9 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Development
-npm run dev          # Start dev server (http://localhost:3000)
+npm run dev          # Start dev server (http://localhost:3000)  — needs Node >= 20
 npm run build        # Production build
 npm run preview      # Preview production build
+npm run palette      # Re-validate both chart palettes against both surfaces
 
 # Database
 npx prisma studio    # Open Prisma DB GUI
@@ -226,7 +227,7 @@ Tool implementations enforce `user_id` scoping — they never access another use
 - Bucketing uses `localDayKey` / `localWeekKey` (**local** components, not `toISOString()`): "which day did this cost land on" is a question about the admin's calendar, and UTC slicing would push evening usage into the next day.
 - `series[].color_index` is the model's position in the **all-time alphabetical** model list, not its rank in range. Ranking by cost would repaint every band whenever the date filter changes, and a reader who learned "sonnet is blue" would be misled by the next range they pick.
 - Models past `SERIES_LIMIT = 4` fold into one `Otros` series (colour outside the palette — it isn't an identity). Never generate more hues.
-- Series colours are the **validated** dark categorical slots; they pass all six checks against this app's surface (`#0f172a`). Re-run `scripts/validate_palette.js` from the `dataviz` skill before changing any of them.
+- Series colours come from the shared palette in `app/utils/series.ts` (`seriesColor(i)` / `SERIES_OTHER`), never from a local hex. Both themes are **selected**, not flipped, and both are validated — run `npm run palette`.
 - `month_to_date` is deliberately **not** range-scoped: "what will this month cost" is a fixed question, and a projection over an arbitrary filter is meaningless.
 - A near-zero bar is left visually near-invisible rather than clamped to a minimum height — clamping would put the top of the stack somewhere other than the true total on the axis. The band-wide hover target and the chart's table view carry the value instead.
 
@@ -318,6 +319,40 @@ Only one mesocycle can be `active` at a time. Both `index.post.ts` (create) and 
 - OFF rate-limits search (~10 req/min per IP): the client caches for 10 min and the UI debounces 500 ms. Never call it in a loop.
 - Camera scanning needs `BarcodeDetector` + a secure context, which plain-HTTP LAN deployments don't have — **manual code entry is the primary path**, the camera is progressive enhancement.
 
+### Visual system — «Instrumento»
+
+The app measures things: kg, RPE, effective sets, MEV/MAV/MRV, macros. The direction takes its cues from measuring instruments, not from fitness apps or SaaS dashboards.
+
+**The interface is achromatic. Colour is reserved for verdicts and data series, and is never decoration.** There is no brand hue: the primary button is a *contrast inversion* (`bg-accent text-accent-ink` — chalk on iron, iron on chalk). The reason is functional, not stylistic: this app's job is to say "you are under MEV" or "this lift is stalling", and a decorative indigo on every button and link trains the eye to ignore hue exactly where hue carries the finding.
+
+**Everything is a semantic token; there are no palette classes.** `app/assets/css/main.css` declares the tokens on `:root` (chalk) and `.dark` (iron) as bare RGB triplets, and `tailwind.config.ts` exposes them with `<alpha-value>` so `bg-surface/60` still works. One class name is correct in both themes — `bg-surface`, `text-ink-2`, `border-line`. **Never reintroduce a `slate-*` / `indigo-*` / `emerald-*` utility**, and never add a `dark:` variant: prefixing ~2,200 utilities was the alternative this layer replaced, and it guarantees the two themes drift.
+
+| Role | Tokens |
+|---|---|
+| Ground | `bg` · `surface` · `surface-2` |
+| Hairlines | `line` · `line-strong` |
+| Text | `ink` · `ink-2` · `ink-3` |
+| Inversion | `accent` · `accent-ink` · `focus` |
+| Verdicts | `positive` · `warn` · `danger` |
+| Graduations | `tick` · `tick-minor` |
+| Data series | `series-1`…`series-5` · `series-other` |
+
+Theme switching is `@nuxtjs/color-mode` (`preference: 'system'`, `fallback: 'dark'`, `classSuffix: ''`), so `<html>` carries `dark`/`light` and the module's inline script runs before first paint. The toggle is three-state (`UiThemeToggle`) — "system" has to be its own choice, or a phone that flips at sunset stops following along with no way back.
+
+**Typography has three roles**, self-hosted via `@nuxt/fonts` (there is no Google Fonts `<link>` any more): `font-display` **Archivo** for titles and eyebrows, `font-sans` **Inter** for prose, and `font-data` **IBM Plex Mono** for *every* figure — kg, RPE, sets, %, macros, costs, dates in tables. Numbers in the data face are tabular, so a column of them lines up; that is what a training log needs.
+
+**The signature is the graduated rule** (`UiTickScale`). A gym is quantised to 2.5 kg and `suggestLoad()` already rounds to it, so any magnitude judged against a threshold is drawn on a rule with major and minor marks: weekly sets vs MEV/MAV/MRV, plan adherence, macros vs target, sessions vs the weekly goal. **Ticks are not decoration** — they never appear as dividers or header flourishes. A motif that shows up everywhere stops meaning anything.
+
+#### UI primitives — `app/components/ui/`
+
+Auto-imported with the `Ui` prefix. Compose these rather than hand-writing markup; the card string alone had ~70 copies and the primary button 19 different spellings.
+
+`UiCard` (`eyebrow`/`title`/`hint`, `flush` for tables and charts) · `UiButton` (`primary`/`secondary`/`ghost`/`danger`, 44px min at `md`) · `UiInput` (`type="textarea"` included) · `UiSelect` · `UiField` (label + control + hint/error, real `for`) · `UiBadge` · `UiModal` · `UiSpinner` (`border-current`, so it inherits its context) · `UiEmptyState` · `UiTabs` · `UiPageHeader` · `UiStat` · `UiLink` · `UiTickScale` · `UiThemeToggle`.
+
+Shared form surface is `.ui-control` in `main.css` — one place, because Input, Select and Textarea all wear it.
+
+`app/utils/theme.ts` (auto-imported) is the single source for verdicts: `VERDICT_STYLES`, `verdictStyle()`, `STATUS_STYLES`/`statusStyle()` (which replaced three copies that disagreed on `completed`), and `deltaClass(value, polarity)` / `deltaGlyph()`. **Polarity is declared per metric** — +2 kg of body weight is progress in a bulk and a problem in a cut, and a rising resting heart rate is never good, so `diff > 0 ? rose : emerald` written inline is wrong on half the pages that used to do it.
+
 ### Frontend patterns
 
 - Data fetching uses Nuxt's `useFetch()` for SSR-compatible calls; mutations use `$fetch()` directly.
@@ -327,10 +362,12 @@ Only one mesocycle can be `active` at a time. Both `index.post.ts` (create) and 
 - Training-set vocabulary lives in `app/utils/training.ts` (auto-imported), mirroring `server/utils/volume-calculator.ts`. `numberSets()` numbers sets the way Hevy's logger does — warm-ups are marked `C` rather than numbered, so working sets read 1, 2, 3 regardless of how many warm-ups preceded them. Only warm-up rows are dimmed; drop sets and sets to failure are effective work and must not read as filler.
 - Toasts replace `alert()`: `useToast()` (`app/composables/useToast.ts`) + `<ToastHost />` in the layout. Errors are sticky by default — one that disappears before it's read is the same as no error. The sync button polls its job and calls `refreshNuxtData()`; it never reloads the page.
 - The nav is behind a hamburger below `lg`. This app is used on a phone, in a gym; ten links in a `flex` row overflowed the viewport.
-- Status colour never carries meaning alone. The palette's green and red measure ΔE 4.1 apart under deuteranopia, so every verdict also ships a glyph, a written label, and (in the volume chart) a position against the MEV/MRV ticks.
-- **The muscle-volume ramp is validated.** `MuscleHeatmap` uses a sequential single-hue ramp checked against this app's surface (`#0f172a`): monotone lightness, ΔL ≥ 0.06 between steps, darkest step at 2.20:1. Steps darker than `#184f95` were rejected at 1.49:1 — indistinguishable from an empty cell. A zero week renders as bare surface with a hairline, never as the darkest step: "no training" and "a little training" must not look like neighbours. Re-run `scripts/validate_palette.js` from the `dataviz` skill before changing them.
+- Status colour never carries meaning alone. Positive and danger sit close together under deuteranopia, so every verdict also ships a glyph, a written label, and (in the volume chart) a position against the MEV/MAV/MRV ticks.
+- **The muscle-volume ramp is opacities of `--ink`, not a hue.** `MuscleHeatmap` steps `[0.14, 0.32, 0.5, 0.7, 0.9]` over the card surface, so the ramp is monotone **by construction** in both themes — more sets is always more contrast — and there is no second palette to keep validated. It replaced five fixed blues that ran dark→light, which is backwards on chalk: the heaviest weeks would have come out palest. A zero week renders as bare surface with a hairline, never as the faintest step: "no training" and "a little training" must not look like neighbours. The cell label flips to `text-bg` on the top two steps.
 - Admin analytics components live in `app/components/admin/` (`AiRangeFilter`, `AiRunRateCard`, `AiUsageTrendChart`, `AiModelPricesCard`, `AiUsageByModelCard`, `AiUsageByUserCard`, `AiTopInteractionsCard`, `AiUsageLogCard`); `admin/index.vue` is the orchestrator and owns the selected date range, mirroring how `calendar.vue` owns the date `CalendarGrid` emits.
-- Charts are hand-rolled inline SVG (no chart library) — `AiUsageTrendChart` and `charts/LineChart.vue`. Conventions: hairline **solid** gridlines (`#1e293b`) and axis text `#64748b`, marks capped at 24px with a 2px surface gap between stacked segments, a legend whenever there are ≥2 series, and a table view so no value is reachable only by hovering. Load the `dataviz` skill before adding or restyling one.
+- Charts are hand-rolled inline SVG (no chart library) — `AiUsageTrendChart`, `charts/LineChart.vue`, and the three in `body.vue`. **Chrome wears Tailwind token classes, not presentation attributes**: `class="stroke-line"`, `class="fill-ink-3 font-data"`, `class="stroke-surface"`. A presentation attribute cannot take a `var()`, which is why these are classes; and the point ring in `LineChart` is a knockout in the *card surface*, so hardcoding it (it was `#0f172a`) drew a black halo around every point once the surface turned to chalk. Series colours go through `:style`, which does accept `var()`. Marks capped at 24px with a 2px surface gap between stacked segments, a legend whenever there are ≥2 series, and a table view so no value is reachable only by hovering. Load the `dataviz` skill before adding or restyling one.
+- **`npm run palette`** re-validates both categorical columns against both surfaces (`#131316` iron, `#F7F7F5` chalk) with the vendored `scripts/validate_palette.js`. Run it before changing any series colour. The light column is deliberately darker than the `dataviz` reference column: the reference warned below 3:1 on chalk for 4 of 5 slots, and in an app this full of 2px line charts that means a line you cannot see. The trade is a worst adjacent CVD ΔE of 7.9 — inside the 6–8 band, which is legal only with secondary encoding, and these charts carry it (legend always present, plus a table view).
 - Child components call `useFetch()` **without `await`** — a top-level await makes the component async and forces a Suspense boundary. Nuxt resolves pending `useFetch` calls before SSR renders either way.
-- Markdown from AI responses is rendered via `v-html` with the shared `renderMarkdown()` in `app/utils/markdown.ts` (auto-imported). It is line-based, escapes HTML first, and handles headings, both list types, tables, code, quotes and rules. Use it rather than adding another local regex chain — it replaced four divergent copies.
-- The `CalendarGrid` component emits `select-date` upward; the parent `calendar.vue` page owns the selected date state.
+- Markdown from AI responses is rendered via `v-html` with the shared `renderMarkdown()` in `app/utils/markdown.ts` (auto-imported). It is line-based, escapes HTML first, and handles headings, both list types, tables, code, quotes and rules. Use it rather than adding another local regex chain — it replaced four divergent copies. **Its output carries no classes**: all styling lives in the `.md` block of `main.css`, and callers put `class="md"` on the container. Styling used to be baked into the parser at fifteen points, which pinned the prose to one theme and put a colour decision inside a parser.
+- The `CalendarGrid` component emits `select-date` upward; the parent `calendar.vue` page owns the selected date state. The week starts **Monday** (`mondayIndex()`); it was hardcoded to a Sunday start with English headers in an app that is otherwise entirely `es-ES`.
+- `login.vue` and `register.vue` use `layout: 'auth'`. They each used to carry a byte-identical copy of the shell, which is how the same form ended up styled twice.

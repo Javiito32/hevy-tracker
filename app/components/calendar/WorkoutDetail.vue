@@ -1,97 +1,96 @@
 <template>
-  <div class="bg-slate-900 rounded-xl border border-slate-800 h-full flex flex-col">
-    <!-- Header -->
-    <div class="px-6 py-4 border-b border-slate-800">
-      <h2 class="text-lg font-semibold text-slate-100 capitalize">
+  <div class="bg-surface rounded-card border border-line h-full flex flex-col">
+    <div class="px-5 py-3.5 border-b border-line">
+      <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-1">Día</p>
+      <h2 class="font-display text-sm font-semibold tracking-tight text-ink first-letter:uppercase">
         {{ formattedDate }}
       </h2>
-      <p v-if="!workout" class="text-sm text-slate-500 mt-1">Sin entrenamiento registrado.</p>
     </div>
 
-    <div v-if="workout" class="flex-grow overflow-y-auto p-6 space-y-6">
-
-      <!-- Workout Title and Core Stats -->
+    <div v-if="workout" class="flex-grow overflow-y-auto custom-scrollbar p-5 space-y-6">
       <div>
-        <div class="flex justify-between items-start mb-2">
-          <h3 class="text-base font-medium text-slate-100">{{ workout.name }}</h3>
-          <span class="bg-indigo-950/60 text-indigo-400 text-xs px-2 py-1 rounded">RPE: {{ workout.rpe_avg || 'N/A' }}</span>
+        <div class="flex justify-between items-start gap-3 mb-3">
+          <h3 class="text-sm font-medium text-ink min-w-0">{{ workout.name }}</h3>
+          <span class="font-data text-[11px] bg-surface-2 text-ink-2 px-2 py-0.5 rounded flex-shrink-0">
+            RPE {{ workout.rpe_avg ?? NO_VALUE }}
+          </span>
         </div>
-        <div class="grid grid-cols-2 gap-4 text-sm bg-slate-800 p-3 rounded-lg border border-slate-700">
+        <dl class="grid grid-cols-2 gap-4 bg-surface-2 p-3 rounded-lg border border-line">
           <div>
-            <p class="text-slate-500 mb-1">Volumen</p>
-            <p class="font-medium text-slate-200">{{ workout.total_volume?.toLocaleString() || 0 }} kg</p>
+            <dt class="text-[11px] text-ink-3 mb-0.5">Volumen</dt>
+            <dd class="font-data text-sm text-ink">{{ workout.total_volume?.toLocaleString('es-ES') ?? 0 }} kg</dd>
           </div>
           <div>
-            <p class="text-slate-500 mb-1">Duración</p>
-            <p class="font-medium text-slate-200">{{ formatDuration(workout.duration) }}</p>
+            <dt class="text-[11px] text-ink-3 mb-0.5">Duración</dt>
+            <dd class="font-data text-sm text-ink">{{ formatDuration(workout.duration) }}</dd>
           </div>
-        </div>
+        </dl>
       </div>
 
-      <!-- Exercises -->
       <div v-if="exercises.length">
-        <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Ejercicios</h4>
-        <div class="space-y-4">
-          <div v-for="(ex, index) in exercises" :key="index" class="text-sm">
-            <div class="flex justify-between items-baseline gap-3 font-medium text-slate-200 mb-1 border-b border-slate-800 pb-1">
-              <span class="min-w-0 truncate">{{ ex.name }}</span>
+        <h4 class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-3">Ejercicios</h4>
+        <ul class="space-y-3.5">
+          <li v-for="(ex, index) in exercises" :key="index" class="text-sm">
+            <div class="flex justify-between items-baseline gap-3 text-ink mb-1 border-b border-line pb-1">
+              <span class="min-w-0 truncate font-medium">{{ ex.name }}</span>
               <!-- describeSetCount reports working sets, flagging warm-ups apart. -->
-              <span class="text-slate-500 text-xs whitespace-nowrap">{{ describeSetCount(ex.sets_details || []) }}</span>
+              <span class="font-data text-[11px] text-ink-3 whitespace-nowrap">{{ describeSetCount(ex.sets_details || []) }}</span>
             </div>
-            <div class="text-slate-400 flex justify-between">
+            <div class="font-data text-xs text-ink-2 flex justify-between gap-3">
               <template v-if="ex.type === 'cardio' || ex.type === 'duration'">
                 <span v-if="ex.total_distance_meters">{{ formatDistance(ex.total_distance_meters) }}</span>
                 <span v-if="ex.total_duration_seconds">{{ formatSetDuration(ex.total_duration_seconds) }}</span>
               </template>
               <template v-else>
-                <span>Est 1RM: {{ ex.estimated_1rm ? parseFloat(ex.estimated_1rm).toFixed(1) : '-' }} kg</span>
-                <span>Vol: {{ ex.total_volume?.toLocaleString() || '-' }} kg</span>
+                <span>1RM est. {{ ex.estimated_1rm ? parseFloat(ex.estimated_1rm).toFixed(1) + ' kg' : NO_VALUE }}</span>
+                <span>{{ ex.total_volume ? ex.total_volume.toLocaleString('es-ES') + ' kg' : NO_VALUE }}</span>
               </template>
             </div>
-          </div>
-        </div>
+          </li>
+        </ul>
       </div>
 
-      <!-- Our Notes -->
       <div>
-        <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Mis notas</h4>
-        <textarea
+        <h4 class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-2">Mis notas</h4>
+        <UiInput
           v-model="localNotes"
-          rows="3"
-          class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none transition"
-          placeholder="Fatiga, ajustes, sensaciones..."
-        ></textarea>
+          type="textarea"
+          :rows="3"
+          placeholder="Fatiga, ajustes, sensaciones…"
+        />
         <div class="mt-2 flex items-center gap-3">
-          <button
-            @click="saveNotes"
+          <UiButton
+            size="sm"
+            variant="secondary"
             :disabled="saveStatus === 'saving' || !isDirty"
-            class="text-sm bg-slate-800 border border-slate-700 text-slate-300 px-3 py-1.5 rounded-lg hover:bg-slate-700 transition disabled:opacity-50"
-          >
-            {{ saveStatus === 'saving' ? 'Guardando...' : 'Guardar' }}
-          </button>
-          <span v-if="saveStatus === 'saved'" class="text-xs text-emerald-400">Guardado</span>
-          <span v-if="saveStatus === 'error'" class="text-xs text-rose-400">Error al guardar</span>
+            @click="saveNotes"
+          >{{ saveStatus === 'saving' ? 'Guardando…' : 'Guardar notas' }}</UiButton>
+          <!-- The confirmation names the same action as the button did. -->
+          <span v-if="saveStatus === 'saved'" class="text-xs text-positive flex items-center gap-1">
+            <span aria-hidden="true">✓</span>Guardado
+          </span>
+          <span v-if="saveStatus === 'error'" class="text-xs text-danger flex items-center gap-1">
+            <span aria-hidden="true">⚠</span>No se pudo guardar. Inténtalo otra vez.
+          </span>
         </div>
       </div>
 
-      <!-- Hevy Notes -->
       <div v-if="workout.description">
-        <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Notas de Hevy</h4>
-        <div class="p-3 bg-slate-800 rounded-lg text-sm text-slate-400 whitespace-pre-wrap">{{ workout.description }}</div>
+        <h4 class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-2">Notas de Hevy</h4>
+        <p class="p-3 bg-surface-2 rounded-lg text-sm text-ink-2 whitespace-pre-wrap">{{ workout.description }}</p>
       </div>
 
-      <!-- AI Action -->
-      <div class="pt-4 border-t border-slate-800">
-        <NuxtLink :to="`/workouts/${workout.id}`" class="block w-full bg-indigo-600 text-white text-center py-2.5 rounded-lg hover:bg-indigo-500 transition flex justify-center items-center">
-          Ver detalle y análisis IA
-        </NuxtLink>
+      <div class="pt-4 border-t border-line">
+        <UiButton :to="`/workouts/${workout.id}`" block>Ver detalle y análisis</UiButton>
       </div>
     </div>
 
-    <div v-else class="flex-grow flex items-center justify-center p-6 text-slate-500 flex-col">
-      <svg class="w-12 h-12 mb-3 text-slate-700" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-      <p class="text-sm text-center">Día de descanso o sin entreno. Selecciona una fecha resaltada para ver el detalle.</p>
-    </div>
+    <UiEmptyState
+      v-else
+      class="flex-grow flex flex-col justify-center"
+      title="Sin entreno este día"
+      description="Día de descanso, o todavía sin sincronizar. Elige un día marcado para ver su detalle."
+    />
   </div>
 </template>
 

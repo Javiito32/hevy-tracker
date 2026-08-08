@@ -1,14 +1,14 @@
 <template>
-  <div class="bg-slate-900 rounded-xl border border-slate-800 p-4 mb-6">
+  <div class="bg-surface rounded-card border border-line p-4 mb-6">
     <div class="flex flex-wrap items-center gap-3">
-      <span class="text-xs font-semibold text-slate-500 uppercase tracking-wider">Periodo</span>
+      <span class="text-xs font-semibold text-ink-3 uppercase tracking-wider">Periodo</span>
 
-      <div class="flex gap-1 bg-slate-800 rounded-lg p-1">
+      <div class="flex gap-1 bg-surface-2 rounded-lg p-1">
         <button v-for="p in PRESETS" :key="p.days ?? 'all'"
           @click="selectPreset(p.days)"
           :class="isActivePreset(p.days)
-            ? 'bg-indigo-600 text-white'
-            : 'text-slate-400 hover:text-slate-200'"
+            ? 'bg-accent text-accent-ink'
+            : 'text-ink-2 hover:text-ink'"
           class="px-3 py-1.5 rounded-md text-sm font-medium transition">
           {{ p.label }}
         </button>
@@ -16,10 +16,10 @@
 
       <div class="flex items-center gap-2 ml-auto">
         <input type="date" v-model="customFrom" @change="applyCustom"
-          class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500" />
-        <span class="text-slate-600 text-sm">→</span>
+          class="bg-surface-2 border border-line-strong hover:border-ink-3 rounded-lg px-3 py-1.5 text-sm text-ink focus:outline-none focus:border-ink" />
+        <span class="text-ink-3 text-sm">→</span>
         <input type="date" v-model="customTo" @change="applyCustom"
-          class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-200 focus:outline-none focus:border-indigo-500" />
+          class="bg-surface-2 border border-line-strong hover:border-ink-3 rounded-lg px-3 py-1.5 text-sm text-ink focus:outline-none focus:border-ink" />
       </div>
     </div>
   </div>

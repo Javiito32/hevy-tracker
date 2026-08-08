@@ -1,32 +1,46 @@
 <template>
-  <div class="bg-slate-900 rounded-xl border border-slate-800 mb-8">
-    <div class="px-6 py-4 border-b border-slate-800 flex justify-between items-center">
-      <h2 class="text-lg font-semibold text-slate-100">Recent Workouts</h2>
-      <button @click="$emit('sync')" class="text-indigo-400 hover:text-indigo-300 text-sm font-medium transition">Sync with Hevy</button>
-    </div>
-    <div class="divide-y divide-slate-800">
-      <div v-if="workouts.length === 0" class="p-6 text-center text-slate-500">
-        No recent workouts found.
-      </div>
-      <div v-for="workout in workouts" :key="workout.id" class="p-6 hover:bg-slate-800/50 transition">
-        <div class="flex justify-between items-center">
-          <div>
-            <h3 class="text-base font-medium text-slate-100">{{ workout.name }}</h3>
-            <p class="text-sm text-slate-500">{{ formatDate(workout.date) }} <span v-if="workout.duration">• {{ formatDuration(workout.duration) }}</span></p>
+  <UiCard eyebrow="Registro" title="Entrenos recientes" flush>
+    <template #actions>
+      <UiButton size="sm" variant="ghost" @click="$emit('sync')">Sincronizar</UiButton>
+    </template>
+
+    <UiEmptyState
+      v-if="workouts.length === 0"
+      title="Todavía no hay entrenos"
+      description="Sincroniza con Hevy para traer tu historial."
+    />
+
+    <ul v-else class="divide-y divide-line">
+      <li v-for="workout in workouts" :key="workout.id">
+        <NuxtLink
+          :to="`/workouts/${workout.id}`"
+          class="flex justify-between items-center gap-4 px-5 py-3.5 hover:bg-surface-2 transition"
+        >
+          <div class="min-w-0">
+            <p class="text-sm font-medium text-ink truncate">{{ workout.name }}</p>
+            <p class="font-data text-xs text-ink-3 mt-0.5">
+              {{ formatDate(workout.date) }}<span v-if="workout.duration"> · {{ formatDuration(workout.duration) }}</span>
+            </p>
           </div>
-          <div class="text-right">
-            <p v-if="workout.total_volume" class="text-sm font-medium text-slate-300">Volume: {{ workout.total_volume.toLocaleString() }} kg</p>
-            <NuxtLink :to="`/workouts/${workout.id}`" class="text-indigo-400 hover:text-indigo-300 text-sm mt-1 block transition">View details</NuxtLink>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
+          <p v-if="workout.total_volume" class="font-data text-sm text-ink-2 flex-shrink-0">
+            {{ workout.total_volume.toLocaleString('es-ES') }} kg
+          </p>
+        </NuxtLink>
+      </li>
+    </ul>
+  </UiCard>
 </template>
 
 <script setup lang="ts">
 import type { Workout } from '@prisma/client'
 
+/**
+ * The whole row is the link, rather than a "ver detalle" link sitting next to
+ * the name: on a phone the row is the touch target you actually hit.
+ *
+ * The copy and the dates were in English here — "Recent Workouts", "View
+ * details", `en-US` — in an app that is otherwise entirely in Spanish.
+ */
 defineProps<{
   workouts: Partial<Workout>[]
 }>()
@@ -35,14 +49,13 @@ defineEmits(['sync'])
 
 const formatDate = (date: any) => {
   if (!date) return ''
-  const d = new Date(date)
-  return new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric' }).format(d)
+  return new Intl.DateTimeFormat('es-ES', { weekday: 'short', day: 'numeric', month: 'short' })
+    .format(new Date(date))
 }
 
 const formatDuration = (seconds: number) => {
   const h = Math.floor(seconds / 3600)
   const m = Math.floor((seconds % 3600) / 60)
-  if (h > 0) return `${h}h ${m}m`
-  return `${m}m`
+  return h > 0 ? `${h} h ${m} min` : `${m} min`
 }
 </script>

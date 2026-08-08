@@ -1,43 +1,37 @@
 <template>
   <div class="h-[calc(100vh-140px)] flex flex-col">
     <!-- Header with active context -->
-    <div class="bg-violet-950/40 border border-violet-900 rounded-t-xl p-4 flex flex-col md:flex-row items-center justify-between">
-      <div class="flex items-center gap-3">
+    <div class="bg-surface border border-line rounded-t-card px-4 py-3 flex items-center justify-between gap-3">
+      <div class="flex items-center gap-2.5 min-w-0">
         <button
-          @click="sidebarOpen = !sidebarOpen"
-          class="text-violet-400 hover:text-violet-200 transition p-1 rounded"
+          class="w-9 h-9 flex items-center justify-center rounded-lg text-ink-3 hover:text-ink hover:bg-surface-2 transition flex-shrink-0"
           :title="sidebarOpen ? 'Ocultar conversaciones' : 'Mostrar conversaciones'"
+          :aria-expanded="sidebarOpen"
+          @click="sidebarOpen = !sidebarOpen"
         >
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16" />
           </svg>
         </button>
-        <div>
-          <h1 class="text-xl font-bold text-violet-200 flex items-center">
-            <span class="mr-2">🧠</span> AI Coach
+        <div class="min-w-0">
+          <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3">Coach</p>
+          <h1 class="font-display text-sm font-semibold tracking-tight text-ink truncate">
+            {{ activeTitle || 'Nueva conversación' }}
           </h1>
-          <p class="text-sm text-violet-400 mt-1 truncate max-w-xs">
-            {{ activeTitle || 'Tu entrenador personal con contexto de Hevy' }}
-          </p>
         </div>
       </div>
-      <div class="mt-3 md:mt-0 flex items-center gap-2">
-        <span v-if="historyLoading" class="text-xs text-violet-500">Cargando historial...</span>
-        <button
-          @click="startNewConversation"
-          class="text-xs bg-slate-800 text-slate-300 px-3 py-1.5 rounded border border-slate-700 hover:bg-slate-700 transition font-medium"
-        >
-          Nueva conversación
-        </button>
+      <div class="flex items-center gap-2 flex-shrink-0">
+        <span v-if="historyLoading" class="text-xs text-ink-3 hidden sm:inline">Cargando historial…</span>
+        <UiButton size="sm" variant="secondary" @click="startNewConversation">Nueva</UiButton>
       </div>
     </div>
 
     <!-- Body: sidebar + chat -->
-    <div class="flex-grow flex overflow-hidden border-x border-slate-800 bg-slate-950/50">
+    <div class="flex-grow flex overflow-hidden border-x border-line bg-bg">
       <!-- Conversation sidebar -->
       <aside
         v-if="sidebarOpen"
-        class="w-64 flex-shrink-0 border-r border-slate-800 hidden md:block"
+        class="w-64 flex-shrink-0 border-r border-line hidden md:block"
       >
         <ChatConversationList
           :conversations="conversations"
@@ -58,7 +52,7 @@
           class="flex-grow p-6 overflow-y-auto scroll-smooth custom-scrollbar"
         >
           <div v-if="historyLoading" class="flex justify-center py-8">
-            <div class="animate-spin w-6 h-6 rounded-full border-4 border-violet-500 border-t-transparent"></div>
+            <UiSpinner class="text-ink-3" />
           </div>
 
           <template v-else>
@@ -72,73 +66,78 @@
               :streaming="message.streaming"
             />
 
-            <!-- Empty state -->
-            <div v-if="chatHistory.length === 0" class="text-center py-12 text-slate-500">
-              <p class="text-4xl mb-3">🏋️</p>
-              <p class="font-medium text-slate-400">¡Empieza la conversación!</p>
-              <p class="text-sm mt-1">Pregúntame sobre tus entrenamientos o el mesociclo actual.</p>
+            <!-- An empty screen is an invitation to act, so the openers are the
+                 empty state rather than a floating bar that fades out. -->
+            <div v-if="chatHistory.length === 0" class="py-10 max-w-md mx-auto text-center">
+              <p class="font-display text-sm font-semibold tracking-tight text-ink">Pregúntale a tu coach</p>
+              <p class="text-sm text-ink-3 mt-1.5">
+                Tiene tus entrenos, tus medidas y el mesociclo activo delante.
+              </p>
+              <div class="flex flex-col sm:flex-row flex-wrap justify-center gap-2 mt-5">
+                <UiButton
+                  v-for="prompt in QUICK_PROMPTS"
+                  :key="prompt"
+                  size="sm"
+                  variant="secondary"
+                  @click="sendQuickPrompt(prompt)"
+                >{{ prompt }}</UiButton>
+              </div>
             </div>
           </template>
 
           <!-- Thinking / tool indicator: only while waiting for the first token -->
           <div v-if="isTyping && !isStreamingReply" class="flex justify-start mb-6">
             <div class="flex-shrink-0 mr-3 mt-1">
-              <div class="w-8 h-8 bg-violet-950 rounded-full flex items-center justify-center text-violet-400 text-sm ring-1 ring-violet-800">
-                🤖
+              <div class="w-8 h-8 bg-surface-2 border border-line rounded-full flex items-center justify-center font-data text-[10px] font-semibold text-ink-3">
+                AI
               </div>
             </div>
-            <div class="bg-slate-800 border border-slate-700 text-slate-300 rounded-2xl rounded-tl-sm px-5 py-3 flex items-center gap-2">
-              <span class="flex items-center space-x-1.5">
-                <span class="w-2 h-2 rounded-full bg-violet-500 animate-bounce" style="animation-delay: 0s"></span>
-                <span class="w-2 h-2 rounded-full bg-violet-500 animate-bounce" style="animation-delay: 0.15s"></span>
-                <span class="w-2 h-2 rounded-full bg-violet-500 animate-bounce" style="animation-delay: 0.3s"></span>
+            <div class="bg-surface-2 border border-line text-ink-2 rounded-2xl rounded-tl-sm px-5 py-3 flex items-center gap-2.5">
+              <span class="flex items-center gap-1">
+                <span class="w-1.5 h-1.5 rounded-full bg-ink-3 animate-bounce" style="animation-delay: 0s" />
+                <span class="w-1.5 h-1.5 rounded-full bg-ink-3 animate-bounce" style="animation-delay: 0.15s" />
+                <span class="w-1.5 h-1.5 rounded-full bg-ink-3 animate-bounce" style="animation-delay: 0.3s" />
               </span>
-              <span v-if="activityLabel" class="text-xs text-violet-300">{{ activityLabel }}</span>
+              <!-- Naming the tool it is running is the honest version of a
+                   spinner: the wait has a reason and the reader can see it. -->
+              <span v-if="activityLabel" class="text-xs text-ink-3">{{ activityLabel }}</span>
             </div>
           </div>
-        </div>
-
-        <!-- Quick Actions -->
-        <div class="absolute bottom-4 left-0 w-full px-6 flex justify-center space-x-2 transition-opacity duration-300" :class="isTyping || chatHistory.length > 0 ? 'opacity-0 pointer-events-none' : 'opacity-100'">
-          <button @click="sendQuickPrompt('¿Cómo voy esta semana?')" class="bg-slate-800 border border-slate-700 text-slate-400 text-xs px-3 py-1.5 rounded-full hover:bg-violet-950/40 hover:text-violet-400 hover:border-violet-800 transition">
-            ¿Cómo voy esta semana?
-          </button>
-          <button @click="sendQuickPrompt('Analiza mi último entreno de pecho')" class="bg-slate-800 border border-slate-700 text-slate-400 text-xs px-3 py-1.5 rounded-full hover:bg-violet-950/40 hover:text-violet-400 hover:border-violet-800 transition hidden sm:block">
-            Analiza mi último entreno
-          </button>
-          <button @click="sendQuickPrompt('¿Debería hacer deload?')" class="bg-slate-800 border border-slate-700 text-slate-400 text-xs px-3 py-1.5 rounded-full hover:bg-violet-950/40 hover:text-violet-400 hover:border-violet-800 transition hidden md:block">
-            ¿Debería hacer deload?
-          </button>
         </div>
       </div>
     </div>
 
     <!-- Input Area -->
-    <div class="bg-slate-900 border border-slate-800 rounded-b-xl p-4 relative z-10">
-      <form @submit.prevent="sendMessage" class="flex items-end bg-slate-800 border border-slate-700 rounded-xl overflow-hidden focus-within:ring-2 focus-within:ring-violet-500 focus-within:border-violet-500 transition-shadow p-1">
+    <div class="bg-surface border border-line rounded-b-card p-3 relative z-10">
+      <form
+        class="flex items-end bg-surface-2 border border-line rounded-card overflow-hidden
+               focus-within:ring-2 focus-within:ring-focus focus-within:ring-offset-2 focus-within:ring-offset-surface transition p-1"
+        @submit.prevent="sendMessage"
+      >
         <textarea
           ref="messageInput"
           v-model="inputQuery"
           rows="1"
-          placeholder="Pregunta sobre tus entrenos, sugiere cambios..."
-          class="flex-grow bg-transparent border-none focus:ring-0 resize-none px-4 py-3 min-h-[44px] max-h-32 text-[15px] text-slate-100 placeholder-slate-600 outline-none"
+          placeholder="Pregunta sobre tus entrenos, tu volumen o el mesociclo…"
+          class="flex-grow bg-transparent border-none resize-none px-3 py-2.5 min-h-[44px] max-h-32 text-[15px] text-ink placeholder:text-ink-3 outline-none"
           @keydown.enter.prevent="handleEnter"
           @input="adjustTextareaHeight"
-        ></textarea>
+        />
 
-        <div class="px-2 py-2 flex items-center h-full">
-          <button
-            type="submit"
-            :disabled="!inputQuery.trim() || isTyping"
-            class="bg-violet-600 text-white p-2.5 rounded-lg hover:bg-violet-500 transition flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed group"
-          >
-            <svg class="w-5 h-5 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path></svg>
-          </button>
-        </div>
+        <button
+          type="submit"
+          :disabled="!inputQuery.trim() || isTyping"
+          aria-label="Enviar mensaje"
+          class="bg-accent text-accent-ink w-10 h-10 m-1 rounded-lg hover:opacity-85 transition flex items-center justify-center flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 19V5M5 12l7-7 7 7" />
+          </svg>
+        </button>
       </form>
-      <div class="text-center mt-2">
-        <p class="text-[10px] text-slate-600">HevyTracker AI puede cometer errores. Considera revisar los consejos con un profesional.</p>
-      </div>
+      <p class="text-center text-[10px] text-ink-3 mt-2">
+        El coach puede equivocarse. Contrasta lo importante con un profesional.
+      </p>
     </div>
   </div>
 </template>
@@ -147,6 +146,15 @@
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import type { ConversationSummary } from '~/components/chat/ConversationList.vue'
+
+const toast = useToast()
+
+/** The openers double as the empty state — an empty screen should suggest a move. */
+const QUICK_PROMPTS = [
+  '¿Cómo voy esta semana?',
+  'Analiza mi último entreno',
+  '¿Debería hacer deload?'
+] as const
 
 const route = useRoute()
 const messageInput = ref<HTMLTextAreaElement | null>(null)
@@ -296,7 +304,7 @@ const deleteConversation = async (id: string) => {
       else startNewConversation()
     }
   } catch {
-    alert('No se pudo borrar la conversación.')
+    toast.error('No se pudo borrar la conversación.')
   }
 }
 
@@ -452,16 +460,3 @@ const streamReply = async (text: string) => {
   }
 }
 </script>
-
-<style scoped>
-.custom-scrollbar::-webkit-scrollbar {
-  width: 6px;
-}
-.custom-scrollbar::-webkit-scrollbar-track {
-  background: transparent;
-}
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background-color: rgba(100, 116, 139, 0.3);
-  border-radius: 10px;
-}
-</style>

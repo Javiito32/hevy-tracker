@@ -9,7 +9,11 @@
     "preview": "nuxt preview",
     "postinstall": "nuxt prepare",
     "db:seed": "npx tsx prisma/seed.ts",
-    "db:reset": "npx prisma db push --force-reset && npx tsx prisma/seed.ts"
+    "db:reset": "npx prisma db push --force-reset && npx tsx prisma/seed.ts",
+    "smoke": "npm run smoke:training && npm run smoke:migrations && npm run smoke:plan",
+    "smoke:training": "npx tsx scripts/smoke-training.mts",
+    "smoke:migrations": "npx tsx scripts/smoke-migrations.mts",
+    "smoke:plan": "npx tsx scripts/smoke-plan.mts"
   },
   "prisma": {
     "seed": "npx tsx prisma/seed.ts"

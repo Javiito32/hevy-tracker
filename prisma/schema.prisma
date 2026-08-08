@@ -31,6 +31,8 @@ model User {
   ai_notes       AiNote[]
   foods          Food[]
   diet_plans     DietPlan[]
+  alerts         TrainingAlert[]
+  personal_records PersonalRecord[]
 }
 
 model BodyMetric {
@@ -88,7 +90,7 @@ model Mesocycle {
   end_date             DateTime?
   goal                 String?
   split_description    String?
-  target_volume_weekly Int?
+  target_sessions_weekly Int?
   notes                String?
   status               String    @default("active")
   final_summary        String?
@@ -99,9 +101,73 @@ model Mesocycle {
   macrocycle_id        String?
   macrocycle           Macrocycle? @relation(fields: [macrocycle_id], references: [id])
 
+  /// Hevy routine folder this block was pushed to, if it ever was.
+  hevy_folder_id       Int?
+
   workouts             Workout[]
   evaluations          MesocycleEvaluation[]
   diary_notes          MesocycleNote[]
+  planned_weeks        MesocycleWeek[]
+  planned_sessions     PlannedSession[]
+}
+
+/// Per-week intent within a block: this is where a deload stops being a note in
+/// free text and becomes something the app can act on.
+model MesocycleWeek {
+  id                String    @id @default(uuid())
+  mesocycle_id      String
+  mesocycle         Mesocycle @relation(fields: [mesocycle_id], references: [id], onDelete: Cascade)
+  week_number       Int
+  is_deload         Boolean   @default(false)
+  /// Reps in reserve prescribed for this week. Drives the suggested loads.
+  target_rir        Float?
+  /// Multiplier applied to the block's baseline set count (0.5 on a deload).
+  volume_multiplier Float     @default(1)
+  notes             String?
+
+  @@unique([mesocycle_id, week_number])
+}
+
+/// One planned training day. `hevy_routine_id` is what makes the push to Hevy
+/// idempotent: present means update that routine, absent means create one.
+model PlannedSession {
+  id              String    @id @default(uuid())
+  mesocycle_id    String
+  mesocycle       Mesocycle @relation(fields: [mesocycle_id], references: [id], onDelete: Cascade)
+  name            String
+  order_index     Int       @default(0)
+  /// 1 = Monday … 7 = Sunday. Null for a rotation not tied to weekdays.
+  day_of_week     Int?
+  notes           String?
+  hevy_routine_id String?
+  pushed_at       DateTime?
+
+  exercises PlannedExercise[]
+
+  @@index([mesocycle_id, order_index])
+}
+
+/// The prescription. What separates this from `split_description` is that every
+/// field here is comparable against what the athlete actually logged.
+model PlannedExercise {
+  id                   String   @id @default(uuid())
+  planned_session_id   String
+  planned_session      PlannedSession @relation(fields: [planned_session_id], references: [id], onDelete: Cascade)
+  /// Null when the AI proposed an exercise with no catalogue match; the name
+  /// still prescribes it, it just can't be pushed to Hevy until resolved.
+  exercise_template_id String?
+  name                 String
+  order_index          Int      @default(0)
+  target_sets          Int      @default(3)
+  rep_min              Int?
+  rep_max              Int?
+  target_rir           Float?
+  rest_seconds         Int?
+  /// linear | double_progression | rpe_based — how load advances week to week.
+  progression_scheme   String   @default("double_progression")
+  notes                String?
+
+  @@index([planned_session_id, order_index])
 }
 
 model Workout {
@@ -115,7 +181,11 @@ model Workout {
   duration             Int?
   name                 String
   description          String?
+  /// Working-set tonnage: warm-up sets are excluded. This is the figure the
+  /// whole app means by "volume".
   total_volume         Float?
+  /// Every set including warm-ups. Kept distinct from total_volume rather than
+  /// duplicating it, which is what it used to do.
   total_tonnage        Float?
   rpe_avg              Float?
   exercises_summary    String?
@@ -128,11 +198,194 @@ model Workout {
   mesocycle            Mesocycle? @relation(fields: [mesocycle_id], references: [id])
 
   session_notes        SessionNote[]
+  exercises            WorkoutExercise[]
+  personal_records     PersonalRecord[]
 
   created_at           DateTime  @default(now())
   updated_at           DateTime  @updatedAt
 
   @@unique([user_id, hevy_id])
+  /// Every range query in the app filters by user and date; without this each
+  /// one is a full scan of the user's history.
+  @@index([user_id, date])
+}
+
+/// Hevy's exercise catalogue — the only source of muscle-group information.
+///
+/// Non-custom templates are global: "Bench Press (Barbell)" is the same row for
+/// every user, which is why user_id is nullable and only set on custom ones.
+model ExerciseTemplate {
+  id                      String   @id
+  title                   String
+  /// weight_reps | reps_only | duration | distance | weight_distance ...
+  type                    String
+  primary_muscle_group    String
+  /// JSON array of muscle group slugs.
+  secondary_muscle_groups String   @default("[]")
+  equipment_category      String?
+  is_custom               Boolean  @default(false)
+  /// Null for the global catalogue; set only on a user's custom exercises.
+  user_id                 String?
+  synced_at               DateTime @default(now())
+
+  workout_exercises WorkoutExercise[]
+
+  @@index([user_id])
+  @@index([primary_muscle_group])
+  @@index([title])
+}
+
+/// Manual muscle-group assignment for exercises the catalogue can't resolve —
+/// a custom exercise deleted in Hevy, or a workout logged before the template
+/// existed. Matched by exercise name because that is all such rows have left.
+model ExerciseMuscleOverride {
+  id                      String   @id @default(uuid())
+  user_id                 String
+  exercise_name           String
+  primary_muscle_group    String
+  secondary_muscle_groups String   @default("[]")
+  created_at              DateTime @default(now())
+  updated_at              DateTime @updatedAt
+
+  @@unique([user_id, exercise_name])
+}
+
+/// One exercise within one workout, normalised out of `exercises_summary`.
+///
+/// `exercises_summary` survives as the immutable display snapshot — the same
+/// split as DietItem.nutrients_snapshot — but every aggregate query reads these
+/// rows instead of parsing JSON for the whole history.
+model WorkoutExercise {
+  id                   String   @id @default(uuid())
+  workout_id           String
+  workout              Workout  @relation(fields: [workout_id], references: [id], onDelete: Cascade)
+  /// Denormalised so muscle-group aggregates never join through Workout.
+  user_id              String
+  /// Denormalised for the same reason: every analysis buckets by date.
+  date                 DateTime
+
+  exercise_template_id String?
+  template             ExerciseTemplate? @relation(fields: [exercise_template_id], references: [id], onDelete: SetNull)
+  /// Snapshot of the title as logged, so the row stays readable if the
+  /// template is deleted.
+  name                 String
+  order_index          Int      @default(0)
+  superset_id          Int?
+
+  /// Excludes warm-ups. Volume analysis counts these, never `total_sets`.
+  working_sets         Int      @default(0)
+  total_sets           Int      @default(0)
+  total_volume         Float    @default(0)
+  best_e1rm            Float?
+  top_set_weight       Float?
+  top_set_reps         Int?
+  avg_rpe              Float?
+
+  sets ExerciseSet[]
+
+  @@index([user_id, exercise_template_id, date])
+  @@index([user_id, name, date])
+  @@index([workout_id, order_index])
+}
+
+model ExerciseSet {
+  id                  String  @id @default(uuid())
+  workout_exercise_id String
+  workout_exercise    WorkoutExercise @relation(fields: [workout_exercise_id], references: [id], onDelete: Cascade)
+  order_index         Int     @default(0)
+  /// normal | warmup | dropset | failure. Only 'warmup' is excluded from work.
+  set_type            String  @default("normal")
+  weight_kg           Float?
+  reps                Int?
+  rpe                 Float?
+  distance_meters     Float?
+  duration_seconds    Int?
+  /// RPE-corrected when the set carried an RPE, Epley otherwise, null above 12
+  /// reps. Stored so progression queries don't recompute it per row.
+  e1rm                Float?
+
+  @@index([workout_exercise_id, order_index])
+}
+
+/// A detected training problem. One live row per (user, type, subject): a
+/// plateau that persists across syncs updates its row rather than accumulating
+/// duplicates the athlete has to dismiss one by one.
+model TrainingAlert {
+  id           String    @id @default(uuid())
+  user_id      String
+  user         User      @relation(fields: [user_id], references: [id])
+  /// plateau | fatigue | undertrained | deload_due | overreaching
+  type         String
+  /// exercise | muscle_group | global — what `subject` names.
+  subject_kind String
+  /// Exercise name or muscle group slug; empty string for global alerts.
+  subject      String
+  severity     String    @default("info") // info | warning | critical
+  title        String
+  detail       String
+  /// JSON with the numbers behind the call, so the UI and the AI can show the
+  /// evidence rather than asking the athlete to trust a label.
+  payload_json String?
+  status       String    @default("active") // active | resolved | dismissed
+  detected_at  DateTime  @default(now())
+  updated_at   DateTime  @updatedAt
+  resolved_at  DateTime?
+  dismissed_at DateTime?
+
+  @@unique([user_id, type, subject])
+  @@index([user_id, status, detected_at])
+}
+
+/// A personal record, stored rather than derived: recomputing "best ever" on
+/// every page load means rescanning the whole history, and the athlete wants to
+/// know *when* it happened and what it beat.
+model PersonalRecord {
+  id                   String   @id @default(uuid())
+  user_id              String
+  user                 User     @relation(fields: [user_id], references: [id])
+  exercise_template_id String?
+  exercise_name        String
+  /// max_weight | e1rm | volume | reps_at_weight
+  type                 String
+  value                Float
+  /// The record this one beat. Null on a first-ever record, which is what lets
+  /// the UI say "+2,5 kg" instead of just showing a number.
+  previous_value       Float?
+  /// Only set for reps_at_weight: the load the rep record was set at.
+  at_weight            Float?
+  workout_id           String?
+  workout              Workout? @relation(fields: [workout_id], references: [id], onDelete: SetNull)
+  achieved_at          DateTime
+
+  @@index([user_id, exercise_name, type, achieved_at])
+  @@index([user_id, achieved_at])
+}
+
+/// Long-running background work: the Hevy sync and the five admin migrations.
+///
+/// A sync of two years of history is ~50 API calls and hundreds of upserts;
+/// that cannot live inside an HTTP request, so it runs detached and the UI
+/// polls this row.
+model MaintenanceJob {
+  id               String    @id @default(uuid())
+  /// sync | exercise_templates | rebuild_exercises | recalc_metrics | recalc_records
+  kind             String
+  /// Null when the job spans every user (the global template catalogue).
+  user_id          String?
+  status           String    @default("pending") // pending | running | done | error
+  progress_current Int       @default(0)
+  progress_total   Int       @default(0)
+  /// Human-readable current step, shown live in the admin panel.
+  message          String?
+  /// JSON summary of what the job did, kept after completion for the log.
+  result_json      String?
+  error            String?
+  created_at       DateTime  @default(now())
+  started_at       DateTime?
+  finished_at      DateTime?
+
+  @@index([kind, created_at])
+  @@index([status])
 }
 
 model SessionNote {

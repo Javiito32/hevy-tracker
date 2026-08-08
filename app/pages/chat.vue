@@ -202,13 +202,30 @@ onMounted(async () => {
   if (latest) await selectConversation(latest.id)
   historyLoading.value = false
 
-  if (route.query.context === 'workout') {
-    // Workout hand-off always starts a fresh thread instead of appending to
-    // whatever was open.
+  // Hand-offs from another page always open a fresh thread rather than
+  // appending to whatever happened to be last used.
+  const handOff = HAND_OFFS[route.query.context as string]
+  if (handOff) {
     startNewConversation()
-    sendQuickPrompt('Analiza el rendimiento de mi último entrenamiento y sugiere ajustes para la próxima sesión.', false)
+    sendQuickPrompt(handOff(route.query), false)
   }
 })
+
+/**
+ * Prompts prefilled when arriving from elsewhere in the app.
+ *
+ * The message carries the subject explicitly — the chat's system prompt only
+ * knows the ACTIVE mesocycle, so a link from a paused or completed block would
+ * otherwise land the coach on the wrong one.
+ */
+const HAND_OFFS: Record<string, (q: Record<string, any>) => string> = {
+  workout: () => 'Analiza el rendimiento de mi último entrenamiento y sugiere ajustes para la próxima sesión.',
+  mesocycle: (q) => q.name
+    ? `Hablemos del mesociclo "${q.name}". Revisa cómo está yendo y qué ajustarías.`
+    : 'Revisa cómo está yendo mi mesociclo actual y qué ajustarías.',
+  volume: () => 'Revisa mi volumen semanal por grupo muscular frente a los rangos MEV/MAV/MRV y dime qué debería ajustar.',
+  alerts: () => 'Repasa los avisos de entrenamiento que tengo activos y dime en qué orden los atacarías.'
+}
 
 const loadConversations = async () => {
   listLoading.value = true

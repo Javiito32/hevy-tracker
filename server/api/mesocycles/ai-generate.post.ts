@@ -4,6 +4,8 @@ import { buildAthleteProfile, buildWorkoutData, extractCompoundLiftsData, buildN
 import { runAiTask, aiKeysFromConfig } from '../../utils/ai-service'
 import { MESOCYCLE_GENERATE_PROMPT } from '../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../utils/ai-config'
+import { SEARCH_TEMPLATES_TOOL, searchExerciseTemplates } from '../../utils/exercise-search'
+import { buildMuscleVolumeReport } from '../../utils/muscle-volume'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -28,7 +30,7 @@ export default defineEventHandler(async (event) => {
       where: { user_id: userId, status: { in: ['completed', 'paused'] } },
       orderBy: { start_date: 'desc' },
       take: 2,
-      select: { name: true, goal: true, split_description: true, target_volume_weekly: true }
+      select: { name: true, goal: true, split_description: true, target_sessions_weekly: true }
     }),
     buildNutritionSnapshot(userId)
   ])
@@ -43,7 +45,7 @@ export default defineEventHandler(async (event) => {
       name: m.name,
       ...(m.goal && { goal: m.goal }),
       ...(m.split_description && { split: m.split_description }),
-      ...(m.target_volume_weekly != null && { sessions_per_week: m.target_volume_weekly })
+      ...(m.target_sessions_weekly != null && { sessions_per_week: m.target_sessions_weekly })
     })),
     request: {
       goal,
@@ -54,6 +56,19 @@ export default defineEventHandler(async (event) => {
     ...(nutrition && { nutrition })
   }
 
+  // The athlete's actual set distribution, so the new block corrects what the
+  // last one under- or over-trained instead of restating a generic template.
+  const muscleVolume = await buildMuscleVolumeReport(userId, 8)
+  if (muscleVolume.averages.length) {
+    payload.muscle_volume = muscleVolume.averages.map(a => ({
+      muscle: a.muscle,
+      label: a.label,
+      avg_weekly_sets: a.avg_sets,
+      verdict: a.verdict,
+      ...(a.landmarks && { mev: a.landmarks.mev, mav: a.landmarks.mav, mrv: a.landmarks.mrv })
+    }))
+  }
+
   const { content } = await runAiTask({
     keys: aiKeysFromConfig(config),
     userId,
@@ -61,15 +76,37 @@ export default defineEventHandler(async (event) => {
     systemPrompt: MESOCYCLE_GENERATE_PROMPT,
     payload,
     maxOutputTokens: MAX_OUTPUT_TOKENS.generation,
-    jsonMode: true
+    jsonMode: true,
+    // The catalogue is ~400 entries — too many for the prompt, and a made-up id
+    // yields a plan that looks fine and fails on push. So it looks them up.
+    tools: [SEARCH_TEMPLATES_TOOL],
+    toolImpls: {
+      search_exercise_templates: (args) => searchExerciseTemplates(userId, args)
+    },
+    maxToolIterations: 6
   })
 
   let plan: any
   try {
     plan = JSON.parse(content || '{}')
   } catch {
-    throw createError({ statusCode: 500, statusMessage: 'Error al procesar la respuesta de la IA' })
+    throw createError({ statusCode: 502, statusMessage: 'La IA no devolvió un plan válido. Inténtalo de nuevo.' })
   }
 
-  return { success: true, plan }
+  // Reported rather than silently dropped: a plan whose exercises aren't in the
+  // catalogue still trains fine, it just can't be pushed to Hevy.
+  const sessions = Array.isArray(plan.sessions) ? plan.sessions : []
+  const missingIds = sessions.flatMap((s: any) =>
+    (s.exercises ?? [])
+      .filter((e: any) => !e.exercise_template_id)
+      .map((e: any) => e.name)
+  )
+
+  return {
+    success: true,
+    plan,
+    ...(missingIds.length && {
+      warning: `${missingIds.length} ejercicio(s) sin identificar en el catálogo (${missingIds.slice(0, 4).join(', ')}). El plan es válido, pero no se podrá enviar a Hevy hasta resolverlos.`
+    })
+  }
 })

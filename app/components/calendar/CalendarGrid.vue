@@ -61,19 +61,41 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = defineProps<{
   workouts: any[]
   selectedDate: Date | null
 }>()
 
-const emit = defineEmits(['select-date'])
+const emit = defineEmits<{
+  'select-date': [date: Date]
+  /**
+   * The visible month changed. The parent owns fetching, and /api/workouts is
+   * range-scoped now, so without this the grid would silently show an empty
+   * month as soon as the user navigated outside the fetched window.
+   */
+  'month-change': [range: { from: Date; to: Date }]
+}>()
 
 const currentDate = ref(new Date())
 
-const monthName = computed(() => currentDate.value.toLocaleString('default', { month: 'long' }))
+const monthName = computed(() => currentDate.value.toLocaleDateString('es-ES', { month: 'long' }))
 const year = computed(() => currentDate.value.getFullYear())
+
+/** Padded a week either side, because the grid shows trailing days of the adjacent months. */
+const visibleRange = computed(() => {
+  const y = currentDate.value.getFullYear()
+  const m = currentDate.value.getMonth()
+  const from = new Date(y, m, 1)
+  from.setDate(from.getDate() - 7)
+  const to = new Date(y, m + 1, 0)
+  to.setDate(to.getDate() + 7)
+  to.setHours(23, 59, 59, 999)
+  return { from, to }
+})
+
+watch(visibleRange, (range) => emit('month-change', range), { immediate: true })
 
 const getIntensityClass = (intensity: string) => {
   switch(intensity) {

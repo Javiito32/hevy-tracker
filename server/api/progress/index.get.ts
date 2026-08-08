@@ -1,36 +1,51 @@
 import { prisma } from '../../utils/prisma'
 import { getSessionUser } from '../../utils/session'
 
+/**
+ * Every exercise the user has logged, with session count and 1RM.
+ *
+ * Reads the normalised table instead of parsing `exercises_summary` for the
+ * whole history on each request, which is what the previous version did.
+ *
+ * Reports the BEST estimated 1RM as well as the latest: ranking by the last
+ * session alone means one bad day makes a lift look weaker than it is.
+ */
 export default defineEventHandler(async (event) => {
   const { id: userId } = await getSessionUser(event)
 
-  const workouts = await prisma.workout.findMany({
-    where: { user_id: userId },
-    orderBy: { date: 'desc' },
-    select: { date: true, exercises_summary: true }
-  })
+  const [grouped, latestRows] = await Promise.all([
+    prisma.workoutExercise.groupBy({
+      by: ['name'],
+      where: { user_id: userId },
+      _count: { _all: true },
+      _max: { date: true, best_e1rm: true },
+      _sum: { working_sets: true, total_volume: true }
+    }),
+    // One row per exercise carrying its most recent e1RM. Fetched separately
+    // because groupBy can't return "the value at the max date".
+    prisma.workoutExercise.findMany({
+      where: { user_id: userId, best_e1rm: { not: null } },
+      select: { name: true, date: true, best_e1rm: true },
+      orderBy: { date: 'desc' }
+    })
+  ])
 
-  const exerciseMap = new Map<string, { lastDate: string; lastEstimated1rm: number | null; sessionCount: number }>()
-
-  for (const w of workouts) {
-    const exercises: any[] = w.exercises_summary ? JSON.parse(w.exercises_summary) : []
-    for (const ex of exercises) {
-      const name: string = ex.name
-      if (!name) continue
-      const existing = exerciseMap.get(name)
-      if (!existing) {
-        exerciseMap.set(name, {
-          lastDate: w.date.toISOString(),
-          lastEstimated1rm: ex.estimated_1rm ? parseFloat(ex.estimated_1rm) : null,
-          sessionCount: 1
-        })
-      } else {
-        existing.sessionCount++
-      }
+  const latestByName = new Map<string, number>()
+  for (const row of latestRows) {
+    if (!latestByName.has(row.name) && row.best_e1rm != null) {
+      latestByName.set(row.name, row.best_e1rm)
     }
   }
 
-  return Array.from(exerciseMap.entries())
-    .map(([name, data]) => ({ name, ...data }))
+  return grouped
+    .map(g => ({
+      name: g.name,
+      sessionCount: g._count._all,
+      lastDate: (g._max.date ?? new Date(0)).toISOString(),
+      lastEstimated1rm: latestByName.get(g.name) ?? null,
+      bestEstimated1rm: g._max.best_e1rm ?? null,
+      totalSets: g._sum.working_sets ?? 0,
+      totalVolume: Math.round(g._sum.total_volume ?? 0)
+    }))
     .sort((a, b) => b.sessionCount - a.sessionCount)
 })

@@ -242,6 +242,20 @@ export interface MesocycleGeneratePayload {
   previous_mesocycles: Array<{ name: string; goal?: string; split?: string; sessions_per_week?: number }>
   request: { goal: string; days_per_week: number; duration_weeks: number; equipment?: string }
   nutrition?: NutritionSnapshot
+  /**
+   * Weekly sets per muscle group against MEV/MAV/MRV. Present once the exercise
+   * catalogue is synced — it lets the new block correct what the previous one
+   * actually under- or over-trained.
+   */
+  muscle_volume?: Array<{
+    muscle: string
+    label: string
+    avg_weekly_sets: number
+    verdict: string
+    mev?: number
+    mav?: number
+    mrv?: number
+  }>
 }
 
 export interface NutritionAnalysisPayload {
@@ -487,7 +501,7 @@ export async function buildLastMesocycleSummaryData(userId: string): Promise<Mes
       name: true,
       goal: true,
       split_description: true,
-      target_volume_weekly: true,
+      target_sessions_weekly: true,
       start_date: true,
       end_date: true,
       evaluations: {
@@ -509,7 +523,7 @@ export async function buildLastMesocycleSummaryData(userId: string): Promise<Mes
     name: meso.name,
     ...(meso.goal && { goal: meso.goal }),
     ...(meso.split_description && { split: meso.split_description }),
-    ...(meso.target_volume_weekly != null && { sessions_per_week: meso.target_volume_weekly }),
+    ...(meso.target_sessions_weekly != null && { sessions_per_week: meso.target_sessions_weekly }),
     ...(durationWeeks && { duration_weeks: durationWeeks }),
     ...(meso.evaluations.length && {
       weekly_progressions: meso.evaluations.map(e => ({

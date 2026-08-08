@@ -1,6 +1,6 @@
 <template>
   <div class="max-w-5xl mx-auto">
-    <NuxtLink to="/calendar" class="text-indigo-400 hover:text-indigo-300 mb-4 inline-block transition">← Back to Calendar</NuxtLink>
+    <NuxtLink to="/calendar" class="text-indigo-400 hover:text-indigo-300 mb-4 inline-block transition">← Volver al calendario</NuxtLink>
 
     <div v-if="pending" class="flex justify-center p-12">
       <div class="animate-spin w-8 h-8 rounded-full border-4 border-indigo-500 border-t-transparent"></div>

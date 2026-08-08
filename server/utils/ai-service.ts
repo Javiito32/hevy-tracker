@@ -1,5 +1,5 @@
 import { prisma } from './prisma'
-import { createAiProvider, type AiKeys, type TokenUsage } from './ai-provider'
+import { createAiProvider, type AiKeys, type TokenUsage, type ToolDefinition, type ChatMessage } from './ai-provider'
 
 /** Extracts the AI provider keys from Nuxt's runtime config. */
 export function aiKeysFromConfig(config: { openaiApiKey?: string; openrouterApiKey?: string }): AiKeys {
@@ -23,6 +23,15 @@ interface AiTaskOptions {
   payload: unknown
   maxOutputTokens: number
   jsonMode?: boolean
+  /**
+   * Optional tools. Stateless tasks are one-shot by default, but the plan
+   * generator needs to look up real exercise ids mid-task — the catalogue is
+   * too large to inline and inventing ids produces plans that fail on push.
+   */
+  tools?: ToolDefinition[]
+  toolImpls?: Record<string, (args: any) => Promise<unknown>>
+  /** Rounds of tool calls before the model is forced to answer. */
+  maxToolIterations?: number
 }
 
 interface AiTaskResult {
@@ -35,25 +44,67 @@ interface AiTaskResult {
 export async function runAiTask(options: AiTaskOptions): Promise<AiTaskResult> {
   const provider = createAiProvider(options.keys)
 
-  const result = await provider.generate(
-    [
-      { role: 'system', content: options.systemPrompt },
-      { role: 'user', content: JSON.stringify(options.payload, null, 2) }
-    ],
-    {
+  const messages: ChatMessage[] = [
+    { role: 'system', content: options.systemPrompt },
+    { role: 'user', content: JSON.stringify(options.payload, null, 2) }
+  ]
+
+  const usesTools = Boolean(options.tools?.length && options.toolImpls)
+  const maxIterations = usesTools ? (options.maxToolIterations ?? 4) : 1
+
+  // Usage is SUMMED across iterations: each tool round is a separately billed
+  // call, so reporting only the last one would undercount the task's cost —
+  // the same reason runChatTurn sums.
+  let totalUsage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+  let content = ''
+
+  for (let iteration = 0; iteration < maxIterations; iteration++) {
+    const isFinal = iteration === maxIterations - 1
+    const result = await provider.generate(messages, {
       maxOutputTokens: options.maxOutputTokens,
-      jsonMode: options.jsonMode
+      // JSON mode is withheld until the final turn: a model forced to emit JSON
+      // cannot express a tool call, so requesting both at once silently
+      // disables the tools.
+      jsonMode: options.jsonMode && (!usesTools || isFinal),
+      ...(usesTools && {
+        tools: options.tools,
+        toolChoice: isFinal ? 'none' as const : 'auto' as const
+      })
+    })
+
+    totalUsage = {
+      inputTokens: totalUsage.inputTokens + result.usage.inputTokens,
+      outputTokens: totalUsage.outputTokens + result.usage.outputTokens,
+      totalTokens: totalUsage.totalTokens + result.usage.totalTokens
     }
-  )
+    content = result.text ?? ''
 
-  const content = result.text ?? ''
+    const calls = result.toolCalls ?? []
+    if (!usesTools || calls.length === 0 || isFinal) break
 
-  if (result.usage.totalTokens > 0) {
+    messages.push({ role: 'assistant', content: result.text ?? '', toolCalls: calls })
+    for (const call of calls) {
+      const impl = options.toolImpls?.[call.name]
+      let output: unknown
+      try {
+        output = impl
+          ? await impl(call.arguments ?? {})
+          : { error: `Herramienta desconocida: ${call.name}` }
+      } catch (err: any) {
+        // Surfaced to the model rather than thrown: it can retry with different
+        // arguments, where a thrown error loses the whole generation.
+        output = { error: String(err?.message ?? err) }
+      }
+      messages.push({ role: 'tool', content: JSON.stringify(output), toolCallId: call.id })
+    }
+  }
+
+  if (totalUsage.totalTokens > 0) {
     await recordAiInteraction({
       userId: options.userId,
       contextType: options.contextType,
       content,
-      usage: result.usage,
+      usage: totalUsage,
       model: provider.model
     })
   }
@@ -61,8 +112,8 @@ export async function runAiTask(options: AiTaskOptions): Promise<AiTaskResult> {
   return {
     content,
     model: provider.model,
-    tokensUsed: result.usage.totalTokens,
-    usage: result.usage
+    tokensUsed: totalUsage.totalTokens,
+    usage: totalUsage
   }
 }
 

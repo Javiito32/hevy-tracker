@@ -32,8 +32,10 @@
               <p class="font-medium text-slate-200 text-sm">{{ ex.name }}</p>
               <div class="flex items-center justify-between mt-0.5">
                 <span class="text-xs text-slate-500">{{ ex.sessionCount }} sesiones</span>
-                <span v-if="ex.lastEstimated1rm" class="text-xs font-medium text-indigo-400">
-                  1RM {{ ex.lastEstimated1rm.toFixed(1) }}kg
+                <!-- The best, not the latest: one bad session used to make a
+                     lift look weaker than the athlete has ever been. -->
+                <span v-if="ex.bestEstimated1rm" class="text-xs font-medium text-indigo-400 tabular-nums">
+                  1RM {{ ex.bestEstimated1rm.toFixed(1) }}kg
                 </span>
               </div>
             </button>
@@ -75,20 +77,29 @@
             </div>
 
             <!-- Summary stats -->
-            <div class="grid grid-cols-3 gap-4 mb-6">
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
               <div class="bg-indigo-950/40 border border-indigo-900 rounded-xl p-3 text-center">
                 <p class="text-xs text-indigo-400 font-medium uppercase tracking-wide mb-1">1RM actual</p>
-                <p class="text-2xl font-bold text-indigo-300">{{ latestPoint?.estimated_1rm?.toFixed(1) ?? '-' }}<span class="text-sm font-normal ml-1">kg</span></p>
+                <p class="text-2xl font-bold text-indigo-300 tabular-nums">{{ latestPoint?.estimated_1rm?.toFixed(1) ?? NO_VALUE }}<span class="text-sm font-normal ml-1">kg</span></p>
               </div>
+              <div class="bg-slate-800/60 border border-slate-700 rounded-xl p-3 text-center">
+                <p class="text-xs text-slate-400 font-medium uppercase tracking-wide mb-1">Mejor 1RM</p>
+                <p class="text-2xl font-bold text-slate-200 tabular-nums">{{ bestE1rm?.toFixed(1) ?? NO_VALUE }}<span class="text-sm font-normal ml-1">kg</span></p>
+              </div>
+              <!-- A rolling window, not first-ever vs latest: comparing today
+                   against a session from two years ago says nothing about
+                   whether the lift is moving now. -->
               <div class="bg-emerald-950/40 border border-emerald-900 rounded-xl p-3 text-center">
-                <p class="text-xs text-emerald-400 font-medium uppercase tracking-wide mb-1">Progreso 1RM</p>
-                <p class="text-2xl font-bold" :class="rmProgress >= 0 ? 'text-emerald-400' : 'text-rose-400'">
-                  {{ rmProgress >= 0 ? '+' : '' }}{{ rmProgress.toFixed(1) }}<span class="text-sm font-normal ml-1">kg</span>
+                <p class="text-xs text-emerald-400 font-medium uppercase tracking-wide mb-1">Últimos 30 días</p>
+                <p v-if="rollingProgress !== null" class="text-2xl font-bold tabular-nums" :class="rollingProgress >= 0 ? 'text-emerald-400' : 'text-rose-400'">
+                  {{ rollingProgress >= 0 ? '+' : '' }}{{ rollingProgress.toFixed(1) }}<span class="text-sm font-normal ml-1">kg</span>
                 </p>
+                <p v-else class="text-2xl font-bold text-slate-600">{{ NO_VALUE }}</p>
+                <p class="text-[10px] text-slate-600 mt-0.5">vs. los 30 anteriores</p>
               </div>
               <div class="bg-violet-950/40 border border-violet-900 rounded-xl p-3 text-center">
                 <p class="text-xs text-violet-400 font-medium uppercase tracking-wide mb-1">Sesiones</p>
-                <p class="text-2xl font-bold text-violet-300">{{ chartData.points.length }}</p>
+                <p class="text-2xl font-bold text-violet-300 tabular-nums">{{ chartData.points.length }}</p>
               </div>
             </div>
 
@@ -120,11 +131,18 @@
               </thead>
               <tbody class="divide-y divide-slate-800">
                 <tr v-for="(pt, i) in [...chartData.points].reverse()" :key="i" class="hover:bg-slate-800/50 transition">
-                  <td class="px-4 py-2 text-slate-400">{{ formatDate(pt.date) }}</td>
-                  <td class="px-4 py-2 text-right font-medium text-indigo-400">{{ pt.estimated_1rm?.toFixed(1) ?? '-' }} kg</td>
-                  <td class="px-4 py-2 text-right text-slate-400">{{ pt.max_weight ?? '-' }} kg</td>
-                  <td class="px-4 py-2 text-right text-slate-400">{{ pt.total_volume.toLocaleString() }} kg</td>
-                  <td class="px-4 py-2 text-right text-slate-500">{{ pt.sets }}</td>
+                  <td class="px-4 py-2 text-slate-400">
+                    {{ formatDate(pt.date) }}
+                    <span
+                      v-if="pt.records?.length"
+                      class="ml-1.5 text-[10px] bg-amber-950/60 text-amber-400 border border-amber-900 px-1.5 py-0.5 rounded"
+                      :title="`Récord: ${pt.records.map(recordLabel).join(', ')}`"
+                    >🏆 PR</span>
+                  </td>
+                  <td class="px-4 py-2 text-right font-medium text-indigo-400 tabular-nums">{{ pt.estimated_1rm?.toFixed(1) ?? NO_VALUE }} kg</td>
+                  <td class="px-4 py-2 text-right text-slate-400 tabular-nums">{{ pt.max_weight ?? NO_VALUE }} kg</td>
+                  <td class="px-4 py-2 text-right text-slate-400 tabular-nums">{{ pt.total_volume.toLocaleString('es-ES') }} kg</td>
+                  <td class="px-4 py-2 text-right text-slate-500 tabular-nums">{{ pt.sets }}</td>
                 </tr>
               </tbody>
             </table>
@@ -169,11 +187,41 @@ const latestPoint = computed(() => {
   return chartData.value.points[chartData.value.points.length - 1]
 })
 
-const firstPoint = computed(() => chartData.value?.points[0] ?? null)
+const bestE1rm = computed(() => {
+  const values = (chartData.value?.points ?? [])
+    .map((p: any) => p.estimated_1rm)
+    .filter((v: any): v is number => v != null)
+  return values.length ? Math.max(...values) : null
+})
 
-const rmProgress = computed(() => {
-  if (!latestPoint.value?.estimated_1rm || !firstPoint.value?.estimated_1rm) return 0
-  return latestPoint.value.estimated_1rm - firstPoint.value.estimated_1rm
+/**
+ * Best e1RM of the last 30 days against the best of the 30 before that.
+ *
+ * The previous version compared the first session ever logged with the latest,
+ * so a lift that had stalled for a year still showed a large positive number
+ * from progress made long ago. Returns null rather than 0 when either window is
+ * empty — "no comparable data" is not "no progress".
+ */
+const rollingProgress = computed<number | null>(() => {
+  const points = chartData.value?.points ?? []
+  if (!points.length) return null
+
+  const now = Date.now()
+  const day = 86_400_000
+  const bestIn = (fromDaysAgo: number, toDaysAgo: number): number | null => {
+    const values = points
+      .filter((p: any) => {
+        const age = (now - new Date(p.date).getTime()) / day
+        return age >= toDaysAgo && age < fromDaysAgo && p.estimated_1rm != null
+      })
+      .map((p: any) => p.estimated_1rm as number)
+    return values.length ? Math.max(...values) : null
+  }
+
+  const recent = bestIn(30, 0)
+  const previous = bestIn(60, 30)
+  if (recent == null || previous == null) return null
+  return recent - previous
 })
 
 const activePoints = computed(() => {
@@ -204,4 +252,12 @@ const tabFormatY = computed(() =>
 
 const formatDate = (dateStr: string) =>
   new Date(dateStr).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' })
+
+const RECORD_LABELS: Record<string, string> = {
+  max_weight: 'peso máximo',
+  e1rm: '1RM estimado',
+  volume: 'volumen',
+  reps_at_weight: 'repeticiones'
+}
+const recordLabel = (t: string) => RECORD_LABELS[t] ?? t
 </script>

@@ -111,7 +111,7 @@
         <div>
           <label class="block text-sm font-medium text-slate-400 mb-1.5">Objetivo de entrenamientos por semana</label>
           <input
-            v-model.number="form.target_volume_weekly"
+            v-model.number="form.target_sessions_weekly"
             type="number"
             min="1"
             max="14"
@@ -200,7 +200,7 @@ const form = ref({
   end_date: '',
   goal: '',
   split_description: '',
-  target_volume_weekly: 4,
+  target_sessions_weekly: 4,
   notes: ''
 })
 
@@ -221,11 +221,19 @@ const feedbackError = ref('')
 
 const hasEnoughData = computed(() => !!(form.value.goal && form.value.split_description))
 
+/**
+ * The structured plan the AI produced, held until the mesocycle exists.
+ *
+ * Sessions and exercises hang off a mesocycle id, so they can only be written
+ * after the block is created — the generator runs before that.
+ */
+const generatedPlan = ref<{ sessions: any[]; weeks: any[] } | null>(null)
+
 const generateWithAI = async () => {
   generating.value = true
   generateError.value = ''
   try {
-    const result = await $fetch<{ plan: any }>('/api/mesocycles/ai-generate', {
+    const result = await $fetch<{ plan: any; warning?: string }>('/api/mesocycles/ai-generate', {
       method: 'POST',
       body: {
         goal: aiGoal.value,
@@ -237,9 +245,31 @@ const generateWithAI = async () => {
     const plan = result.plan
     if (plan.name) form.value.name = plan.name
     if (plan.goal) form.value.goal = plan.goal
-    if (plan.split_description) form.value.split_description = plan.split_description
-    if (plan.target_volume_weekly) form.value.target_volume_weekly = plan.target_volume_weekly
     if (plan.notes) form.value.notes = plan.notes
+
+    if (Array.isArray(plan.sessions) && plan.sessions.length) {
+      generatedPlan.value = { sessions: plan.sessions, weeks: plan.weeks ?? [] }
+      form.value.target_sessions_weekly = plan.sessions.length
+      // Preview only — savePlan() regenerates this from the stored structure,
+      // which is the copy that stays authoritative.
+      form.value.split_description = plan.sessions.map((s: any) => {
+        const day = s.day_of_week ? `${DAY_NAMES[s.day_of_week]}: ` : ''
+        const lines = (s.exercises ?? []).map((e: any) => {
+          const reps = e.rep_min && e.rep_max
+            ? (e.rep_min === e.rep_max ? e.rep_min : `${e.rep_min}-${e.rep_max}`)
+            : '?'
+          return `  · ${e.name} — ${e.target_sets}×${reps}${e.target_rir != null ? ` @${e.target_rir} RIR` : ''}`
+        })
+        return `${day}${s.name}\n${lines.join('\n')}`
+      }).join('\n\n')
+    } else if (plan.split_description) {
+      // Older shape, or a model that ignored the structure. Still usable as prose.
+      generatedPlan.value = null
+      form.value.split_description = plan.split_description
+    }
+
+    if (result.warning) generateError.value = result.warning
+
     const end = new Date(form.value.start_date)
     end.setDate(end.getDate() + aiWeeks.value * 7)
     form.value.end_date = end.toISOString().split('T')[0]
@@ -249,6 +279,8 @@ const generateWithAI = async () => {
     generating.value = false
   }
 }
+
+const DAY_NAMES = ['', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
 
 const analyzeWithAI = async () => {
   analyzingFeedback.value = true
@@ -264,7 +296,7 @@ const analyzeWithAI = async () => {
         name: form.value.name,
         goal: form.value.goal,
         split_description: form.value.split_description,
-        target_volume_weekly: form.value.target_volume_weekly,
+        target_sessions_weekly: form.value.target_sessions_weekly,
         duration_weeks: durationWeeks,
         notes: form.value.notes
       }
@@ -284,7 +316,7 @@ const handleSubmit = async () => {
   error.value = ''
   saving.value = true
   try {
-    await $fetch('/api/mesocycles', {
+    const created = await $fetch<{ id: string }>('/api/mesocycles', {
       method: 'POST',
       body: {
         name: form.value.name,
@@ -292,11 +324,26 @@ const handleSubmit = async () => {
         end_date: form.value.end_date || null,
         goal: form.value.goal,
         split_description: form.value.split_description,
-        target_volume_weekly: form.value.target_volume_weekly,
+        target_sessions_weekly: form.value.target_sessions_weekly,
         notes: form.value.notes
       }
     })
-    router.push('/mesocycles')
+
+    // The structured plan needs the mesocycle to exist first. If this fails the
+    // block is still created — the user keeps the prose split and can retry the
+    // structure, rather than losing everything they just filled in.
+    if (generatedPlan.value && created?.id) {
+      try {
+        await $fetch(`/api/mesocycles/${created.id}/plan`, {
+          method: 'PUT',
+          body: generatedPlan.value
+        })
+      } catch {
+        error.value = 'El mesociclo se creó, pero no se pudo guardar el plan estructurado. Puedes regenerarlo desde su ficha.'
+      }
+    }
+
+    router.push(created?.id ? `/mesocycles/${created.id}` : '/mesocycles')
   } catch (err: any) {
     error.value = err?.data?.statusMessage || 'Error al guardar el mesociclo. Inténtalo de nuevo.'
   } finally {

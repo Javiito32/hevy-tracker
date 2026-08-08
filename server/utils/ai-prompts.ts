@@ -130,12 +130,42 @@ export const MESOCYCLE_GENERATE_PROMPT = buildPrompt(
 
 ${NUTRITION_GROUNDING} Ajusta el volumen propuesto a la ingesta planificada: un déficit calórico marcado no admite el mismo volumen que un superávit.
 
+Si el payload trae "muscle_volume", úsalo: es el reparto real de series semanales por grupo muscular del deportista frente a sus rangos MEV/MAV/MRV. Corrige los grupos marcados como below_mev y no subas los que ya estén en above_mrv.
+
+PROCEDIMIENTO OBLIGATORIO:
+1. Usa la herramienta "search_exercise_templates" para localizar CADA ejercicio que vayas a prescribir. Agrupa las búsquedas por grupo muscular para gastar pocas llamadas.
+2. Copia literalmente el "id" que devuelva la herramienta en el campo "exercise_template_id". No inventes ids ni reutilices los de otro ejercicio: un id inventado impide enviar el plan a Hevy.
+3. Solo cuando tengas todos los ids, responde con el JSON final.
+
 Responde ÚNICAMENTE con un objeto JSON válido con esta estructura exacta:
 {
   "name": "Nombre descriptivo del mesociclo",
   "goal": "Objetivo detallado y realista adaptado al perfil",
-  "split_description": "Descripción completa del split día por día con grupos musculares y ejercicios principales sugeridos",
-  "target_volume_weekly": <entero con número de sesiones por semana>,
-  "notes": "Recomendaciones clave, progresión de carga sugerida y cualquier consideración relevante"
-}`
+  "notes": "Recomendaciones clave y consideraciones relevantes",
+  "weeks": [
+    { "week_number": 1, "is_deload": false, "target_rir": 3, "volume_multiplier": 1, "notes": "Semana de acumulación" }
+  ],
+  "sessions": [
+    {
+      "name": "Empuje A",
+      "day_of_week": 1,
+      "notes": null,
+      "exercises": [
+        {
+          "exercise_template_id": "<id EXACTO devuelto por search_exercise_templates>",
+          "name": "Bench Press (Barbell)",
+          "target_sets": 4,
+          "rep_min": 6,
+          "rep_max": 8,
+          "target_rir": 2,
+          "rest_seconds": 180,
+          "progression_scheme": "double_progression",
+          "notes": null
+        }
+      ]
+    }
+  ]
+}
+
+Reglas: "weeks" cubre todas las semanas de "request.duration_weeks", con la última como descarga (is_deload true, volume_multiplier 0.5) si el bloque dura 4 o más semanas. El RIR objetivo debe descender a lo largo del bloque. "day_of_week" va de 1 (lunes) a 7 (domingo), o null si no atas la rutina a días concretos. Habrá tantas sesiones como indique "request.days_per_week".`
 )

@@ -6,7 +6,15 @@
       <div class="animate-spin w-8 h-8 rounded-full border-4 border-indigo-500 border-t-transparent mx-auto"></div>
     </div>
 
+    <div v-else-if="error" class="bg-rose-950/60 border border-rose-800 text-rose-400 text-sm px-4 py-3 rounded-lg">
+      No se pudo cargar el panel. Reintenta en unos segundos.
+    </div>
+
     <template v-else-if="data">
+      <!-- Detected problems come before the summary tiles: what needs attention
+           should not sit below what is merely informative. -->
+      <DashboardTrainingAlerts />
+
       <!-- Top metric cards -->
       <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         <!-- Active Mesocycle -->
@@ -71,29 +79,30 @@
           <h2 class="text-base font-semibold text-slate-200">Volumen por semana del mesociclo</h2>
           <span class="text-xs text-slate-500">{{ data.mesocycleWeeklyVolume.length }} semanas</span>
         </div>
-        <div class="flex items-end gap-2 h-28">
+        <!-- Values are printed above every bar rather than revealed on hover:
+             a hover-only label is unreachable on the phone this app is used on. -->
+        <div class="flex items-end gap-2 h-32">
           <div
             v-for="week in data.mesocycleWeeklyVolume"
             :key="week.week"
-            class="flex-1 flex flex-col justify-end items-center group"
+            class="flex-1 flex flex-col justify-end items-center"
+            :title="`Semana ${week.week}: ${week.volume.toLocaleString('es-ES')} kg · ${week.workoutCount} sesiones${week.avgRpe ? ` · RPE ${week.avgRpe}` : ''}`"
           >
-            <div class="relative w-full">
-              <div
-                class="w-full rounded-t transition-all group-hover:opacity-80"
-                :class="week.week === data.currentWeek ? 'bg-indigo-500' : 'bg-indigo-900'"
-                :style="{ height: `${Math.max(8, (week.volume / maxWeekVolume) * 96)}px` }"
-              >
-                <span class="absolute -top-5 left-1/2 -translate-x-1/2 text-[10px] font-medium text-slate-400 opacity-0 group-hover:opacity-100 whitespace-nowrap">
-                  {{ (week.volume / 1000).toFixed(1) }}t
-                </span>
-              </div>
-            </div>
+            <span class="text-[10px] font-medium text-slate-400 tabular-nums mb-1 whitespace-nowrap">
+              {{ (week.volume / 1000).toFixed(1) }}t
+            </span>
+            <div
+              class="w-full rounded-t-[4px] transition-all"
+              :class="week.week === data.currentWeek ? 'bg-indigo-500' : 'bg-indigo-900'"
+              :style="{ height: `${Math.max(2, (week.volume / maxWeekVolume) * 90)}px` }"
+            ></div>
             <span class="text-[10px] mt-1 text-slate-600">S{{ week.week }}</span>
           </div>
         </div>
         <div class="flex items-center gap-4 mt-3 text-xs text-slate-500">
           <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-indigo-500 inline-block"></span> Semana actual</span>
           <span class="flex items-center gap-1"><span class="w-3 h-3 rounded bg-indigo-900 inline-block"></span> Semanas anteriores</span>
+          <span class="ml-auto">Volumen de trabajo, sin calentamiento</span>
         </div>
       </div>
 
@@ -113,7 +122,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-const { data, pending, refresh } = useFetch('/api/dashboard')
+const { data, pending, error, refresh } = useFetch('/api/dashboard')
 
 const maxWeekVolume = computed(() => {
   if (!data.value?.mesocycleWeeklyVolume?.length) return 1

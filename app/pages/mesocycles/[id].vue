@@ -55,8 +55,11 @@
           >
             Editar
           </button>
+          <!-- Carries which block it is: the chat's system prompt only knows the
+               active mesocycle, so a link from a paused one would silently
+               discuss a different block. -->
           <NuxtLink
-            :to="`/chat`"
+            :to="{ path: '/chat', query: { context: 'mesocycle', name: mesocycle.name } }"
             class="px-4 py-2 bg-violet-600 text-white text-sm rounded-lg hover:bg-violet-500 transition"
           >
             Hablar con IA
@@ -93,7 +96,7 @@
             </div>
             <div>
               <label class="block text-sm font-medium text-slate-400 mb-1.5">Objetivo de entrenamientos/semana</label>
-              <input v-model.number="editForm.target_volume_weekly" type="number" min="1" max="14" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition" />
+              <input v-model.number="editForm.target_sessions_weekly" type="number" min="1" max="14" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition" />
             </div>
             <div>
               <label class="block text-sm font-medium text-slate-400 mb-1.5">Notas generales</label>
@@ -107,6 +110,12 @@
             </div>
           </form>
         </div>
+      </div>
+
+      <!-- The plan: what to do next, and whether the block is being followed. -->
+      <div v-if="nextSession?.has_plan" class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <MesocycleNextSession :data="nextSession" @push="pushToHevy" />
+        <MesocyclePlanAdherence :adherence="plan?.adherence" />
       </div>
 
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -371,14 +380,38 @@ const mesocycleId = route.params.id as string
 const { session } = useUserSession()
 const isAdmin = computed(() => (session.value?.user as any)?.role === 'admin')
 
+const toast = useToast()
+
 const { data: mesocycle, pending, refresh } = useFetch(`/api/mesocycles/${mesocycleId}`)
+const { data: plan, refresh: refreshPlan } = useFetch<any>(`/api/mesocycles/${mesocycleId}/plan`)
+const { data: nextSession, refresh: refreshNext } = useFetch<any>(`/api/mesocycles/${mesocycleId}/next-session`)
+
+/**
+ * Writes the block's routines into the athlete's Hevy account, so it always
+ * asks first — it changes data in an app outside this one.
+ */
+const pushToHevy = async () => {
+  const alreadyPushed = plan.value?.sessions?.some((s: any) => s.hevy_routine_id)
+  const question = alreadyPushed
+    ? '¿Actualizar en Hevy las rutinas de este mesociclo con las cargas de esta semana?'
+    : '¿Crear en tu cuenta de Hevy una carpeta con las rutinas de este mesociclo?'
+  if (!confirm(question)) return
+
+  try {
+    const res = await $fetch<{ message: string }>(`/api/mesocycles/${mesocycleId}/push-to-hevy`, { method: 'POST' })
+    toast.success(res.message)
+    await Promise.all([refreshPlan(), refreshNext()])
+  } catch (err: any) {
+    toast.error(err?.data?.message ?? 'No se pudieron enviar las rutinas a Hevy.')
+  }
+}
 const { data: evaluations, pending: evalsLoading, refresh: refreshEvals } = useFetch(`/api/mesocycles/${mesocycleId}/evaluations`)
 const { data: notes, pending: notesLoading, refresh: refreshNotes } = useFetch(`/api/mesocycles/${mesocycleId}/notes`)
 
 const statusChanging = ref(false)
 const showEditModal = ref(false)
 const savingEdit = ref(false)
-const editForm = ref({ name: '', start_date: '', end_date: '', goal: '', split_description: '', target_volume_weekly: 4, notes: '' })
+const editForm = ref({ name: '', start_date: '', end_date: '', goal: '', split_description: '', target_sessions_weekly: 4, notes: '' })
 
 const openEdit = () => {
   const m = mesocycle.value as any
@@ -388,7 +421,7 @@ const openEdit = () => {
     end_date: m.end_date ? m.end_date.slice(0, 10) : '',
     goal: m.goal ?? '',
     split_description: m.split_description ?? '',
-    target_volume_weekly: m.target_volume_weekly ?? 4,
+    target_sessions_weekly: m.target_sessions_weekly ?? 4,
     notes: m.notes ?? ''
   }
   showEditModal.value = true

@@ -5,6 +5,10 @@
       <span class="text-xs bg-amber-950/60 text-amber-400 px-3 py-1.5 rounded-full font-semibold">Admin</span>
     </div>
 
+    <AdminMaintenanceCard :users="userOptions" />
+
+    <AdminUnclassifiedCard />
+
     <AdminAiRangeFilter :from="range.from" :to="range.to" @change="onRangeChange" />
 
     <!-- Summary cards. Users/actives are absolute; every AI figure respects the range. -->

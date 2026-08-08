@@ -5,7 +5,7 @@
       <h2 class="text-lg font-semibold text-slate-100 capitalize">
         {{ formattedDate }}
       </h2>
-      <p v-if="!workout" class="text-sm text-slate-500 mt-1">No workout recorded.</p>
+      <p v-if="!workout" class="text-sm text-slate-500 mt-1">Sin entrenamiento registrado.</p>
     </div>
 
     <div v-if="workout" class="flex-grow overflow-y-auto p-6 space-y-6">

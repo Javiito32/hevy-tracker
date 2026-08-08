@@ -5,7 +5,7 @@ export default defineEventHandler(async (event) => {
   const { id: userId } = await getSessionUser(event)
   const id = getRouterParam(event, 'id')!
   const body = await readBody(event)
-  const { status, name, goal, split_description, end_date, notes, macrocycle_id, target_volume_weekly } = body
+  const { status, name, goal, split_description, end_date, notes, macrocycle_id, target_sessions_weekly } = body
 
   // Verify ownership before any mutation
   const owned = await prisma.mesocycle.findFirst({
@@ -28,7 +28,7 @@ export default defineEventHandler(async (event) => {
       ...(end_date !== undefined && { end_date: end_date ? new Date(end_date) : null }),
       ...(notes !== undefined && { notes }),
       ...(macrocycle_id !== undefined && { macrocycle_id: macrocycle_id || null }),
-      ...(target_volume_weekly !== undefined && { target_volume_weekly: target_volume_weekly ? Number(target_volume_weekly) : null })
+      ...(target_sessions_weekly !== undefined && { target_sessions_weekly: target_sessions_weekly ? Number(target_sessions_weekly) : null })
     }
   })
 

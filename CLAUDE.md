@@ -38,7 +38,14 @@ Keys are exposed to server-side code via `useRuntimeConfig()` as `config.hevyApi
 app/            ← Nuxt frontend (pages, components, layouts)
 server/
   api/          ← Nitro API route handlers (file = route)
-  utils/        ← Shared server utilities (prisma, hevy-client, openfoodfacts-client, ai-provider, ai-service, ai-chat, ai-prompts, ai-context, ai-payload, ai-tools, ai-config, ai-usage, conversations, volume-calculator, nutrition-calculator, diet-service, food-input)
+  utils/        ← Shared server utilities:
+                   AI:        ai-provider, ai-service, ai-chat, ai-prompts, ai-context,
+                              ai-payload, ai-tools, ai-config, ai-usage, conversations
+                   Training:  volume-calculator, workout-metrics, exercise-store,
+                              exercise-search, muscle-groups, muscle-volume,
+                              plateau-detector, personal-records, plan-service
+                   Infra:     prisma, hevy-client, sync-user, maintenance
+                   Nutrition: openfoodfacts-client, nutrition-calculator, diet-service, food-input
   plugins/      ← Nitro plugins (cron job)
 prisma/
   schema.prisma ← SQLite schema
@@ -64,11 +71,35 @@ All server handlers use `defineEventHandler`. Prisma is accessed via the singlet
 
 The sync runs automatically via a cron job at 02:00 AM server time (`server/plugins/cron.ts`).
 
-Per-workout computed fields stored in DB:
-- `total_volume` — sum of `weight_kg × reps` across all sets (via `calcSetVolume`)
-- `rpe_avg` — average RPE across sets that have RPE data (via `calcAverageRPE`)
-- `exercises_summary` — JSON string of `Array<{ name, sets, total_volume, estimated_1rm, sets_details }>`. **Always `JSON.parse()` before use in API responses.**
-- `estimated_1rm` — per-exercise max, using Epley's formula: `w × (1 + r/30)` (via `calcEstimated1RM`)
+The sync runs as a **background job**, not inline: `POST /api/sync` returns a `jobId` and the UI polls `GET /api/sync/:jobId`. Hevy caps `pageSize` at **10** on workouts and body measurements, so a two-year bootstrap is inherently ~50 requests — that cost can't be paginated away, only moved off the request thread. Body measurements page newest-first and stop at the last stored date (the old day-by-day loop cost one request per calendar day).
+
+#### Workout arithmetic — `server/utils/workout-metrics.ts`
+
+**All of it lives in one pure module**, shared by the sync and the admin recalculation job. If either computed volume on its own, pressing "recalcular métricas" would rewrite the DB with figures the next sync then overwrites, and the two would take turns. `buildWorkoutMetrics(rawHevyWorkout)` takes the payload stored verbatim in `Workout.raw_data` and returns every computed field — no DB, no network, which is what makes the backfill offline.
+
+- **Warm-up sets are not work.** Hevy reports `type` on every set (`normal | warmup | dropset | failure`); only `warmup` is excluded. A drop set and a set to failure are effective work. `isWorkingSet()` in `volume-calculator.ts` is the single predicate.
+- `total_volume` — working-set tonnage. What the whole app means by "volume".
+- `total_tonnage` — everything including warm-ups. It used to be written with the same value as `total_volume`; it now means something different.
+- `rpe_avg` — averaged over working sets only. Including warm-ups dragged the average down in proportion to how thoroughly the athlete warmed up — the opposite of a fatigue signal.
+- `estimated_1rm` — **RPE-corrected when the set carries an RPE** (reps + RIR → a %1RM lookup table), Epley otherwise, and `null` above `MAX_E1RM_REPS = 12`. Epley reads 166 kg from 100 kg × 20; past the cap the app reports nothing rather than a confident lie.
+- `exercises_summary` — JSON snapshot, still stored for display. **Always `JSON.parse()` before use.** It is no longer the source of aggregate queries — see below.
+
+#### Normalised exercises — `WorkoutExercise` / `ExerciseSet`
+
+Every aggregate reads these tables; `exercises_summary` survives only as the immutable display snapshot (the same split as `DietItem.nutrients_snapshot`). `user_id` and `date` are denormalised onto `WorkoutExercise` so muscle-group and date-range aggregates never join through `Workout`.
+
+Written by `writeWorkoutExercises()` in `server/utils/exercise-store.ts`, which **replaces rather than merges** — a workout edited in Hevy can lose an exercise, and merging would strand it forever. Template linking is a separate best-effort pass (`linkTemplates`), because Hevy reports ids the local catalogue may not have yet and a dangling FK would fail the whole insert.
+
+#### Muscle groups — `server/utils/muscle-groups.ts` + `muscle-volume.ts`
+
+`ExerciseTemplate` mirrors Hevy's catalogue (`GET /v1/exercise_templates`, `pageSize=100`, the max). Non-custom templates are **global** — one row per Hevy id shared by every user — which is why `user_id` is nullable and set only on custom ones. `ExerciseMuscleOverride` handles what the catalogue can't resolve, keyed by exercise **name** because such rows have no usable template id left.
+
+- **Weekly working sets per muscle group** is the hypertrophy metric, not tonnage: tonnage rises when you add a leg day and says nothing about chest.
+- **Primary mover = 1 set, each secondary = 0.5** (`PRIMARY_SET_WEIGHT` / `SECONDARY_SET_WEIGHT`). Counting secondaries whole would make a bench press a full set for chest, shoulders *and* triceps, and any push day would appear to blow past MRV on all three. It's a convention applied consistently, not a measurement.
+- Tonnage is attributed to the **primary only** — splitting it across secondaries would make muscle volumes sum to more than the session moved.
+- `VOLUME_LANDMARKS` (MEV/MAV/MRV) are deliberately conservative: telling someone they're under-training when they aren't invites volume they can't recover from.
+- Averages are taken over **weeks that had training**. Including a holiday week halves every average and manufactures a "below MEV" verdict from a deliberate break.
+- **Coverage ships with the numbers.** `coverage: {classified_sets, total_sets}` — with unclassifiable exercises, a low figure is a data gap, not a training gap, and the UI and the AI tool both say so before any number is read.
 
 ### AI integration
 
@@ -127,6 +158,8 @@ Every provider call reports a `TokenUsage` (`{ inputTokens, outputTokens, totalT
 | `POST /api/nutrition/ai-analyze` | Diet analysis | `NutritionAnalysisPayload` |
 | `POST /api/nutrition/ai-targets` | Nutrition targets (JSON mode) | `NutritionTargetsPayload` |
 
+`ai-generate` is the exception to "stateless = one shot": it passes `tools` + `toolImpls` to `runAiTask` so the model can look up real exercise ids. See "Structured training plans".
+
 `ai-generate` and `ai-targets` pass `jsonMode: true` (mapped to the vendor's JSON mode by the adapter) and expects the model to return a structured mesocycle plan. All other stateless endpoints return Markdown.
 
 #### `server/utils/ai-payload.ts`
@@ -142,7 +175,7 @@ Shared builders used by the stateless endpoints:
 
 #### `server/utils/ai-tools.ts`
 
-13 tools available to the chat endpoint (defined provider-neutrally as `AI_TOOLS: ToolDefinition[]`):
+16 tools available to the chat endpoint (defined provider-neutrally as `AI_TOOLS: ToolDefinition[]`):
 
 | Tool | Returns |
 |---|---|
@@ -154,6 +187,9 @@ Shared builders used by the stateless endpoints:
 | `get_mesocycle_evaluations` | Weekly evaluations of a mesocycle (defaults to active). |
 | `get_previous_mesocycles` | Completed/paused mesocycles with final summary. |
 | `get_weekly_aggregates` | Per-week: sessions, total volume, avg RPE, and volume+sets breakdown by exercise. |
+| `get_volume_by_muscle_group` | Weekly sets per muscle group vs MEV/MAV/MRV, with `classification_coverage` and an explicit warning when coverage is low. |
+| `get_training_alerts` | Alerts the detectors already raised, with their evidence. The coach should call this first on open-ended questions ("¿debería hacer deload?") instead of re-deriving the diagnosis. |
+| `get_personal_records` | Current records with the mark they beat — useful to contrast a complaint of stagnation against what did improve. |
 | `get_diet` | A diet version: meals, foods with grams, daily totals. No args = the version in force now; `date` = the one in force that day; `version_id` = a specific one. |
 | `get_diet_history` | Published diet versions with date range, change note and totals. Chain into `get_diet` for a version's meals. |
 | `search_foods` | The user's food catalogue by name/brand, values per 100 g. |
@@ -193,6 +229,60 @@ Tool implementations enforce `user_id` scoping — they never access another use
 - Series colours are the **validated** dark categorical slots; they pass all six checks against this app's surface (`#0f172a`). Re-run `scripts/validate_palette.js` from the `dataviz` skill before changing any of them.
 - `month_to_date` is deliberately **not** range-scoped: "what will this month cost" is a fixed question, and a projection over an arbitrary filter is meaningless.
 - A near-zero bar is left visually near-invisible rather than clamped to a minimum height — clamping would put the top of the stack somewhere other than the true total on the axis. The band-wide hover target and the chart's table view carry the value instead.
+
+### Plateau & fatigue detection — `server/utils/plateau-detector.ts`
+
+Runs **after every sync** (not on its own schedule — an alert must reflect the workout just imported) and writes `TrainingAlert`. Detector failures are caught and logged: imported data is valuable on its own, and a broken detector must never make the app unsyncable.
+
+| Detector | Signal |
+|---|---|
+| `plateau` | Least-squares slope of e1RM per exercise ≤ 0 over ≥3 sessions and ≥21 days. `r²` is reported so a trend from scattered points can be discounted. |
+| `fatigue` | **RPE rising at a matched load** (same weight ±2.5%, same reps ±1). The cleanest fatigue signal in this data: the prescription didn't change, the capacity to meet it did. |
+| `undertrained` | A muscle group under MEV. Suppressed below 50% classification coverage — otherwise a catalogue gap reads as a training gap. |
+| `deload_due` | Requires **≥2 independent signals** (stalled lifts, RPE drift, HRV below its own 30-day mean, weeks accumulated). One stalled lift is variance; the pattern is what justifies telling someone to back off. |
+
+Reconciliation matters more than detection: an alert still true keeps its original `detected_at` (so "lleva 3 semanas" stays honest), one no longer true is `resolved` rather than deleted, and one the user **dismissed stays dismissed** — the detector re-runs every sync and would otherwise resurrect it forever. `@@unique([user_id, type, subject])` enforces one live row per alert identity. Every alert carries `payload_json` with the numbers behind it: a verdict the athlete can't audit gets over-trusted or ignored.
+
+### Personal records — `server/utils/personal-records.ts`
+
+Stored, not derived: deriving "best ever" per page load rescans the history and loses *when* it happened and *what it beat*. Four types; `reps_at_weight` is keyed by load, which is the one that fires during a hypertrophy block when the other three stay silent. `previous_value` is what lets the UI say "+2,5 kg" instead of showing a bare number, and is `null` (never 0) on a first-ever record.
+
+`detectPersonalRecords` compares only against records achieved **strictly earlier**, so `rebuildPersonalRecords` walking oldest-first reproduces the same result and a workout never invalidates its own record.
+
+### Structured training plans — `server/utils/plan-service.ts`
+
+`MesocycleWeek` / `PlannedSession` / `PlannedExercise` are the prescription. What separates them from `split_description` is that every field is comparable against what was logged.
+
+- **All plan mutation goes through `savePlan()`** — the same rule `diet-service.ts` follows for totals. `split_description` and `target_sessions_weekly` are **derived** from the structure in that same call; writing one without the other is how they drift. The prose is kept (not dropped) so every prompt in `ai-prompts.ts` keeps working unchanged.
+- `savePlan` **replaces**: an edited plan can drop a session, and merging would leave it behind.
+- `suggestLoad()` anchors to what the athlete **last actually did**, via an e1RM, not to a percentage of an untested 1RM. It returns `null` with a stated reason when there's no history — an invented starting weight in a barbell app is how people get hurt. Rounded to 2.5 kg, the smallest increment most gyms can load.
+- A week's `target_rir` and `volume_multiplier` **override** the exercise's: a deload is defined by backing everything off, not by per-movement exceptions.
+- `getAdherence()` counts *sets performed vs prescribed*, per exercise. The old "sessions this week" counted showing up. Over-performing (≥130%) is scored amber, not green — it's a deviation from the plan.
+
+`ai-generate` is the **only stateless endpoint with tool calling**: the catalogue is ~400 entries (too many to inline) and an invented `exercise_template_id` yields a plan that looks fine and fails on push, so the model searches via `search_exercise_templates` (`server/utils/exercise-search.ts`). `runAiTask` therefore withholds `jsonMode` until the final turn — a model forced to emit JSON cannot express a tool call — and **sums usage across iterations**, since each round is separately billed.
+
+### Pushing routines to Hevy
+
+`POST /api/mesocycles/:id/push-to-hevy` writes the plan into the user's Hevy account: one `routine_folder` per block (id remembered on `Mesocycle.hevy_folder_id`), one routine per `PlannedSession` (id on `PlannedSession.hevy_routine_id`, so re-sending updates rather than duplicating). Sets carry `rep_range` and `rest_seconds`, both of which the Hevy schema supports.
+
+It **refuses a partial push**: Hevy accepts exercises only by template id, so an unresolved exercise would be silently dropped from the routine. It requires explicit confirmation in the UI — it changes data in an external app and must never be a side effect of saving a mesocycle.
+
+### Background jobs & admin migrations — `server/utils/maintenance.ts`
+
+One `MaintenanceJob` row type serves the sync and the four migrations, because they share one problem: they outlast a request and the caller needs to watch them. `startJob()` returns immediately and captures errors onto the row rather than into an unhandled rejection; a job of the same kind already running is returned instead of started twice.
+
+| Job | Network | Notes |
+|---|---|---|
+| `exercise_templates` | Hevy | Global. Any user's key reads the same non-custom catalogue. |
+| `rebuild_exercises` | none | `raw_data` → `WorkoutExercise`/`ExerciseSet` + template links. |
+| `recalc_metrics` | none | Applies the corrected rules to stored workouts. Reports `volume_delta_kg` — almost always negative, the warm-up tonnage that used to count. |
+| `recalc_records` | none | Must run **after** `recalc_metrics`, or it enshrines the inflated volumes. |
+
+The offline three derive everything from `raw_data`, which the sync never mutates, so re-running produces the same database — that is what makes them safe to try on real data. `/admin` enforces the dependency order in the UI and confirms before each.
+
+### Smoke tests
+
+`npm run smoke` (or `smoke:training` / `smoke:migrations` / `smoke:plan`) runs the suites in `scripts/`. They exercise the real code paths against the dev DB with a throwaway user and clean up after themselves — including that the plateau detector **fires on a stalling lift and stays silent on a progressing one**, which a unit test of the slope function alone would not catch. Needs `DATABASE_URL` set.
 
 ### Settings & User model
 
@@ -234,6 +324,11 @@ Only one mesocycle can be `active` at a time. Both `index.post.ts` (create) and 
 - No global state store (no Pinia). Each page manages its own local `ref()` state.
 - Token counts, costs and dates in the admin panel are formatted with the shared helpers in `app/utils/format.ts` (auto-imported): `formatTokens`, `formatCost`, `formatDateTime`, `formatDateShort`, `NO_VALUE`. Costs use 4 decimals below a cent — 2 would render most per-interaction rows as `0,00 $`. A value that can't be computed renders as `NO_VALUE` (`—`), never `0`.
 - Nutrition components live in `app/components/nutrition/`; shared labels, units and formatters are in `app/utils/nutrition.ts` (auto-imported), which mirrors the label/unit tables in `server/utils/nutrition-calculator.ts` — keep the two in sync. A nutrient with no data renders as `NO_VALUE`, never `0`.
+- Training-set vocabulary lives in `app/utils/training.ts` (auto-imported), mirroring `server/utils/volume-calculator.ts`. `numberSets()` numbers sets the way Hevy's logger does — warm-ups are marked `C` rather than numbered, so working sets read 1, 2, 3 regardless of how many warm-ups preceded them. Only warm-up rows are dimmed; drop sets and sets to failure are effective work and must not read as filler.
+- Toasts replace `alert()`: `useToast()` (`app/composables/useToast.ts`) + `<ToastHost />` in the layout. Errors are sticky by default — one that disappears before it's read is the same as no error. The sync button polls its job and calls `refreshNuxtData()`; it never reloads the page.
+- The nav is behind a hamburger below `lg`. This app is used on a phone, in a gym; ten links in a `flex` row overflowed the viewport.
+- Status colour never carries meaning alone. The palette's green and red measure ΔE 4.1 apart under deuteranopia, so every verdict also ships a glyph, a written label, and (in the volume chart) a position against the MEV/MRV ticks.
+- **The muscle-volume ramp is validated.** `MuscleHeatmap` uses a sequential single-hue ramp checked against this app's surface (`#0f172a`): monotone lightness, ΔL ≥ 0.06 between steps, darkest step at 2.20:1. Steps darker than `#184f95` were rejected at 1.49:1 — indistinguishable from an empty cell. A zero week renders as bare surface with a hairline, never as the darkest step: "no training" and "a little training" must not look like neighbours. Re-run `scripts/validate_palette.js` from the `dataviz` skill before changing them.
 - Admin analytics components live in `app/components/admin/` (`AiRangeFilter`, `AiRunRateCard`, `AiUsageTrendChart`, `AiModelPricesCard`, `AiUsageByModelCard`, `AiUsageByUserCard`, `AiTopInteractionsCard`, `AiUsageLogCard`); `admin/index.vue` is the orchestrator and owns the selected date range, mirroring how `calendar.vue` owns the date `CalendarGrid` emits.
 - Charts are hand-rolled inline SVG (no chart library) — `AiUsageTrendChart` and `charts/LineChart.vue`. Conventions: hairline **solid** gridlines (`#1e293b`) and axis text `#64748b`, marks capped at 24px with a 2px surface gap between stacked segments, a legend whenever there are ≥2 series, and a table view so no value is reachable only by hovering. Load the `dataviz` skill before adding or restyling one.
 - Child components call `useFetch()` **without `await`** — a top-level await makes the component async and forces a Suspense boundary. Nuxt resolves pending `useFetch` calls before SSR renders either way.

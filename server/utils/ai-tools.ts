@@ -2,6 +2,8 @@ import { prisma } from './prisma'
 import type { ToolDefinition } from './ai-provider'
 import { resolveVersion, serializeVersion, getActivePlan, toDateKey } from './diet-service'
 import { MICRO_KEYS, NUTRIENT_KEYS } from './nutrition-calculator'
+import { buildMuscleVolumeReport } from './muscle-volume'
+import { getCurrentRecords, RECORD_LABELS, type RecordType } from './personal-records'
 
 type ToolFn = (userId: string, args: any) => Promise<any>
 
@@ -311,7 +313,7 @@ const getPreviousMesocycles: ToolFn = async (userId, args) => {
     orderBy: { end_date: 'desc' },
     take: limit,
     select: {
-      id: true, name: true, goal: true, split_description: true, target_volume_weekly: true,
+      id: true, name: true, goal: true, split_description: true, target_sessions_weekly: true,
       status: true, start_date: true, end_date: true, final_summary: true
     }
   })
@@ -322,7 +324,7 @@ const getPreviousMesocycles: ToolFn = async (userId, args) => {
       name: m.name,
       goal: m.goal,
       split: m.split_description,
-      target_sessions_weekly: m.target_volume_weekly,
+      target_sessions_weekly: m.target_sessions_weekly,
       status: m.status,
       start: fmtDate(m.start_date),
       end: m.end_date ? fmtDate(m.end_date) : null,
@@ -374,6 +376,95 @@ const getWeeklyAggregates: ToolFn = async (userId, args) => {
         exercises: Array.from(b.exercises.entries())
           .sort((a, b) => b[1].volume - a[1].volume)
           .map(([name, s]) => ({ name, sets: s.sets, volume_kg: s.volume }))
+      }))
+  }
+}
+
+const getVolumeByMuscleGroup: ToolFn = async (userId, args) => {
+  const weeks = Math.min(26, Math.max(1, Number(args.weeks_back) || 8))
+  const report = await buildMuscleVolumeReport(userId, weeks)
+
+  const coverage = report.coverage.total_sets > 0
+    ? report.coverage.classified_sets / report.coverage.total_sets
+    : 0
+
+  return {
+    weeks_back: weeks,
+    /**
+     * Surfaced so the model can hedge: with poor coverage the low numbers are a
+     * gap in the exercise catalogue, not evidence the athlete skipped a muscle.
+     */
+    classification_coverage: parseFloat(coverage.toFixed(2)),
+    ...(coverage < 0.8 && {
+      coverage_warning: `Solo el ${Math.round(coverage * 100)}% de las series están clasificadas por grupo muscular. Los ejercicios sin clasificar (${report.unclassified.slice(0, 5).map(u => u.name).join(', ')}) no cuentan en ningún grupo: no interpretes un volumen bajo como falta de entrenamiento sin avisar de esta limitación.`
+    }),
+    weekly_averages: report.averages.map(a => ({
+      muscle: a.muscle,
+      label: a.label,
+      avg_weekly_sets: a.avg_sets,
+      verdict: a.verdict,
+      ...(a.landmarks && { mev: a.landmarks.mev, mav: a.landmarks.mav, mrv: a.landmarks.mrv })
+    })),
+    weeks: report.weeks.map(w => ({
+      week_start: w.week,
+      sessions: w.sessions,
+      muscles: w.muscles.map(m => ({ muscle: m.muscle, sets: m.sets }))
+    })),
+    ...(report.unclassified.length > 0 && {
+      unclassified_exercises: report.unclassified.slice(0, 15)
+    })
+  }
+}
+
+const getTrainingAlerts: ToolFn = async (userId, args) => {
+  const includeDismissed = args.include_dismissed === true
+  const alerts = await prisma.trainingAlert.findMany({
+    where: {
+      user_id: userId,
+      status: includeDismissed ? { in: ['active', 'dismissed'] } : 'active'
+    },
+    orderBy: { detected_at: 'desc' },
+    take: 30
+  })
+
+  return {
+    count: alerts.length,
+    alerts: alerts.map(a => ({
+      type: a.type,
+      subject: a.subject || null,
+      subject_kind: a.subject_kind,
+      severity: a.severity,
+      title: a.title,
+      detail: a.detail,
+      // The evidence, so the coach argues from numbers instead of restating
+      // the label the detector already wrote.
+      evidence: a.payload_json ? (() => { try { return JSON.parse(a.payload_json!) } catch { return null } })() : null,
+      status: a.status,
+      days_open: Math.max(0, Math.floor((Date.now() - a.detected_at.getTime()) / 86_400_000))
+    }))
+  }
+}
+
+const getPersonalRecords: ToolFn = async (userId, args) => {
+  const exercise = args.exercise_name ? String(args.exercise_name) : undefined
+  const current = await getCurrentRecords(userId, exercise)
+
+  return {
+    count: current.length,
+    records: current
+      .sort((a, b) => b.achieved_at.getTime() - a.achieved_at.getTime())
+      .slice(0, 40)
+      .map(r => ({
+        exercise: r.exercise_name,
+        type: r.type,
+        label: RECORD_LABELS[r.type as RecordType] ?? r.type,
+        value: r.value,
+        ...(r.at_weight != null && { at_weight_kg: r.at_weight }),
+        previous_value: r.previous_value,
+        improvement: r.previous_value != null
+          ? parseFloat((r.value - r.previous_value).toFixed(2))
+          : null,
+        achieved_at: fmtDate(r.achieved_at)
       }))
   }
 }
@@ -559,6 +650,9 @@ const TOOL_IMPLS: Record<string, ToolFn> = {
   get_mesocycle_evaluations: getMesocycleEvaluations,
   get_previous_mesocycles: getPreviousMesocycles,
   get_weekly_aggregates: getWeeklyAggregates,
+  get_volume_by_muscle_group: getVolumeByMuscleGroup,
+  get_training_alerts: getTrainingAlerts,
+  get_personal_records: getPersonalRecords,
   get_diet: getDiet,
   get_diet_history: getDietHistory,
   search_foods: searchFoods,
@@ -658,6 +752,42 @@ Las series llevan "type" sólo cuando NO son normales: "warmup" (calentamiento, 
       type: 'object',
       properties: {
         weeks_back: { type: 'number', description: 'Semanas hacia atrás (1-26, default 8)' }
+      }
+    }
+  },
+  {
+    name: 'get_volume_by_muscle_group',
+    description: `Series semanales por grupo muscular, con la comparación frente a los puntos de referencia MEV (mínimo efectivo), MAV (volumen adaptativo) y MRV (máximo recuperable).
+
+Es LA métrica para juzgar el reparto de volumen en hipertrofia: el tonelaje total sube al añadir un día de pierna y no dice nada sobre el pecho. El movimiento primario cuenta 1 serie y cada secundario 0,5.
+
+"verdict" vale below_mev | developmental | optimal | above_mrv. Si "classification_coverage" es bajo, hay ejercicios que no se pueden asignar a ningún grupo: dilo como limitación de los datos y NO concluyas que el usuario no entrena ese músculo.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        weeks_back: { type: 'number', description: 'Semanas hacia atrás (1-26, default 8)' }
+      }
+    }
+  },
+  {
+    name: 'get_training_alerts',
+    description: `Problemas ya detectados automáticamente por la app tras cada sincronización: estancamiento por ejercicio (regresión del 1RM estimado), fatiga (RPE al alza a carga constante), grupos musculares por debajo del MEV y necesidad de descarga.
+
+Úsalo AL PRINCIPIO cuando el usuario pregunte de forma abierta ("¿cómo voy?", "¿debería hacer deload?", "¿por qué no progreso?"): ya tienes el diagnóstico calculado y con sus datos en "evidence". Cita las cifras de evidence en vez de repetir el título de la alerta.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        include_dismissed: { type: 'boolean', description: 'Incluir también las descartadas por el usuario (default false)' }
+      }
+    }
+  },
+  {
+    name: 'get_personal_records',
+    description: 'Récords personales vigentes: peso máximo, 1RM estimado, volumen en sesión y repeticiones a un peso dado, con la marca anterior que batieron y la fecha. Útil para reconocer progreso concreto y para contrastar una queja de estancamiento con lo que sí ha mejorado.',
+    parameters: {
+      type: 'object',
+      properties: {
+        exercise_name: { type: 'string', description: 'Limitar a un ejercicio concreto (opcional)' }
       }
     }
   },

@@ -85,7 +85,7 @@ export default defineEventHandler(async (event) => {
     },
     thisWeekWorkouts: {
       completed: thisWeekCount,
-      target: activeMesocycle?.target_volume_weekly ?? 4
+      target: activeMesocycle?.target_sessions_weekly ?? 4
     },
     recentWorkouts: formattedWorkouts
   };

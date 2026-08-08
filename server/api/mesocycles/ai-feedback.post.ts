@@ -10,7 +10,7 @@ export default defineEventHandler(async (event) => {
   const { id: userId } = await getSessionUser(event)
 
   const body = await readBody(event)
-  const { name, goal, split_description, target_volume_weekly, duration_weeks, notes } = body
+  const { name, goal, split_description, target_sessions_weekly, duration_weeks, notes } = body
 
   const [athlete, recentWorkouts, baselineMesocycle, nutrition] = await Promise.all([
     buildAthleteProfile(userId),
@@ -33,7 +33,7 @@ export default defineEventHandler(async (event) => {
       ...(name && { name }),
       ...(goal && { goal }),
       ...(duration_weeks && { duration_weeks }),
-      ...(target_volume_weekly != null && { sessions_per_week: target_volume_weekly }),
+      ...(target_sessions_weekly != null && { sessions_per_week: target_sessions_weekly }),
       ...(split_description && { split_description }),
       ...(notes && { notes })
     },

@@ -4,7 +4,7 @@ import { getSessionUser } from '../../utils/session'
 export default defineEventHandler(async (event) => {
   const { id: userId } = await getSessionUser(event)
   const body = await readBody(event)
-  const { name, start_date, end_date, goal, split_description, target_volume_weekly, notes } = body
+  const { name, start_date, end_date, goal, split_description, target_sessions_weekly, notes } = body
 
   if (!name || !start_date) throw createError({ statusCode: 400, statusMessage: 'Name and start_date are required' })
 
@@ -18,7 +18,7 @@ export default defineEventHandler(async (event) => {
       end_date: end_date ? new Date(end_date) : null,
       goal: goal || null,
       split_description: split_description || null,
-      target_volume_weekly: target_volume_weekly ? Number(target_volume_weekly) : null,
+      target_sessions_weekly: target_sessions_weekly ? Number(target_sessions_weekly) : null,
       notes: notes || null,
       status: 'active'
     }

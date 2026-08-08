@@ -81,7 +81,7 @@ export default defineEventHandler(async (event) => {
       name: mesocycle.name,
       ...(mesocycle.goal && { goal: mesocycle.goal }),
       ...(mesocycle.split_description && { split: mesocycle.split_description }),
-      ...(mesocycle.target_volume_weekly != null && { sessions_per_week: mesocycle.target_volume_weekly })
+      ...(mesocycle.target_sessions_weekly != null && { sessions_per_week: mesocycle.target_sessions_weekly })
     },
     current_week: {
       number: weekNumber,
@@ -92,7 +92,7 @@ export default defineEventHandler(async (event) => {
       workouts: thisWeekWorkouts.map(w => buildWorkoutData(w, true)),
       total_volume_kg: Math.round(thisVol),
       sessions_completed: thisWeekWorkouts.length,
-      ...(mesocycle.target_volume_weekly != null && { sessions_target: mesocycle.target_volume_weekly }),
+      ...(mesocycle.target_sessions_weekly != null && { sessions_target: mesocycle.target_sessions_weekly }),
       volume_trend: volumeTrend,
       volume_vs_previous_kg: Math.round(thisVol - prevVol),
       athlete_notes: weekNotes.map((n: any) => ({

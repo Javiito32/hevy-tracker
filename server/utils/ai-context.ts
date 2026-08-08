@@ -267,7 +267,7 @@ export const buildLeanSystemPrompt = async (userId: string): Promise<string> => 
 - Semana actual: ${weekNumber}
 - Objetivo: ${activeMesocycle.goal || 'No especificado'}
 - Split: ${activeMesocycle.split_description || 'No especificado'}
-- Objetivo entrenos/semana: ${activeMesocycle.target_volume_weekly ?? 'No especificado'}
+- Objetivo entrenos/semana: ${activeMesocycle.target_sessions_weekly ?? 'No especificado'}
 Últimas evaluaciones:
 ${evalSummary}
 Diario reciente:

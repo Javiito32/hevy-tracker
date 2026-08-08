@@ -1,6 +1,9 @@
 import { prisma } from './prisma'
-import { fetchHevyWorkouts, fetchHevyWorkoutEvents, fetchHevyBodyMeasurements, fetchHevyBodyMeasurementByDate } from './hevy-client'
-import { calcSetVolume, calcEstimated1RM, calcAverageRPE, isWorkingSet } from './volume-calculator'
+import { fetchHevyWorkouts, fetchHevyWorkoutEvents, fetchHevyBodyMeasurements } from './hevy-client'
+import { buildWorkoutMetrics } from './workout-metrics'
+import { writeWorkoutExercises } from './exercise-store'
+import { detectPersonalRecords } from './personal-records'
+import { runDetectors } from './plateau-detector'
 
 
 async function processAndSaveBodyMetric(userId: string, data: any) {
@@ -49,72 +52,22 @@ async function processAndSaveBodyMetric(userId: string, data: any) {
   return true
 }
 
-async function processAndSaveWorkout(userId: string, w: any, activeMesocycle?: { id: string; start_date: Date; end_date: Date | null } | null) {
-  if (!w || !w.id) return false
+/** Returns the stored workout's id, or null when the payload was unusable. */
+async function processAndSaveWorkout(
+  userId: string,
+  w: any,
+  activeMesocycle?: { id: string; start_date: Date; end_date: Date | null } | null
+): Promise<string | null> {
+  if (!w || !w.id) return null
 
   const startTime = new Date(w.start_time)
   const date = startTime
   const endTime = new Date(w.end_time)
   const duration = Math.floor((endTime.getTime() - startTime.getTime()) / 1000)
 
-  let sessionTotalVolume = 0
-  const allRpes: number[] = []
-  const summary: any[] = []
-
-  if (w.exercises && Array.isArray(w.exercises)) {
-    w.exercises.forEach((ex: any) => {
-      let exVolume = 0
-      let max1RM = 0
-      let exDuration = 0
-      let exDistance = 0
-      const sets: any[] = ex.sets && Array.isArray(ex.sets) ? ex.sets : []
-
-      sets.forEach((set: any) => {
-        const setVol = calcSetVolume(set.weight_kg, set.reps)
-        exVolume += setVol
-        sessionTotalVolume += setVol
-        const set1rm = calcEstimated1RM(set.weight_kg, set.reps)
-        if (set1rm && set1rm > max1RM) max1RM = set1rm
-        if (set.rpe && set.rpe > 0) allRpes.push(set.rpe)
-        if (set.duration_seconds) exDuration += set.duration_seconds
-        if (set.distance_meters) exDistance += set.distance_meters
-      })
-
-      const hasWeight = sets.some((s: any) => s.weight_kg > 0)
-      const hasReps = sets.some((s: any) => s.reps > 0)
-      const hasDistance = sets.some((s: any) => s.distance_meters > 0)
-      const hasDuration = sets.some((s: any) => s.duration_seconds > 0)
-      const exType = (hasWeight || hasReps) ? 'strength' : hasDistance ? 'cardio' : hasDuration ? 'duration' : 'strength'
-
-      summary.push({
-        name: ex.title,
-        type: exType,
-        // Hevy's exercise template id — the key that maps this exercise to its
-        // muscle group. Stored now so the classification backfill never has to
-        // re-fetch workouts from the API.
-        exercise_template_id: ex.exercise_template_id ?? null,
-        sets: sets.length,
-        working_sets: sets.filter(isWorkingSet).length,
-        total_volume: exVolume,
-        estimated_1rm: max1RM > 0 ? max1RM : null,
-        total_duration_seconds: exDuration > 0 ? exDuration : null,
-        total_distance_meters: exDistance > 0 ? exDistance : null,
-        sets_details: sets.map((s: any) => ({
-          // 'normal' | 'warmup' | 'dropset' | 'failure', as Hevy reports it.
-          // A warm-up set is not a working set: it must not count toward
-          // effective volume or set counts once those are corrected.
-          type: s.type ?? 'normal',
-          weight: s.weight_kg ?? null,
-          reps: s.reps ?? null,
-          rpe: s.rpe || null,
-          duration_seconds: s.duration_seconds ?? null,
-          distance_meters: s.distance_meters ?? null,
-        }))
-      })
-    })
-  }
-
-  const rpeAvg = allRpes.length > 0 ? calcAverageRPE(allRpes.map(r => ({ rpe: r }))) : null
+  // All arithmetic lives in workout-metrics.ts so the admin recalculation job
+  // produces byte-identical numbers to this sync.
+  const metrics = buildWorkoutMetrics(w)
 
   let mesocycleId: string | null = null
   if (activeMesocycle) {
@@ -123,15 +76,16 @@ async function processAndSaveWorkout(userId: string, w: any, activeMesocycle?: {
     if (afterStart && beforeEnd) mesocycleId = activeMesocycle.id
   }
 
-  await prisma.workout.upsert({
+  const workout = await prisma.workout.upsert({
     where: { user_id_hevy_id: { user_id: userId, hevy_id: w.id } },
     update: {
       name: w.title,
       description: w.description || null,
-      total_volume: sessionTotalVolume,
-      rpe_avg: rpeAvg,
+      total_volume: metrics.totalVolume,
+      total_tonnage: metrics.totalTonnage,
+      rpe_avg: metrics.rpeAvg,
       duration,
-      exercises_summary: JSON.stringify(summary),
+      exercises_summary: JSON.stringify(metrics.summary),
       raw_data: JSON.stringify(w),
       updated_at: new Date(),
       ...(mesocycleId ? { mesocycle_id: mesocycleId } : {})
@@ -145,19 +99,33 @@ async function processAndSaveWorkout(userId: string, w: any, activeMesocycle?: {
       start_time: startTime,
       end_time: endTime,
       duration,
-      total_volume: sessionTotalVolume,
-      total_tonnage: sessionTotalVolume,
-      rpe_avg: rpeAvg,
-      exercises_summary: JSON.stringify(summary),
+      total_volume: metrics.totalVolume,
+      total_tonnage: metrics.totalTonnage,
+      rpe_avg: metrics.rpeAvg,
+      exercises_summary: JSON.stringify(metrics.summary),
       raw_data: JSON.stringify(w),
       mesocycle_id: mesocycleId
     }
   })
-  return true
+
+  await writeWorkoutExercises(workout.id, userId, date, metrics.summary)
+  return workout.id
 }
 
-export async function syncUserData(userId: string, hevyApiKey: string): Promise<{ syncedWorkouts: number; syncedMetrics: number }> {
+export interface SyncProgress {
+  (step: string, current?: number, total?: number): Promise<void> | void
+}
+
+export async function syncUserData(
+  userId: string,
+  hevyApiKey: string,
+  onProgress?: SyncProgress
+): Promise<{ syncedWorkouts: number; syncedMetrics: number; newRecords: number; alerts: number }> {
+  /** Workouts written this run — the only ones worth re-checking for records. */
+  const touchedWorkouts: string[] = []
   // ── Workouts ──────────────────────────────────────────────────────────────
+  await onProgress?.('Leyendo entrenamientos de Hevy')
+
   const activeMesocycle = await prisma.mesocycle.findFirst({
     where: { user_id: userId, status: 'active' },
     select: { id: true, start_date: true, end_date: true }
@@ -175,8 +143,10 @@ export async function syncUserData(userId: string, hevyApiKey: string): Promise<
       const response = await fetchHevyWorkouts(hevyApiKey, page)
       if (!response || !response.data || response.data.length === 0) break
       for (const w of response.data) {
-        if (await processAndSaveWorkout(userId, w, activeMesocycle)) syncedWorkouts++
+        const id = await processAndSaveWorkout(userId, w, activeMesocycle)
+        if (id) { touchedWorkouts.push(id); syncedWorkouts++ }
       }
+      await onProgress?.(`Importando historial completo`, page, response.pageCount)
       if (response.data.length < 10 || page >= response.pageCount) break
       page++
     }
@@ -191,9 +161,11 @@ export async function syncUserData(userId: string, hevyApiKey: string): Promise<
           await prisma.workout.deleteMany({ where: { user_id: userId, hevy_id: ev.workout_id } })
           syncedWorkouts++
         } else if (ev.type === 'updated' || ev.type === 'created' || ev.workout) {
-          if (await processAndSaveWorkout(userId, ev.workout || ev, activeMesocycle)) syncedWorkouts++
+          const id = await processAndSaveWorkout(userId, ev.workout || ev, activeMesocycle)
+          if (id) { touchedWorkouts.push(id); syncedWorkouts++ }
         }
       }
+      await onProgress?.('Aplicando cambios recientes', page, response.pageCount)
       if (response.events.length < 10 || page >= response.pageCount) break
       page++
     }
@@ -208,43 +180,70 @@ export async function syncUserData(userId: string, hevyApiKey: string): Promise<
   }
 
   // ── Body metrics ──────────────────────────────────────────────────────────
-  const existingMetricsCount = await prisma.bodyMetric.count({ where: { user_id: userId } })
-  const useMetricsBootstrap = existingMetricsCount === 0
+  //
+  // Always paginated, never day-by-day. The old incremental path issued one
+  // request per calendar day since the last recorded metric, so three months
+  // away from the app cost 90 sequential calls to fetch a handful of rows.
+  // Paging newest-first and stopping at the last known date costs one or two.
+  await onProgress?.('Leyendo medidas corporales')
+
+  const lastMetric = await prisma.bodyMetric.findFirst({
+    where: { user_id: userId },
+    orderBy: { date: 'desc' },
+    select: { date: true }
+  })
+  const stopAt = lastMetric?.date ?? null
   let syncedMetrics = 0
 
-  console.log(`🔄 [user:${userId}] Sync métricas — ${useMetricsBootstrap ? 'Bootstrap' : 'Incremental'}`)
+  console.log(`🔄 [user:${userId}] Sync métricas — ${stopAt ? `desde ${stopAt.toISOString().slice(0, 10)}` : 'Bootstrap'}`)
 
-  if (useMetricsBootstrap) {
-    let page = 1
-    let pageCount = 1
-    while (page <= pageCount) {
-      const metricsRes = await fetchHevyBodyMeasurements(hevyApiKey, page)
-      if (!metricsRes || !metricsRes.data || metricsRes.data.length === 0) break
-      for (const m of metricsRes.data) {
-        if (await processAndSaveBodyMetric(userId, m)) syncedMetrics++
+  let page = 1
+  let pageCount = 1
+  let reachedKnown = false
+
+  while (page <= pageCount && !reachedKnown) {
+    const metricsRes = await fetchHevyBodyMeasurements(hevyApiKey, page)
+    if (!metricsRes?.data?.length) break
+    pageCount = metricsRes.pageCount || 1
+
+    for (const m of metricsRes.data) {
+      // Hevy returns these newest-first; once we reach a date we already hold,
+      // everything beyond it is already stored.
+      if (stopAt && m?.date && new Date(`${m.date}T12:00:00.000Z`) < stopAt) {
+        reachedKnown = true
+        break
       }
-      pageCount = metricsRes.pageCount || 1
-      page++
+      if (await processAndSaveBodyMetric(userId, m)) syncedMetrics++
     }
-  } else {
-    const lastMetric = await prisma.bodyMetric.findFirst({ where: { user_id: userId }, orderBy: { date: 'desc' } })
-    if (lastMetric) {
-      let current = new Date(lastMetric.date)
-      current.setDate(current.getDate() + 1)
-      const today = new Date()
-      while (current <= today) {
-        const yyyy = current.getFullYear()
-        const mm = String(current.getMonth() + 1).padStart(2, '0')
-        const dd = String(current.getDate()).padStart(2, '0')
-        const metricData = await fetchHevyBodyMeasurementByDate(hevyApiKey, `${yyyy}-${mm}-${dd}`)
-        if (metricData) {
-          if (await processAndSaveBodyMetric(userId, metricData)) syncedMetrics++
-        }
-        current.setDate(current.getDate() + 1)
-      }
+    await onProgress?.('Leyendo medidas corporales', page, pageCount)
+    page++
+  }
+
+  // ── Records and alerts ────────────────────────────────────────────────────
+  //
+  // Run here rather than on a separate schedule: an alert must reflect the
+  // workout that was just imported, not last night's state.
+  await onProgress?.('Buscando récords')
+  let newRecords = 0
+  for (const workoutId of touchedWorkouts) {
+    try {
+      newRecords += await detectPersonalRecords(userId, workoutId)
+    } catch (err) {
+      console.error(`Error detectando récords en workout ${workoutId}:`, err)
     }
   }
 
-  console.log(`✅ [user:${userId}] Sync completado: ${syncedWorkouts} workouts, ${syncedMetrics} métricas`)
-  return { syncedWorkouts, syncedMetrics }
+  await onProgress?.('Analizando estancamiento y fatiga')
+  let alerts = 0
+  try {
+    // Never let analysis failures fail the sync: the imported data is valuable
+    // on its own, and a broken detector must not make the app unsyncable.
+    const result = await runDetectors(userId)
+    alerts = result.active
+  } catch (err) {
+    console.error(`Error ejecutando detectores para ${userId}:`, err)
+  }
+
+  console.log(`✅ [user:${userId}] Sync completado: ${syncedWorkouts} workouts, ${syncedMetrics} métricas, ${newRecords} récords, ${alerts} alertas`)
+  return { syncedWorkouts, syncedMetrics, newRecords, alerts }
 }

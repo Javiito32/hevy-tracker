@@ -1,7 +1,7 @@
 <template>
   <div class="bg-surface rounded-card border border-line p-4 mb-6">
     <div class="flex flex-wrap items-center gap-3">
-      <span class="text-xs font-semibold text-ink-3 uppercase tracking-wider">Periodo</span>
+      <span class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3">Periodo</span>
 
       <div class="flex gap-1 bg-surface-2 rounded-lg p-1">
         <button v-for="p in PRESETS" :key="p.days ?? 'all'"

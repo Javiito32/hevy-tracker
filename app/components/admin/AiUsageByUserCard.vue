@@ -36,7 +36,7 @@
             <td colspan="6" class="px-4 py-4">
               <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div>
-                  <p class="text-xs font-semibold text-ink-3 uppercase tracking-wider mb-2">Por modelo</p>
+                  <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-2">Por modelo</p>
                   <div class="space-y-1">
                     <div v-for="m in modelsOf(r.user_id)" :key="m.model"
                       class="flex items-center justify-between text-xs py-1 border-b border-line/60">
@@ -49,7 +49,7 @@
                   </div>
                 </div>
                 <div>
-                  <p class="text-xs font-semibold text-ink-3 uppercase tracking-wider mb-2">Por tipo de tarea</p>
+                  <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-2">Por tipo de tarea</p>
                   <div class="space-y-1">
                     <div v-for="t in tasksOf(r.user_id)" :key="t.context_type"
                       class="flex items-center justify-between text-xs py-1 border-b border-line/60">

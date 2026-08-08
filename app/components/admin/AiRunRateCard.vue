@@ -3,7 +3,7 @@
     <!-- Month-to-date is deliberately NOT scoped to the selected range: "what
          will this month cost" is a fixed question. -->
     <div class="bg-surface rounded-card border border-line border-t-4 border-t-violet-500 p-5">
-      <p class="text-xs font-semibold text-ink-3 uppercase tracking-wider mb-2">Gasto del mes en curso</p>
+      <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-2">Gasto del mes en curso</p>
       <p class="font-data text-2xl text-ink">{{ formatCost(mtd?.cost) }}</p>
       <p class="text-xs text-ink-3 mt-1">
         {{ mtd ? `día ${mtd.days_elapsed} de ${mtd.days_in_month}` : '—' }} ·
@@ -12,7 +12,7 @@
     </div>
 
     <div class="bg-surface rounded-card border border-line border-t-4 border-t-amber-500 p-5">
-      <p class="text-xs font-semibold text-ink-3 uppercase tracking-wider mb-2">Proyección a fin de mes</p>
+      <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-2">Proyección a fin de mes</p>
       <p class="font-data text-2xl text-ink">{{ formatCost(mtd?.projected_cost) }}</p>
       <p class="text-xs text-ink-3 mt-1">
         Media diaria actual · {{ formatCost(dailyAverage) }}/día
@@ -20,7 +20,7 @@
     </div>
 
     <div class="bg-surface rounded-card border border-line border-t-4 border-t-indigo-500 p-5">
-      <p class="text-xs font-semibold text-ink-3 uppercase tracking-wider mb-2">Coste medio por interacción</p>
+      <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-2">Coste medio por interacción</p>
       <p class="font-data text-2xl text-ink">{{ formatCost(avgPerInteraction) }}</p>
       <p class="text-xs text-ink-3 mt-1">
         {{ costableCount === null ? '—' : `sobre ${formatTokens(costableCount)} interacciones con coste` }}

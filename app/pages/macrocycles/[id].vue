@@ -149,12 +149,12 @@
         <!-- Right: notes + info -->
         <div class="space-y-6">
           <div v-if="macro.notes" class="bg-surface rounded-card border border-line p-5">
-            <h3 class="text-xs font-semibold text-ink-3 uppercase tracking-wider mb-2">Notas generales</h3>
+            <h3 class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-2">Notas generales</h3>
             <p class="text-sm text-ink-2 whitespace-pre-wrap">{{ macro.notes }}</p>
           </div>
 
           <div v-if="macro.mesocycles.length > 1" class="bg-surface rounded-card border border-line p-5">
-            <h3 class="text-xs font-semibold text-ink-3 uppercase tracking-wider mb-3">Entrenamientos por mesociclo</h3>
+            <h3 class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-3">Entrenamientos por mesociclo</h3>
             <div class="space-y-2">
               <div v-for="meso in macro.mesocycles" :key="meso.id">
                 <div class="flex justify-between text-xs text-ink-3 mb-0.5">

@@ -94,7 +94,7 @@
 
       <!-- Versiones -->
       <div class="space-y-3">
-        <h2 class="text-sm font-semibold text-ink-2 uppercase tracking-wider">
+        <h2 class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3">
           Versiones ({{ data.versions.length }})
         </h2>
         <NutritionDietVersionCard

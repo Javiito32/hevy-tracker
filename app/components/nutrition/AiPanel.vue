@@ -49,7 +49,7 @@
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
           <div v-for="key in MACRO_KEYS" :key="key" class="bg-surface/60 rounded-lg py-2.5">
             <div class="text-lg text-ink">{{ formatNutrientValue(targets[targetField(key)], key) }}</div>
-            <div class="text-[10px] text-ink-3 uppercase tracking-wider">{{ NUTRIENT_SHORT_LABELS[key] }}</div>
+            <div class="text-[10px] text-ink-3 uppercase tracking-wide">{{ NUTRIENT_SHORT_LABELS[key] }}</div>
           </div>
         </div>
 

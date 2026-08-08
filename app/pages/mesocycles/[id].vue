@@ -168,19 +168,19 @@
         <!-- Right column: details panel -->
         <div class="space-y-6">
           <div class="bg-surface rounded-card border border-line p-6">
-            <h2 class="text-sm font-semibold text-ink-2 uppercase tracking-wider mb-3">Objetivo</h2>
+            <h2 class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-3">Objetivo</h2>
             <p class="text-sm text-ink-2 whitespace-pre-wrap" v-if="mesocycle.goal">{{ mesocycle.goal }}</p>
             <p class="text-sm text-ink-3 italic" v-else>Sin objetivo definido.</p>
           </div>
 
           <div class="bg-surface rounded-card border border-line p-6">
-            <h2 class="text-sm font-semibold text-ink-2 uppercase tracking-wider mb-3">Split / Rutina</h2>
+            <h2 class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-3">Split / Rutina</h2>
             <p class="text-sm text-ink-2 whitespace-pre-wrap font-mono" v-if="mesocycle.split_description">{{ mesocycle.split_description }}</p>
             <p class="text-sm text-ink-3 italic" v-else>Sin descripción de split.</p>
           </div>
 
           <div class="bg-surface rounded-card border border-line p-6" v-if="mesocycle.notes">
-            <h2 class="text-sm font-semibold text-ink-2 uppercase tracking-wider mb-3">Notas</h2>
+            <h2 class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-3">Notas</h2>
             <p class="text-sm text-ink-2 whitespace-pre-wrap">{{ mesocycle.notes }}</p>
           </div>
         </div>

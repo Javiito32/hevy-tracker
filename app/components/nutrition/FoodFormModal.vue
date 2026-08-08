@@ -21,7 +21,7 @@
             </div>
 
             <div>
-              <p class="text-xs font-medium text-ink-3 uppercase tracking-wider mb-3">Identificación</p>
+              <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-3">Identificación</p>
               <div class="space-y-3">
                 <div>
                   <label class="block text-sm font-medium text-ink-2 mb-1.5">Nombre *</label>
@@ -49,7 +49,7 @@
             </div>
 
             <div>
-              <p class="text-xs font-medium text-ink-3 uppercase tracking-wider mb-3">Energía y macros (por 100 g) *</p>
+              <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-3">Energía y macros (por 100 g) *</p>
               <div class="grid grid-cols-2 gap-3">
                 <div v-for="key in MACRO_KEYS" :key="key">
                   <label class="block text-xs text-ink-3 mb-1">{{ NUTRIENT_LABELS[key] }}</label>
@@ -75,7 +75,7 @@
               <button
                 type="button"
                 @click="showMicros = !showMicros"
-                class="w-full flex items-center justify-between text-xs font-medium text-ink-3 uppercase tracking-wider mb-3 hover:text-ink-2 transition"
+                class="w-full flex items-center justify-between text-xs font-medium text-ink-3 uppercase tracking-wide mb-3 hover:text-ink-2 transition"
               >
                 <span>Micronutrientes (por 100 g) · opcional</span>
                 <span>{{ showMicros ? '▲' : '▼' }}</span>

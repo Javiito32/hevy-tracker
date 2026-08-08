@@ -57,7 +57,7 @@
 
       <!-- Micronutrientes -->
       <div>
-        <p class="text-xs font-medium text-ink-3 uppercase tracking-wider mb-3">Micronutrientes</p>
+        <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-3">Micronutrientes</p>
         <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-2">
           <div v-for="key in MICRO_KEYS" :key="key" class="flex items-baseline justify-between gap-2 text-sm">
             <span class="text-ink-3 text-xs truncate">{{ NUTRIENT_SHORT_LABELS[key] }}</span>

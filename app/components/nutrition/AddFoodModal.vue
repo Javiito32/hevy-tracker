@@ -100,7 +100,7 @@
                 <div class="grid grid-cols-4 gap-2 text-center">
                   <div v-for="key in MACRO_KEYS" :key="key" class="bg-surface rounded-lg py-2">
                     <div class="text-sm text-ink">{{ formatNutrientValue(scaled[key], key) }}</div>
-                    <div class="text-[10px] text-ink-3 uppercase tracking-wider">{{ NUTRIENT_SHORT_LABELS[key] }}</div>
+                    <div class="text-[10px] text-ink-3 uppercase tracking-wide">{{ NUTRIENT_SHORT_LABELS[key] }}</div>
                   </div>
                 </div>
               </div>

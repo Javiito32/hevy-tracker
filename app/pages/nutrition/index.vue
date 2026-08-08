@@ -81,7 +81,7 @@
         />
 
         <div class="flex items-center justify-between">
-          <h2 class="text-sm font-semibold text-ink-2 uppercase tracking-wider">Comidas</h2>
+          <h2 class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3">Comidas</h2>
           <button
             v-if="!isDraft"
             @click="startEditing"
@@ -204,7 +204,7 @@
                 <input v-model="publishForm.change_note" type="text" :class="INPUT" placeholder="Ej: subo carbos en días de entreno" />
               </div>
               <div>
-                <p class="text-xs font-medium text-ink-3 uppercase tracking-wider mb-2">Objetivos diarios (opcional)</p>
+                <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-2">Objetivos diarios (opcional)</p>
                 <div class="grid grid-cols-4 gap-2">
                   <div v-for="key in MACRO_KEYS" :key="key">
                     <label class="block text-xs text-ink-3 mb-1">{{ NUTRIENT_SHORT_LABELS[key] }}</label>

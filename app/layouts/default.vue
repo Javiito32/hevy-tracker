@@ -16,23 +16,25 @@
         </NuxtLink>
 
         <nav class="hidden lg:flex items-center gap-1 text-sm">
-          <NuxtLink
-            v-for="link in allLinks"
-            :key="link.to"
-            :to="link.to"
-            class="relative px-2.5 py-1.5 rounded transition-colors whitespace-nowrap"
-            :class="isActive(link.to) ? 'text-ink' : 'text-ink-3 hover:text-ink'"
-            :aria-current="isActive(link.to) ? 'page' : undefined"
-          >
-            {{ link.label }}
-            <!-- Where you are was previously not marked at all: ten destinations
-                 and no indication which one you were looking at. -->
-            <span
-              v-if="isActive(link.to)"
-              class="absolute inset-x-2.5 -bottom-px h-px bg-ink"
-              aria-hidden="true"
-            />
-          </NuxtLink>
+          <template v-for="entry in NAV" :key="entry.label">
+            <UiNavMenu v-if="entry.items" :label="entry.label" :items="entry.items" />
+            <NuxtLink
+              v-else
+              :to="entry.to!"
+              class="relative px-2.5 py-1.5 rounded transition-colors whitespace-nowrap"
+              :class="isActive(entry.to!) ? 'text-ink' : 'text-ink-3 hover:text-ink'"
+              :aria-current="isActive(entry.to!) ? 'page' : undefined"
+            >
+              {{ entry.label }}
+              <!-- Where you are was previously not marked at all: eleven
+                   destinations and no indication which one you were looking at. -->
+              <span
+                v-if="isActive(entry.to!)"
+                class="absolute inset-x-2.5 -bottom-px h-px bg-ink"
+                aria-hidden="true"
+              />
+            </NuxtLink>
+          </template>
         </nav>
 
         <div class="flex items-center gap-2 flex-shrink-0">
@@ -120,17 +122,37 @@
         </div>
       </div>
 
-      <nav v-if="mobileNavOpen" class="lg:hidden border-t border-line bg-bg">
-        <div class="container mx-auto px-4 py-2 grid grid-cols-2 sm:grid-cols-3 gap-1">
-          <NuxtLink
-            v-for="link in allLinks"
-            :key="link.to"
-            :to="link.to"
-            class="px-3 py-3 rounded-lg text-sm transition"
-            :class="isActive(link.to) ? 'bg-surface-2 text-ink font-medium' : 'text-ink-2 hover:bg-surface-2'"
-            :aria-current="isActive(link.to) ? 'page' : undefined"
-            @click="mobileNavOpen = false"
-          >{{ link.label }}</NuxtLink>
+      <!-- On the phone the groups become labelled sections rather than a
+           dropdown: a menu inside a menu is one tap too many with chalk on your
+           hands, and the section headings do the same explaining work. -->
+      <nav v-if="mobileNavOpen" class="lg:hidden border-t border-line bg-bg max-h-[70vh] overflow-y-auto custom-scrollbar">
+        <div class="container mx-auto px-4 py-3 space-y-4">
+          <div v-for="entry in NAV" :key="entry.label">
+            <template v-if="entry.items">
+              <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-1.5 px-1">
+                {{ entry.label }}
+              </p>
+              <div class="grid grid-cols-2 gap-1">
+                <NuxtLink
+                  v-for="item in entry.items"
+                  :key="item.to"
+                  :to="item.to"
+                  class="px-3 py-3 rounded-lg text-sm transition"
+                  :class="isActive(item.to) ? 'bg-surface-2 text-ink font-medium' : 'text-ink-2 hover:bg-surface-2'"
+                  :aria-current="isActive(item.to) ? 'page' : undefined"
+                  @click="mobileNavOpen = false"
+                >{{ item.label }}</NuxtLink>
+              </div>
+            </template>
+            <NuxtLink
+              v-else
+              :to="entry.to!"
+              class="block px-3 py-3 rounded-lg text-sm transition"
+              :class="isActive(entry.to!) ? 'bg-surface-2 text-ink font-medium' : 'text-ink-2 hover:bg-surface-2'"
+              :aria-current="isActive(entry.to!) ? 'page' : undefined"
+              @click="mobileNavOpen = false"
+            >{{ entry.label }}</NuxtLink>
+          </div>
         </div>
       </nav>
     </header>
@@ -156,22 +178,57 @@ const isAdmin = computed(() => (session.value?.user as any)?.role === 'admin')
 const toast = useToast()
 const route = useRoute()
 
-const navLinks = [
-  { to: '/', label: 'Dashboard' },
-  { to: '/calendar', label: 'Calendario' },
-  { to: '/mesocycles', label: 'Mesociclos' },
-  { to: '/macrocycles', label: 'Macrociclos' },
-  { to: '/progress', label: 'Progreso' },
-  { to: '/volume', label: 'Volumen' },
-  { to: '/body', label: 'Métricas' },
-  { to: '/nutrition', label: 'Nutrición' },
-  { to: '/chat', label: 'AI Coach' },
-  { to: '/settings', label: 'Ajustes' }
-]
+/**
+ * Six destinations, not eleven.
+ *
+ * The flat list had grown to ten links plus Admin, which overflowed the bar and
+ * — worse — gave no clue how the pages related. They group by the question the
+ * athlete is asking:
+ *
+ *   Plan     — what am I *going* to do
+ *   Análisis — what has been happening
+ *   Nutrición— what am I eating
+ *
+ * Two other things fall out of the grouping. `/nutrition/foods` and
+ * `/nutrition/history` were only reachable from buttons inside the nutrition
+ * page, so they are now navigable like everything else. And `Ajustes` and
+ * `Admin` leave the bar entirely: both already sat in the user menu, and both
+ * belong to the account rather than to training.
+ */
+interface NavEntry {
+  label: string
+  to?: string
+  items?: { to: string; label: string; hint?: string }[]
+}
 
-const allLinks = computed(() =>
-  isAdmin.value ? [...navLinks, { to: '/admin', label: 'Admin' }] : navLinks
-)
+const NAV: NavEntry[] = [
+  { label: 'Resumen', to: '/' },
+  { label: 'Calendario', to: '/calendar' },
+  {
+    label: 'Plan',
+    items: [
+      { to: '/mesocycles', label: 'Mesociclos', hint: 'Bloques y su adherencia' },
+      { to: '/macrocycles', label: 'Macrociclos', hint: 'La temporada completa' }
+    ]
+  },
+  {
+    label: 'Análisis',
+    items: [
+      { to: '/progress', label: 'Progreso', hint: '1RM y volumen por ejercicio' },
+      { to: '/volume', label: 'Volumen', hint: 'Series por grupo muscular' },
+      { to: '/body', label: 'Métricas', hint: 'Peso, medidas, HRV' }
+    ]
+  },
+  {
+    label: 'Nutrición',
+    items: [
+      { to: '/nutrition', label: 'Dieta', hint: 'La versión en vigor' },
+      { to: '/nutrition/foods', label: 'Alimentos', hint: 'Tu catálogo, por 100 g' },
+      { to: '/nutrition/history', label: 'Histórico', hint: 'Versiones publicadas' }
+    ]
+  },
+  { label: 'Coach', to: '/chat' }
+]
 
 /** '/' only matches itself — prefix matching would light up every route. */
 const isActive = (to: string) =>

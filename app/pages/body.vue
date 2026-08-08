@@ -1,33 +1,29 @@
 <template>
   <div class="max-w-7xl mx-auto space-y-7">
 
-    <!-- Header -->
-    <div class="flex items-center justify-between">
-      <div>
-        <h1 class="font-display text-2xl sm:text-[28px] font-semibold tracking-[-0.02em] text-ink leading-none">Métricas Corporales</h1>
-        <p v-if="metrics.length" class="text-sm text-ink-3 mt-1">
-          {{ metrics.length }} registros · último {{ latestDate }}
-        </p>
-      </div>
-      <button @click="openModal(null)"
-        class="flex items-center gap-2 bg-accent text-accent-ink hover:opacity-85 px-4 py-2 rounded-lg text-sm font-semibold transition">
-        + Añadir medida
-      </button>
-    </div>
+    <UiPageHeader
+      eyebrow="Análisis"
+      title="Métricas corporales"
+      :subtitle="metrics.length ? `${metrics.length} registros · último ${latestDate}` : undefined"
+    >
+      <template #actions>
+        <UiButton size="sm" @click="openModal(null)">Añadir medida</UiButton>
+      </template>
+    </UiPageHeader>
 
-    <!-- Loading -->
-    <div v-if="pending" class="flex justify-center py-20">
-      <UiSpinner size="lg" class="text-ink-3" />
+    <div v-if="pending" class="flex justify-center py-20 text-ink-3">
+      <UiSpinner size="lg" />
     </div>
 
     <template v-else>
-      <!-- Empty -->
-      <div v-if="!metrics.length"
-        class="bg-surface rounded-card border border-line p-20 text-center">
-        <p class="text-5xl mb-4">📏</p>
-        <p class="text-ink-2 font-medium mb-1">Sin datos corporales</p>
-        <p class="text-sm text-ink-3">Sincroniza con Hevy o añade una medida manual.</p>
-      </div>
+      <UiCard v-if="!metrics.length" flush>
+        <UiEmptyState
+          title="Sin datos corporales"
+          description="Sincroniza con Hevy para traer tus medidas, o añade una a mano."
+        >
+          <UiButton size="sm" @click="openModal(null)">Añadir la primera</UiButton>
+        </UiEmptyState>
+      </UiCard>
 
       <template v-else>
 
@@ -94,43 +90,59 @@
         </div>
 
         <!-- ── Charts ─────────────────────────────────────────────────────── -->
-        <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
 
-          <!-- Chart 1: Peso & Composición -->
+          <!-- Chart 1: peso y masa magra en kg, con % grasa en su propio panel.
+               Dos escalas distintas nunca comparten un eje: ver más abajo. -->
           <div class="bg-surface rounded-card border border-line p-5">
-            <p class="text-xs font-semibold text-ink-2 uppercase tracking-wider mb-4">Peso &amp; Composición</p>
+            <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-4">
+              Peso y composición
+            </p>
             <div v-if="!c1" class="h-40 flex items-center justify-center text-ink-3 text-sm">Sin datos</div>
-            <svg v-else :viewBox="`0 0 ${W} ${H}`" class="w-full" :style="`height:${H}px`">
-              <!-- Grid -->
-              <line v-for="y in gridYs" :key="y" :x1="pL" :y1="y" :x2="W - pR" :y2="y"
-                class="stroke-line" stroke-width="1" />
-              <!-- Left Y labels (kg) -->
-              <text v-for="l in c1.leftLabels" :key="l.y" :x="pL - 4" :y="l.y + 3.5"
-                text-anchor="end" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
-              <!-- Right Y labels (%) -->
-              <text v-for="l in c1.rightLabels" :key="'r'+l.y" :x="W - pR + 4" :y="l.y + 3.5"
-                text-anchor="start" font-size="9" class="fill-series-4 font-data">{{ l.label }}%</text>
-              <!-- Paths -->
-              <path v-if="c1.weight.path" :d="c1.weight.path" fill="none" class="stroke-series-1" stroke-width="1.8" stroke-linejoin="round" />
-              <path v-if="c1.lean.path" :d="c1.lean.path" fill="none" class="stroke-series-3" stroke-width="1.8" stroke-linejoin="round" />
-              <path v-if="c1.fat.path" :d="c1.fat.path" fill="none" class="stroke-series-4" stroke-width="1.5" stroke-dasharray="4 2" stroke-linejoin="round" />
-              <!-- Dots -->
-              <circle v-for="p in c1.weight.points" :key="`w${p.x}`" :cx="p.x" :cy="p.y" r="2.5" class="fill-series-1" />
-              <circle v-for="p in c1.lean.points" :key="`l${p.x}`" :cx="p.x" :cy="p.y" r="2.5" class="fill-series-3" />
-              <!-- X labels -->
-              <text v-for="l in c1.xLabels" :key="l.x" :x="l.x" :y="H - 4"
-                text-anchor="middle" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
-            </svg>
-            <div class="flex flex-wrap gap-3 mt-3 text-xs">
-              <span class="flex items-center gap-1.5 text-ink-2"><span class="w-3 h-px bg-series-1 inline-block"/>Peso</span>
-              <span class="flex items-center gap-1.5 text-ink-2"><span class="w-3 h-px bg-series-3 inline-block"/>Masa magra</span>
-              <span class="flex items-center gap-1.5 text-ink-2"><span class="w-3 h-px bg-series-4 inline-block"/>% Grasa</span>
-            </div>
+            <template v-else>
+              <p class="font-data text-[10px] text-ink-3 mb-1">kg</p>
+              <svg :viewBox="`0 0 ${W} ${H}`" class="w-full" :style="`height:${H}px`" role="img"
+                aria-label="Peso y masa magra a lo largo del tiempo, en kilogramos">
+                <line v-for="y in gridYs" :key="y" :x1="pL" :y1="y" :x2="W - pR2" :y2="y"
+                  class="stroke-line" stroke-width="1" />
+                <text v-for="l in c1.leftLabels" :key="l.y" :x="pL - 4" :y="l.y + 3.5"
+                  text-anchor="end" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
+                <path v-if="c1.weight.path" :d="c1.weight.path" fill="none" class="stroke-series-1" stroke-width="1.8" stroke-linejoin="round" />
+                <path v-if="c1.lean.path" :d="c1.lean.path" fill="none" class="stroke-series-3" stroke-width="1.8" stroke-linejoin="round" />
+                <circle v-for="p in c1.weight.points" :key="`w${p.x}`" :cx="p.x" :cy="p.y" r="2.5" class="fill-series-1" />
+                <circle v-for="p in c1.lean.points" :key="`l${p.x}`" :cx="p.x" :cy="p.y" r="2.5" class="fill-series-3" />
+                <text v-for="l in c1.xLabels" :key="l.x" :x="l.x" :y="H - 4"
+                  text-anchor="middle" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
+              </svg>
+
+              <div class="flex flex-wrap gap-3 mt-1 text-xs">
+                <span class="flex items-center gap-1.5 text-ink-2"><span class="w-3 h-px bg-series-1 inline-block" />Peso</span>
+                <span class="flex items-center gap-1.5 text-ink-2"><span class="w-3 h-px bg-series-3 inline-block" />Masa magra</span>
+              </div>
+
+              <!-- Second panel, same time axis. Percentage is a different unit
+                   from kilograms, so it gets its own scale rather than a right
+                   axis on the panel above. -->
+              <div v-if="c1Fat" class="mt-4 pt-4 border-t border-line">
+                <p class="font-data text-[10px] text-ink-3 mb-1">% grasa</p>
+                <svg :viewBox="`0 0 ${W} ${FAT_H}`" class="w-full" :style="`height:${FAT_H}px`" role="img"
+                  aria-label="Porcentaje de grasa corporal a lo largo del tiempo">
+                  <line v-for="y in c1Fat.grid" :key="y" :x1="pL" :y1="y" :x2="W - pR2" :y2="y"
+                    class="stroke-line" stroke-width="1" />
+                  <text v-for="l in c1Fat.labels" :key="l.y" :x="pL - 4" :y="l.y + 3.5"
+                    text-anchor="end" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
+                  <path v-if="c1Fat.fat.path" :d="c1Fat.fat.path" fill="none" class="stroke-series-4" stroke-width="1.8" stroke-linejoin="round" />
+                  <circle v-for="p in c1Fat.fat.points" :key="`f${p.x}`" :cx="p.x" :cy="p.y" r="2.5" class="fill-series-4" />
+                  <text v-for="l in c1Fat.xLabels" :key="l.x" :x="l.x" :y="FAT_H - 4"
+                    text-anchor="middle" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
+                </svg>
+              </div>
+            </template>
           </div>
 
           <!-- Chart 2: Perímetros -->
           <div class="bg-surface rounded-card border border-line p-5">
-            <p class="text-xs font-semibold text-ink-2 uppercase tracking-wider mb-4">Perímetros Principales</p>
+            <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-4">Perímetros Principales</p>
             <div v-if="!c2" class="h-40 flex items-center justify-center text-ink-3 text-sm">Sin datos</div>
             <svg v-else :viewBox="`0 0 ${W} ${H}`" class="w-full" :style="`height:${H}px`">
               <line v-for="y in gridYs" :key="y" :x1="pL" :y1="y" :x2="W - pR2" :y2="y"
@@ -155,51 +167,65 @@
 
           <!-- Chart 3: HRV · Últimos 30 días -->
           <div class="bg-surface rounded-card border border-line p-5">
-            <p class="text-xs font-semibold text-ink-2 uppercase tracking-wider mb-4">HRV · Últimos 30 días</p>
+            <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-4">
+              Recuperación · últimos 30 días
+            </p>
             <div v-if="!c3" class="h-40 flex items-center justify-center text-ink-3 text-sm">Sin datos de recuperación</div>
-            <svg v-else :viewBox="`0 0 ${W} ${H}`" class="w-full" :style="`height:${H}px`">
-              <!-- Normal zone band -->
-              <rect v-if="c3.bandRect"
-                :x="c3.bandRect.x" :y="c3.bandRect.y"
-                :width="c3.bandRect.width" :height="c3.bandRect.height"
-                fill="rgba(99,102,241,0.10)" rx="2" />
-              <!-- Mean line -->
-              <line v-if="c3.meanLineY != null"
-                :x1="pL" :y1="c3.meanLineY" :x2="W - pR" :y2="c3.meanLineY"
-                class="stroke-ink-3" stroke-width="1" stroke-dasharray="3 3" opacity="0.6" />
-              <!-- Grid -->
-              <line v-for="y in gridYs" :key="y" :x1="pL" :y1="y" :x2="W - pR" :y2="y"
-                class="stroke-line" stroke-width="1" />
-              <!-- Y labels -->
-              <text v-for="l in c3.leftLabels" :key="l.y" :x="pL - 4" :y="l.y + 3.5"
-                text-anchor="end" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
-              <text v-for="l in c3.rightLabels" :key="'r'+l.y" :x="W - pR + 4" :y="l.y + 3.5"
-                text-anchor="start" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
-              <!-- Resting HR path (secondary) -->
-              <path v-if="c3.hr.path" :d="c3.hr.path" fill="none" class="stroke-series-2"
-                stroke-width="1.3" stroke-dasharray="4 2" opacity="0.45" />
-              <!-- HRV path -->
-              <path v-if="c3.hrv.path" :d="c3.hrv.path" fill="none" class="stroke-series-1" stroke-width="1.8" />
-              <!-- Resting HR dots -->
-              <circle v-for="p in c3.hr.points" :key="`hr${p.x}`" :cx="p.x" :cy="p.y" r="2" class="fill-series-2" opacity="0.45" />
-              <!-- HRV colored dots -->
-              <circle v-for="p in c3.hrvPoints" :key="`hrv${p.x}`" :cx="p.x" :cy="p.y" r="3" :fill="p.color" />
-              <!-- X labels -->
-              <text v-for="l in c3.xLabels" :key="l.x" :x="l.x" :y="H - 4"
-                text-anchor="middle" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
-            </svg>
+            <template v-else>
+              <p class="font-data text-[10px] text-ink-3 mb-1">HRV (ms)</p>
+              <svg :viewBox="`0 0 ${W} ${H}`" class="w-full" :style="`height:${H}px`" role="img"
+                aria-label="Variabilidad de la frecuencia cardiaca en los últimos 30 días">
+                <!-- Normal zone: mean ± 1 sd, so a dip is read against the
+                     athlete's own spread rather than an absolute number. -->
+                <rect v-if="c3.bandRect"
+                  :x="c3.bandRect.x" :y="c3.bandRect.y"
+                  :width="c3.bandRect.width" :height="c3.bandRect.height"
+                  class="fill-ink" fill-opacity="0.06" rx="2" />
+                <line v-if="c3.meanLineY != null"
+                  :x1="pL" :y1="c3.meanLineY" :x2="W - pR2" :y2="c3.meanLineY"
+                  class="stroke-ink-3" stroke-width="1" stroke-dasharray="3 3" opacity="0.6" />
+                <line v-for="y in gridYs" :key="y" :x1="pL" :y1="y" :x2="W - pR2" :y2="y"
+                  class="stroke-line" stroke-width="1" />
+                <text v-for="l in c3.leftLabels" :key="l.y" :x="pL - 4" :y="l.y + 3.5"
+                  text-anchor="end" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
+                <path v-if="c3.hrv.path" :d="c3.hrv.path" fill="none" class="stroke-series-1" stroke-width="1.8" />
+                <!-- Points carry the verdict: each is coloured by its distance
+                     from the mean, which is the reading that matters. -->
+                <circle v-for="p in c3.hrvPoints" :key="`hrv${p.x}`" :cx="p.x" :cy="p.y" r="3" :fill="p.color" />
+                <text v-for="l in c3.xLabels" :key="l.x" :x="l.x" :y="H - 4"
+                  text-anchor="middle" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
+              </svg>
+
+              <!-- Beats per minute is not milliseconds. Own panel, own scale. -->
+              <div v-if="c3.hr" class="mt-4 pt-4 border-t border-line">
+                <p class="font-data text-[10px] text-ink-3 mb-1">FC en reposo (bpm)</p>
+                <svg :viewBox="`0 0 ${W} ${HR_H}`" class="w-full" :style="`height:${HR_H}px`" role="img"
+                  aria-label="Frecuencia cardiaca en reposo en los últimos 30 días">
+                  <line v-for="y in c3.hr.grid" :key="y" :x1="pL" :y1="y" :x2="W - pR2" :y2="y"
+                    class="stroke-line" stroke-width="1" />
+                  <text v-for="l in c3.hr.labels" :key="l.y" :x="pL - 4" :y="l.y + 3.5"
+                    text-anchor="end" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
+                  <path v-if="c3.hr.path" :d="c3.hr.path" fill="none" class="stroke-series-2" stroke-width="1.8" />
+                  <circle v-for="p in c3.hr.points" :key="`hr${p.x}`" :cx="p.x" :cy="p.y" r="2.5" class="fill-series-2" />
+                  <text v-for="l in c3.xLabels" :key="l.x" :x="l.x" :y="HR_H - 4"
+                    text-anchor="middle" font-size="9" class="fill-ink-3 font-data">{{ l.label }}</text>
+                </svg>
+              </div>
+            </template>
+            <!-- The legend now describes only the HRV point colours; resting HR
+                 is named by its own panel heading. -->
             <div class="flex flex-wrap gap-3 mt-3 text-xs text-ink-3">
-              <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-positive inline-block"/>Óptimo</span>
-              <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-warn inline-block"/>Precaución</span>
-              <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-danger inline-block"/>Fatigado</span>
-              <span class="flex items-center gap-1.5 opacity-50"><span class="w-3 h-px bg-series-2 inline-block"/>FC reposo</span>
+              <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-positive inline-block" />Óptimo</span>
+              <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-warn inline-block" />Precaución</span>
+              <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-full bg-danger inline-block" />Fatigado</span>
+              <span class="flex items-center gap-1.5"><span class="w-3 border-t border-dashed border-ink-3 inline-block" />Media 30 d</span>
             </div>
           </div>
         </div>
 
         <!-- ── Snapshot ───────────────────────────────────────────────────── -->
         <div class="bg-surface rounded-card border border-line p-6">
-          <h2 class="text-xs font-semibold text-ink-2 uppercase tracking-wider mb-5">
+          <h2 class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-5">
             Última medición · {{ latestDate }}
           </h2>
           <div class="space-y-6">
@@ -349,7 +375,7 @@
 
             <!-- Sections -->
             <div v-for="section in formSections" :key="section.title">
-              <p class="text-xs font-medium text-ink-3 uppercase tracking-wider mb-3">{{ section.title }}</p>
+              <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-3">{{ section.title }}</p>
               <div class="grid grid-cols-2 gap-3">
                 <div v-for="field in section.fields" :key="field.key">
                   <label class="block text-xs text-ink-3 mb-1">{{ field.label }}</label>
@@ -422,14 +448,14 @@ function valRange(data: Metric[], fields: string[]) {
   return { min: min - pad, max: max + pad }
 }
 
-function buildPath(data: Metric[], field: string, min: number, max: number, padR: number) {
+function buildPath(data: Metric[], field: string, min: number, max: number, padR: number, h = H, padB = pB) {
   const range = max - min || 1
   const n = data.length - 1 || 1
   const pts = data
     .map((m, i) => {
       const v = (m as any)[field] as number | null
       if (v == null) return null
-      return { x: pL + (i / n) * (W - pL - padR), y: pT + (1 - (v - min) / range) * (H - pT - pB), v }
+      return { x: pL + (i / n) * (W - pL - padR), y: pT + (1 - (v - min) / range) * (h - pT - padB), v }
     })
     .filter((p): p is { x: number; y: number; v: number } => p != null)
 
@@ -442,11 +468,11 @@ function buildPath(data: Metric[], field: string, min: number, max: number, padR
   return { path: d, points: pts }
 }
 
-function yLabels(min: number, max: number) {
+function yLabels(min: number, max: number, h = H, padB = pB, steps = 3) {
   const range = max - min
-  return [0, 1, 2, 3].map(i => ({
-    y: pT + (i / 3) * (H - pT - pB),
-    label: (max - (range * i) / 3).toFixed(0),
+  return Array.from({ length: steps + 1 }, (_, i) => ({
+    y: pT + (i / steps) * (h - pT - padB),
+    label: (max - (range * i) / steps).toFixed(0),
   }))
 }
 
@@ -463,20 +489,46 @@ function xLabels(data: Metric[], padR: number) {
 }
 
 // ── Chart computed ─────────────────────────────────────────────────────────────
+
+/**
+ * Weight and lean mass share one kg axis; body-fat % gets its own short panel
+ * underneath, on the same time axis.
+ *
+ * This used to be a single chart with kg on the left and % on the right. A dual
+ * axis lets you slide one scale against the other until the lines cross wherever
+ * you like, so a reader sees "fat crossed above weight in March" — a statement
+ * about the axis choice, not about the athlete. Stacked panels keep the visual
+ * comparison over time and take the false crossing away.
+ */
+const FAT_H = 92
+const FAT_PB = 22
+const HR_H = 92
+const HR_PB = 22
+
 const c1 = computed(() => {
   const d = metrics.value
   if (d.length < 2) return null
   const lR = valRange(d, ['weight', 'lean_mass'])
-  const rR = valRange(d, ['body_fat_percentage'])
   if (!lR) return null
-  const r = rR ?? { min: 0, max: 40 }
   return {
-    weight: buildPath(d, 'weight', lR.min, lR.max, pR),
-    lean: buildPath(d, 'lean_mass', lR.min, lR.max, pR),
-    fat: buildPath(d, 'body_fat_percentage', r.min, r.max, pR),
+    weight: buildPath(d, 'weight', lR.min, lR.max, pR2),
+    lean: buildPath(d, 'lean_mass', lR.min, lR.max, pR2),
     leftLabels: yLabels(lR.min, lR.max),
-    rightLabels: yLabels(r.min, r.max),
-    xLabels: xLabels(d, pR),
+    xLabels: xLabels(d, pR2),
+  }
+})
+
+/** The second panel of the pair. Null when body fat was never recorded. */
+const c1Fat = computed(() => {
+  const d = metrics.value
+  if (d.length < 2) return null
+  const r = valRange(d, ['body_fat_percentage'])
+  if (!r) return null
+  return {
+    fat: buildPath(d, 'body_fat_percentage', r.min, r.max, pR2, FAT_H, FAT_PB),
+    labels: yLabels(r.min, r.max, FAT_H, FAT_PB, 1),
+    grid: [0, 1].map(i => pT + i * (FAT_H - pT - FAT_PB)),
+    xLabels: xLabels(d, pR2),
   }
 })
 
@@ -525,12 +577,12 @@ const c3 = computed(() => {
     const toY = (v: number) => pT + (1 - (v - l.min) / range) * (H - pT - pB)
     const yHigh = toY(Math.min(hrvMean + stddev, l.max))
     const yLow  = toY(Math.max(hrvMean - stddev, l.min))
-    bandRect = { x: pL, y: yHigh, width: W - pL - pR, height: Math.max(0, yLow - yHigh) }
+    bandRect = { x: pL, y: yHigh, width: W - pL - pR2, height: Math.max(0, yLow - yHigh) }
     meanLineY = toY(hrvMean)
   }
 
   // Color each HRV point by deviation from mean
-  const rawHrvPoints = buildPath(d, 'hrv', l.min, l.max, pR).points
+  const rawHrvPoints = buildPath(d, 'hrv', l.min, l.max, pR2).points
   const hrvPoints = rawHrvPoints.map(p => {
     if (hrvMean == null) return { ...p, color: "rgb(var(--series-1))" }
     const pct = (p.v - hrvMean) / Math.abs(hrvMean)
@@ -539,14 +591,23 @@ const c3 = computed(() => {
   })
 
   return {
-    hrv: buildPath(d, 'hrv', l.min, l.max, pR),
-    hr: buildPath(d, 'resting_hr', r.min, r.max, pR),
+    hrv: buildPath(d, 'hrv', l.min, l.max, pR2),
     hrvPoints,
     bandRect,
     meanLineY,
     leftLabels: yLabels(l.min, l.max),
-    rightLabels: yLabels(r.min, r.max),
-    xLabels: xLabels(d, pR),
+    xLabels: xLabels(d, pR2),
+    /**
+     * Resting heart rate is bpm, not milliseconds, so it lives in its own panel
+     * under the HRV one — same window, same time axis, separate scale.
+     */
+    hr: rR
+      ? {
+          ...buildPath(d, 'resting_hr', r.min, r.max, pR2, HR_H, HR_PB),
+          labels: yLabels(r.min, r.max, HR_H, HR_PB, 1),
+          grid: [0, 1].map(i => pT + i * (HR_H - pT - HR_PB))
+        }
+      : null
   }
 })
 

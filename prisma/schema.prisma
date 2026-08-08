@@ -29,6 +29,8 @@ model User {
   body_metrics   BodyMetric[]
   conversations  AiConversation[]
   ai_notes       AiNote[]
+  foods          Food[]
+  diet_plans     DietPlan[]
 }
 
 model BodyMetric {
@@ -235,4 +237,173 @@ model AiNote {
   is_active  Boolean  @default(true)
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
+}
+
+/// Catalogue entry for the nutrition feature.
+///
+/// EVERY nutrient field below is expressed PER 100 g of product — the single
+/// basis the whole feature computes on, which is why none of them carry a
+/// `_100g` suffix. Rows are user-scoped like every other model: the same Open
+/// Food Facts product imported by two users yields two rows, the price of not
+/// introducing a global catalogue with its own admin surface.
+///
+/// Foods are hard-deleted. History survives it because DietItem snapshots these
+/// values at the moment the food is added to a meal — see DietItem.nutrients_snapshot.
+model Food {
+  id             String  @id @default(uuid())
+  user_id        String
+  user           User    @relation(fields: [user_id], references: [id])
+  name           String
+  brand          String?
+  barcode        String?
+  /// manual | openfoodfacts
+  source         String  @default("manual")
+  /// Provider-side id. Equal to `barcode` for Open Food Facts, but kept separate
+  /// so a second provider can be added without a migration.
+  external_id    String?
+  /// Grams in one natural unit (1 huevo = 60). Enables quick-add by units.
+  serving_size_g Float?
+  /// Label for that unit ("1 unidad", "1 vaso", "1 rebanada").
+  serving_label  String?
+
+  /// Required: a food whose energy is unknown makes every total that includes it
+  /// silently wrong. The Open Food Facts importer rejects products with no
+  /// resolvable energy rather than storing a null here.
+  kcal      Float
+  protein_g Float @default(0)
+  carbs_g   Float @default(0)
+  fat_g     Float @default(0)
+
+  /// The 12 tracked micronutrients. Nullable, and null means UNKNOWN — the
+  /// calculator propagates it as unknown instead of counting it as zero, so a
+  /// total is never quietly understated by a food with missing data.
+  fiber_g         Float?
+  sugars_g        Float?
+  saturated_fat_g Float?
+  sodium_mg       Float?
+  potassium_mg    Float?
+  calcium_mg      Float?
+  iron_mg         Float?
+  magnesium_mg    Float?
+  zinc_mg         Float?
+  vitamin_d_ug    Float?
+  vitamin_c_mg    Float?
+  vitamin_b12_ug  Float?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  diet_items DietItem[]
+
+  /// Makes re-importing the same barcode idempotent. SQLite treats NULLs as
+  /// distinct, so any number of manual foods without a barcode coexist fine.
+  @@unique([user_id, barcode])
+  @@index([user_id, name])
+}
+
+/// The diet as a long-lived container. Its actual content lives in DietVersion;
+/// this row holds only identity and intent.
+model DietPlan {
+  id         String   @id @default(uuid())
+  user_id    String
+  user       User     @relation(fields: [user_id], references: [id])
+  name       String
+  /// bulk | cut | maintenance | recomp
+  goal       String?
+  notes      String?
+  /// active | archived. At most one 'active' per user, enforced by an updateMany
+  /// demotion on create/activate — the same idiom Mesocycle uses.
+  status     String   @default("active")
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  versions DietVersion[]
+
+  @@index([user_id, status])
+}
+
+/// Immutable snapshot of a diet's content. Only a version with status 'draft'
+/// may be mutated; publishing freezes it forever. That is what lets the user
+/// look back at any past date and see exactly what the plan was, even after the
+/// underlying Food rows were edited or deleted.
+model DietVersion {
+  id             String   @id @default(uuid())
+  diet_plan_id   String
+  diet_plan      DietPlan @relation(fields: [diet_plan_id], references: [id], onDelete: Cascade)
+  version_number Int
+  /// draft | active | superseded. At most one 'draft' AND one 'active' per plan.
+  status         String   @default("draft")
+  /// Half-open range [start_date, end_date): the version in force on date D is
+  /// start_date <= D AND (end_date IS NULL OR end_date > D). Publishing on the
+  /// same day a version was published would otherwise make two versions match.
+  start_date     DateTime?
+  end_date       DateTime?
+  /// Why this version exists — written by the user when publishing.
+  change_note    String?
+
+  /// Daily targets in force for THIS version. On the version rather than the
+  /// plan so the history can answer "what was I aiming for back then".
+  target_kcal      Float?
+  target_protein_g Float?
+  target_carbs_g   Float?
+  target_fat_g     Float?
+
+  /// Denormalised totals for the reference day, rewritten by
+  /// recalcVersionTotals() on every draft mutation. Columns rather than JSON so
+  /// the history list and the timeline chart sort and plot without parsing —
+  /// the same split as Workout.total_volume vs Workout.exercises_summary.
+  total_kcal      Float @default(0)
+  total_protein_g Float @default(0)
+  total_carbs_g   Float @default(0)
+  total_fat_g     Float @default(0)
+  /// Full 16-nutrient totals per day type, JSON:
+  /// {"all":{...},"training":{...},"rest":{...}}. See nutrition-calculator.ts.
+  totals_json     String?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  meals DietMeal[]
+
+  @@unique([diet_plan_id, version_number])
+  @@index([diet_plan_id, status])
+}
+
+model DietMeal {
+  id              String      @id @default(uuid())
+  diet_version_id String
+  diet_version    DietVersion @relation(fields: [diet_version_id], references: [id], onDelete: Cascade)
+  name            String
+  order_index     Int         @default(0)
+  /// Free text "08:00". No timezone semantics — it is a label on a plan.
+  time_of_day     String?
+  /// all | training | rest. 'all' is eaten every day; the other two let the plan
+  /// differ between training and rest days without duplicating the whole diet.
+  day_type        String      @default("all")
+  created_at      DateTime    @default(now())
+
+  items DietItem[]
+
+  @@index([diet_version_id, order_index])
+}
+
+model DietItem {
+  id           String   @id @default(uuid())
+  diet_meal_id String
+  diet_meal    DietMeal @relation(fields: [diet_meal_id], references: [id], onDelete: Cascade)
+  /// Nulled if the catalogue entry is deleted. The snapshot below keeps the row
+  /// fully readable, which is why Food needs no soft-delete flag.
+  food_id      String?
+  food         Food?    @relation(fields: [food_id], references: [id], onDelete: SetNull)
+  /// Denormalised so a past version renders without touching Food at all.
+  food_name    String
+  quantity_g   Float
+  order_index  Int      @default(0)
+  /// JSON of the food's per-100 g nutrients AT THE MOMENT the item was added.
+  /// This is the mechanism that makes history immutable: correcting a Food's
+  /// kcal today never rewrites what the plan said last March.
+  nutrients_snapshot String
+  created_at   DateTime @default(now())
+
+  @@index([diet_meal_id, order_index])
 }

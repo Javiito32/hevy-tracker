@@ -1,6 +1,6 @@
 import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
-import { buildAthleteProfile, buildWorkoutData, type WeekEvaluationPayload } from '../../../utils/ai-payload'
+import { buildAthleteProfile, buildWorkoutData, buildNutritionSnapshot, type WeekEvaluationPayload } from '../../../utils/ai-payload'
 import { runAiTask, aiKeysFromConfig } from '../../../utils/ai-service'
 import { WEEK_EVALUATION_PROMPT } from '../../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../../utils/ai-config'
@@ -34,8 +34,9 @@ export default defineEventHandler(async (event) => {
 
   const historyStart = prevWindows.length ? prevWindows[0].start : weekStart
 
-  const [athlete, thisWeekWorkouts, prevEvaluations, weekNotes, ...prevWeeksWorkouts] = await Promise.all([
+  const [athlete, nutrition, thisWeekWorkouts, prevEvaluations, weekNotes, ...prevWeeksWorkouts] = await Promise.all([
     buildAthleteProfile(userId),
+    buildNutritionSnapshot(userId),
     prisma.workout.findMany({
       where: { user_id: userId, mesocycle_id: id, date: { gte: weekStart, lt: weekEnd } },
       orderBy: { date: 'asc' },
@@ -114,7 +115,8 @@ export default defineEventHandler(async (event) => {
       week: e.week_number,
       ...(e.summary && { summary: e.summary }),
       ...(e.volume_trend && { volume_trend: e.volume_trend })
-    }))
+    })),
+    ...(nutrition && { nutrition })
   }
 
   const { content: aiAnalysis, model } = await runAiTask({

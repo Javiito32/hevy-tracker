@@ -33,9 +33,10 @@
         <h4 class="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Ejercicios</h4>
         <div class="space-y-4">
           <div v-for="(ex, index) in exercises" :key="index" class="text-sm">
-            <div class="flex justify-between font-medium text-slate-200 mb-1 border-b border-slate-800 pb-1">
-              <span>{{ ex.name }}</span>
-              <span class="text-slate-500">{{ ex.sets }} sets</span>
+            <div class="flex justify-between items-baseline gap-3 font-medium text-slate-200 mb-1 border-b border-slate-800 pb-1">
+              <span class="min-w-0 truncate">{{ ex.name }}</span>
+              <!-- describeSetCount reports working sets, flagging warm-ups apart. -->
+              <span class="text-slate-500 text-xs whitespace-nowrap">{{ describeSetCount(ex.sets_details || []) }}</span>
             </div>
             <div class="text-slate-400 flex justify-between">
               <template v-if="ex.type === 'cardio' || ex.type === 'duration'">

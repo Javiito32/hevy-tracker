@@ -1,11 +1,15 @@
 import { prisma } from './prisma'
 import type { ToolDefinition } from './ai-provider'
+import { resolveVersion, serializeVersion, getActivePlan, toDateKey } from './diet-service'
+import { MICRO_KEYS, NUTRIENT_KEYS } from './nutrition-calculator'
 
 type ToolFn = (userId: string, args: any) => Promise<any>
 
 // Caps to keep tool outputs from flooding the model context.
 const MAX_WORKOUTS_SUMMARY = 40
 const MAX_WORKOUTS_FULL = 12
+const MAX_DIET_VERSIONS = 20
+const MAX_FOOD_RESULTS = 25
 
 const parseDate = (s: string | undefined, fallback?: Date): Date | undefined => {
   if (!s) return fallback
@@ -66,6 +70,9 @@ const fullWorkout = (w: any) => {
       if (ex.total_duration_seconds) e.total_duration_s = ex.total_duration_seconds
       e.sets_details = (ex.sets_details || []).map((s: any) => {
         const sd: any = {}
+        // Emitted only when it isn't 'normal': a marker on the few sets that
+        // need one, rather than a field repeated on every row.
+        if (s.type && s.type !== 'normal') sd.type = s.type
         if (s.weight != null) sd.weight_kg = s.weight
         if (s.reps != null) sd.reps = s.reps
         if (s.rpe) sd.rpe = s.rpe
@@ -389,6 +396,160 @@ const deactivateUserNote: ToolFn = async (userId, args) => {
   return { success: true, message: 'Nota desactivada.' }
 }
 
+const getDiet: ToolFn = async (userId, args) => {
+  const version = await resolveVersion(userId, {
+    version_id: args.version_id || null,
+    date: args.date || null
+  })
+  if (!version) {
+    return args.date
+      ? { error: `No hay ninguna dieta registrada que estuviera vigente el ${args.date}.` }
+      : { error: 'El usuario no tiene ninguna dieta publicada.' }
+  }
+
+  const [plan, latestWeight] = await Promise.all([
+    prisma.dietPlan.findUnique({ where: { id: version.diet_plan_id } }),
+    prisma.bodyMetric.findFirst({
+      where: { user_id: userId, weight: { not: null } },
+      orderBy: { date: 'desc' },
+      select: { weight: true }
+    })
+  ])
+
+  const s = serializeVersion(version, { weightKg: latestWeight?.weight ?? null })
+
+  // Only micros with data are emitted. An omitted one means the food data is
+  // incomplete, not that the plan provides zero — sending 0 would invite the
+  // model to diagnose a deficiency that isn't in evidence. Micros backed by
+  // only some of the foods travel with an explicit "lower bound" warning.
+  const micronutrients: Record<string, number> = {}
+  const micronutrientsPartial: Record<string, string> = {}
+  for (const key of MICRO_KEYS) {
+    const value = (s.totals.all as any)[key]
+    if (value == null) continue
+    micronutrients[key] = value
+    const entry = s.totals.coverage?.all?.[key]
+    if (entry && entry.known < entry.total) {
+      micronutrientsPartial[key] = `mínimo: solo ${entry.known} de ${entry.total} alimentos tienen este dato`
+    }
+  }
+
+  const day = (n: any) => ({ kcal: n.kcal, protein_g: n.protein_g, carbs_g: n.carbs_g, fat_g: n.fat_g })
+
+  return {
+    is_plan_not_log: true,
+    version_id: s.id,
+    version_number: s.version_number,
+    status: s.status,
+    plan_name: plan?.name,
+    ...(plan?.goal && { goal: plan.goal }),
+    ...(s.start_date && { from: s.start_date }),
+    ...(s.end_date && { to: s.end_date }),
+    ...(Object.values(s.targets).some(v => v != null) && { targets: s.targets }),
+    daily_totals: { ...day(s.totals.all), ...micronutrients },
+    ...(Object.keys(micronutrientsPartial).length > 0 && { micronutrients_partial: micronutrientsPartial }),
+    ...(s.macro_split.protein_pct != null && {
+      macro_split_pct: {
+        protein: s.macro_split.protein_pct,
+        carbs: s.macro_split.carbs_pct,
+        fat: s.macro_split.fat_pct
+      }
+    }),
+    ...(s.protein_g_per_kg != null && { protein_g_per_kg: s.protein_g_per_kg }),
+    ...(s.has_day_split && { training_day: day(s.totals.training), rest_day: day(s.totals.rest) }),
+    meals: s.meals.map((meal: any) => ({
+      name: meal.name,
+      ...(meal.time_of_day && { time_of_day: meal.time_of_day }),
+      ...(meal.day_type !== 'all' && { day_type: meal.day_type }),
+      foods: meal.items.map((item: any) => ({ name: item.food_name, quantity_g: item.quantity_g }))
+    }))
+  }
+}
+
+const getDietHistory: ToolFn = async (userId, args) => {
+  const plan = await getActivePlan(userId)
+  if (!plan) return { error: 'El usuario no tiene ninguna dieta registrada.' }
+
+  const limit = Math.min(Math.max(Number(args.limit) || 10, 1), MAX_DIET_VERSIONS)
+
+  const versions = await prisma.dietVersion.findMany({
+    // Drafts are excluded: they were never followed, so they are not history.
+    where: { diet_plan_id: plan.id, status: { in: ['active', 'superseded'] }, start_date: { not: null } },
+    orderBy: { start_date: 'desc' },
+    take: limit,
+    select: {
+      id: true,
+      version_number: true,
+      status: true,
+      start_date: true,
+      end_date: true,
+      change_note: true,
+      total_kcal: true,
+      total_protein_g: true,
+      total_carbs_g: true,
+      total_fat_g: true
+    }
+  })
+
+  return {
+    is_plan_not_log: true,
+    plan_name: plan.name,
+    ...(plan.goal && { goal: plan.goal }),
+    count: versions.length,
+    versions: versions.map(v => ({
+      version_id: v.id,
+      version_number: v.version_number,
+      status: v.status,
+      from: toDateKey(v.start_date),
+      ...(v.end_date && { to: toDateKey(v.end_date) }),
+      ...(v.change_note && { change_note: v.change_note }),
+      kcal: n1(v.total_kcal),
+      protein_g: n1(v.total_protein_g),
+      carbs_g: n1(v.total_carbs_g),
+      fat_g: n1(v.total_fat_g)
+    }))
+  }
+}
+
+const searchFoods: ToolFn = async (userId, args) => {
+  const query = (args.query || '').toString().trim()
+  if (!query) return { error: 'query es requerido' }
+  const limit = Math.min(Math.max(Number(args.limit) || 10, 1), MAX_FOOD_RESULTS)
+
+  const foods = await prisma.food.findMany({
+    where: {
+      user_id: userId,
+      OR: [{ name: { contains: query } }, { brand: { contains: query } }]
+    },
+    orderBy: { name: 'asc' },
+    take: limit
+  })
+
+  return {
+    query,
+    count: foods.length,
+    values_are_per_100g: true,
+    foods: foods.map(food => {
+      const per100g: Record<string, number> = {}
+      for (const key of NUTRIENT_KEYS) {
+        const value = (food as any)[key]
+        if (value != null) per100g[key] = value
+      }
+      return {
+        id: food.id,
+        name: food.name,
+        ...(food.brand && { brand: food.brand }),
+        source: food.source,
+        ...(food.serving_size_g != null && {
+          serving_size_g: food.serving_size_g,
+          ...(food.serving_label && { serving_label: food.serving_label })
+        }),
+        per_100g: per100g
+      }
+    })
+  }
+}
+
 const TOOL_IMPLS: Record<string, ToolFn> = {
   get_workouts_in_range: getWorkoutsInRange,
   get_workout_detail: getWorkoutDetail,
@@ -398,6 +559,9 @@ const TOOL_IMPLS: Record<string, ToolFn> = {
   get_mesocycle_evaluations: getMesocycleEvaluations,
   get_previous_mesocycles: getPreviousMesocycles,
   get_weekly_aggregates: getWeeklyAggregates,
+  get_diet: getDiet,
+  get_diet_history: getDietHistory,
+  search_foods: searchFoods,
   save_user_note: saveUserNote,
   deactivate_user_note: deactivateUserNote
 }
@@ -410,7 +574,8 @@ const TOOL_IMPLS: Record<string, ToolFn> = {
 export const AI_TOOLS: ToolDefinition[] = [
   {
     name: 'get_workouts_in_range',
-    description: `Obtiene entrenamientos en un rango de fechas. Summary incluye nombre de ejercicios, series y volumen por ejercicio (máx ${MAX_WORKOUTS_SUMMARY} entrenos). Full añade todas las series con peso/reps/RPE (máx ${MAX_WORKOUTS_FULL} entrenos; para más, usa rangos cortos). Úsalo para revisar semanas concretas, comparar periodos o ver qué ejercicios se hicieron.`,
+    description: `Obtiene entrenamientos en un rango de fechas. Summary incluye nombre de ejercicios, series y volumen por ejercicio (máx ${MAX_WORKOUTS_SUMMARY} entrenos). Full añade todas las series con peso/reps/RPE (máx ${MAX_WORKOUTS_FULL} entrenos; para más, usa rangos cortos). Úsalo para revisar semanas concretas, comparar periodos o ver qué ejercicios se hicieron.
+Las series llevan "type" sólo cuando NO son normales: "warmup" (calentamiento, no es trabajo efectivo — no la cuentes como serie de trabajo ni juzgues la intensidad por ella), "dropset" o "failure" (ambas sí son trabajo efectivo). Una serie sin "type" es una serie de trabajo normal.`,
     parameters: {
       type: 'object',
       properties: {
@@ -423,7 +588,7 @@ export const AI_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'get_workout_detail',
-    description: 'Detalle completo de un entrenamiento concreto con todas sus series. Usa workout_id si lo tienes (viene en get_workouts_in_range), si no pasa date (YYYY-MM-DD).',
+    description: 'Detalle completo de un entrenamiento concreto con todas sus series. Usa workout_id si lo tienes (viene en get_workouts_in_range), si no pasa date (YYYY-MM-DD). Las series con "type": "warmup" son calentamiento y no cuentan como trabajo efectivo; "dropset" y "failure" sí.',
     parameters: {
       type: 'object',
       properties: {
@@ -494,6 +659,41 @@ export const AI_TOOLS: ToolDefinition[] = [
       properties: {
         weeks_back: { type: 'number', description: 'Semanas hacia atrás (1-26, default 8)' }
       }
+    }
+  },
+  {
+    name: 'get_diet',
+    description: `Devuelve la dieta del usuario: comidas, alimentos con sus gramos y totales diarios (kcal, macros y los micronutrientes conocidos: fibra, azúcares, grasa saturada, sodio, potasio, calcio, hierro, magnesio, zinc, vitamina D, vitamina C y vitamina B12).
+Sin parámetros devuelve la dieta VIGENTE ahora mismo. Usa "date" para saber qué dieta seguía el usuario en un momento pasado, o "version_id" (aparece en get_diet_history) para una versión concreta.
+IMPORTANTE: es la dieta PLANIFICADA, no un registro de lo que comió realmente. No afirmes que ha ingerido esas cantidades. Un micronutriente que no aparece es un dato que falta en la base de alimentos, NO una ingesta de cero: no lo interpretes como una carencia. Los que aparezcan en "micronutrients_partial" son cotas mínimas calculadas solo con parte de los alimentos: no diagnostiques déficit sobre ellos.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        version_id: { type: 'string', description: 'ID de la versión, tal como aparece en get_diet_history.' },
+        date: { type: 'string', description: 'YYYY-MM-DD. Devuelve la versión que estaba vigente esa fecha. Se ignora si se pasa version_id.' }
+      }
+    }
+  },
+  {
+    name: 'get_diet_history',
+    description: `Histórico de cambios de la dieta: cada versión publicada con su número, rango de fechas, nota de cambio y totales diarios (kcal y macros). Úsalo para ver cómo ha evolucionado la ingesta planificada y correlacionarla con el peso o el rendimiento. Para el detalle de comidas de una versión concreta, llama después a get_diet con su version_id. Máx ${MAX_DIET_VERSIONS} versiones.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: `Número de versiones más recientes a devolver (1-${MAX_DIET_VERSIONS}, default 10)` }
+      }
+    }
+  },
+  {
+    name: 'search_foods',
+    description: `Busca en el catálogo de alimentos del usuario por nombre o marca y devuelve sus valores nutricionales POR 100 g. Úsalo cuando el usuario pregunte por un alimento concreto o quieras comparar alternativas antes de proponer un cambio en la dieta. Solo busca en el catálogo guardado del usuario, no en bases de datos externas. Máx ${MAX_FOOD_RESULTS} resultados.`,
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Texto a buscar en el nombre o la marca. Ej: "pollo", "avena".' },
+        limit: { type: 'number', description: `Máximo de resultados (1-${MAX_FOOD_RESULTS}, default 10)` }
+      },
+      required: ['query']
     }
   },
   {

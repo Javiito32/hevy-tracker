@@ -1,6 +1,6 @@
 import { prisma } from '../../utils/prisma'
 import { getSessionUser } from '../../utils/session'
-import { buildAthleteProfile, buildWorkoutData, extractCompoundLiftsData, type MesocycleGeneratePayload } from '../../utils/ai-payload'
+import { buildAthleteProfile, buildWorkoutData, extractCompoundLiftsData, buildNutritionSnapshot, type MesocycleGeneratePayload } from '../../utils/ai-payload'
 import { runAiTask, aiKeysFromConfig } from '../../utils/ai-service'
 import { MESOCYCLE_GENERATE_PROMPT } from '../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../utils/ai-config'
@@ -16,7 +16,7 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, statusMessage: 'Faltan campos requeridos: goal, days_per_week, duration_weeks' })
   }
 
-  const [athlete, recentWorkouts, previousMesocycles] = await Promise.all([
+  const [athlete, recentWorkouts, previousMesocycles, nutrition] = await Promise.all([
     buildAthleteProfile(userId, { includeInjuries: true }),
     prisma.workout.findMany({
       where: { user_id: userId },
@@ -29,7 +29,8 @@ export default defineEventHandler(async (event) => {
       orderBy: { start_date: 'desc' },
       take: 2,
       select: { name: true, goal: true, split_description: true, target_volume_weekly: true }
-    })
+    }),
+    buildNutritionSnapshot(userId)
   ])
 
   const payload: MesocycleGeneratePayload = {
@@ -49,7 +50,8 @@ export default defineEventHandler(async (event) => {
       days_per_week,
       duration_weeks,
       ...(equipment && { equipment })
-    }
+    },
+    ...(nutrition && { nutrition })
   }
 
   const { content } = await runAiTask({

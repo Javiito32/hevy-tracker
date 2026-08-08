@@ -33,8 +33,16 @@
         <div class="lg:col-span-2 space-y-6">
           <!-- Exercises -->
           <div class="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
-            <div class="px-6 py-4 border-b border-slate-800">
+            <div class="px-6 py-4 border-b border-slate-800 flex items-center justify-between gap-4 flex-wrap">
               <h2 class="text-lg font-semibold text-slate-200">Ejercicios</h2>
+              <!-- Only shown when the workout actually contains marked sets, so the
+                   legend never explains symbols that aren't on screen. -->
+              <div v-if="setTypeLegend.length" class="flex items-center gap-3 text-xs text-slate-500">
+                <span v-for="entry in setTypeLegend" :key="entry.label" class="flex items-center gap-1.5">
+                  <span class="inline-flex items-center justify-center min-w-[1.25rem] px-1 rounded text-[10px] font-semibold" :class="entry.badge">{{ entry.mark }}</span>
+                  {{ entry.label }}
+                </span>
+              </div>
             </div>
             <div class="divide-y divide-slate-800">
               <div v-if="!workout.exercises_summary || workout.exercises_summary.length === 0" class="p-6 text-slate-500">
@@ -43,7 +51,10 @@
 
               <div v-for="(exercise, exIndex) in workout.exercises_summary" :key="exIndex" class="p-6 hover:bg-slate-800/50 transition">
                 <div class="flex justify-between items-start mb-4">
-                  <h3 class="font-medium text-lg text-slate-100">{{ exercise.name }}</h3>
+                  <div>
+                    <h3 class="font-medium text-lg text-slate-100">{{ exercise.name }}</h3>
+                    <p class="text-xs text-slate-500 mt-0.5">{{ describeSetCount(exercise.sets_details || []) }}</p>
+                  </div>
                   <div class="text-right text-sm text-slate-500">
                     <template v-if="getExerciseType(exercise) === 'strength'">
                       <span v-if="exercise.estimated_1rm" class="mr-3">1RM: <span class="font-medium text-slate-300">{{ parseFloat(exercise.estimated_1rm).toFixed(1) }}kg</span></span>
@@ -61,9 +72,12 @@
                     <div class="grid grid-cols-4 gap-2 text-xs font-semibold text-slate-500 text-center py-2 bg-slate-800 uppercase tracking-wider border-b border-slate-700">
                       <div>Set</div><div>kg</div><div>Reps</div><div>RPE</div>
                     </div>
-                    <div v-for="(set, setIndex) in exercise.sets_details" :key="setIndex"
-                      class="grid grid-cols-4 gap-2 text-sm text-center py-2 border-b border-slate-700 last:border-b-0 hover:bg-slate-700/50 transition">
-                      <div class="text-slate-500">{{ setIndex + 1 }}</div>
+                    <div v-for="({ set, marker, style }, setIndex) in numberSets(exercise.sets_details)" :key="setIndex"
+                      class="grid grid-cols-4 gap-2 text-sm text-center py-2 border-b border-slate-700 last:border-b-0 hover:bg-slate-700/50 transition"
+                      :class="style.row">
+                      <div>
+                        <span class="inline-flex items-center justify-center min-w-[1.5rem] px-1 rounded text-xs font-semibold" :class="style.badge" :title="style.label">{{ marker }}</span>
+                      </div>
                       <div class="font-medium text-slate-200">{{ set.weight ?? '-' }}</div>
                       <div class="font-medium text-slate-200">{{ set.reps ?? '-' }}</div>
                       <div class="text-slate-500">{{ set.rpe || '-' }}</div>
@@ -73,9 +87,12 @@
                     <div class="grid grid-cols-4 gap-2 text-xs font-semibold text-slate-500 text-center py-2 bg-slate-800 uppercase tracking-wider border-b border-slate-700">
                       <div>Set</div><div>Distancia</div><div>Tiempo</div><div>RPE</div>
                     </div>
-                    <div v-for="(set, setIndex) in exercise.sets_details" :key="setIndex"
-                      class="grid grid-cols-4 gap-2 text-sm text-center py-2 border-b border-slate-700 last:border-b-0 hover:bg-slate-700/50 transition">
-                      <div class="text-slate-500">{{ setIndex + 1 }}</div>
+                    <div v-for="({ set, marker, style }, setIndex) in numberSets(exercise.sets_details)" :key="setIndex"
+                      class="grid grid-cols-4 gap-2 text-sm text-center py-2 border-b border-slate-700 last:border-b-0 hover:bg-slate-700/50 transition"
+                      :class="style.row">
+                      <div>
+                        <span class="inline-flex items-center justify-center min-w-[1.5rem] px-1 rounded text-xs font-semibold" :class="style.badge" :title="style.label">{{ marker }}</span>
+                      </div>
                       <div class="font-medium text-slate-200">{{ formatDistance(set.distance_meters) }}</div>
                       <div class="font-medium text-slate-200">{{ formatSetDuration(set.duration_seconds) }}</div>
                       <div class="text-slate-500">{{ set.rpe || '-' }}</div>
@@ -85,9 +102,12 @@
                     <div class="grid grid-cols-3 gap-2 text-xs font-semibold text-slate-500 text-center py-2 bg-slate-800 uppercase tracking-wider border-b border-slate-700">
                       <div>Set</div><div>Tiempo</div><div>RPE</div>
                     </div>
-                    <div v-for="(set, setIndex) in exercise.sets_details" :key="setIndex"
-                      class="grid grid-cols-3 gap-2 text-sm text-center py-2 border-b border-slate-700 last:border-b-0 hover:bg-slate-700/50 transition">
-                      <div class="text-slate-500">{{ setIndex + 1 }}</div>
+                    <div v-for="({ set, marker, style }, setIndex) in numberSets(exercise.sets_details)" :key="setIndex"
+                      class="grid grid-cols-3 gap-2 text-sm text-center py-2 border-b border-slate-700 last:border-b-0 hover:bg-slate-700/50 transition"
+                      :class="style.row">
+                      <div>
+                        <span class="inline-flex items-center justify-center min-w-[1.5rem] px-1 rounded text-xs font-semibold" :class="style.badge" :title="style.label">{{ marker }}</span>
+                      </div>
                       <div class="font-medium text-slate-200">{{ formatSetDuration(set.duration_seconds) }}</div>
                       <div class="text-slate-500">{{ set.rpe || '-' }}</div>
                     </div>
@@ -222,6 +242,27 @@ const formatDistance = (meters?: number | null): string => {
   if (!meters) return '-'
   return meters >= 1000 ? `${(meters / 1000).toFixed(2)} km` : `${meters} m`
 }
+
+/**
+ * The distinct non-normal set types present in this workout, in a fixed order
+ * so the legend doesn't reshuffle between workouts.
+ * numberSets / describeSetCount / setTypeStyle come from app/utils/training.ts.
+ */
+const setTypeLegend = computed(() => {
+  const present = new Set<string>()
+  for (const ex of (workout.value as any)?.exercises_summary ?? []) {
+    for (const s of ex.sets_details ?? []) {
+      const t = setType(s)
+      if (t !== 'normal') present.add(t)
+    }
+  }
+  return (['warmup', 'dropset', 'failure'] as const)
+    .filter(t => present.has(t))
+    .map(t => {
+      const style = setTypeStyle({ type: t })
+      return { label: style.label, mark: style.mark, badge: style.badge }
+    })
+})
 
 const getExerciseType = (ex: any): 'strength' | 'cardio' | 'duration' => {
   if (ex.type === 'cardio') return 'cardio'

@@ -38,7 +38,7 @@ Keys are exposed to server-side code via `useRuntimeConfig()` as `config.hevyApi
 app/            ← Nuxt frontend (pages, components, layouts)
 server/
   api/          ← Nitro API route handlers (file = route)
-  utils/        ← Shared server utilities (prisma, hevy-client, ai-provider, ai-service, ai-chat, ai-prompts, ai-context, ai-payload, ai-tools, ai-config, ai-usage, conversations, volume-calculator)
+  utils/        ← Shared server utilities (prisma, hevy-client, openfoodfacts-client, ai-provider, ai-service, ai-chat, ai-prompts, ai-context, ai-payload, ai-tools, ai-config, ai-usage, conversations, volume-calculator, nutrition-calculator, diet-service, food-input)
   plugins/      ← Nitro plugins (cron job)
 prisma/
   schema.prisma ← SQLite schema
@@ -124,8 +124,10 @@ Every provider call reports a `TokenUsage` (`{ inputTokens, outputTokens, totalT
 | `POST /api/mesocycles/:id/final-summary` | Mesocycle final summary | `FinalSummaryPayload` |
 | `POST /api/mesocycles/ai-feedback` | Plan feedback | `MesocycleFeedbackPayload` |
 | `POST /api/mesocycles/ai-generate` | Mesocycle generation | `MesocycleGeneratePayload` |
+| `POST /api/nutrition/ai-analyze` | Diet analysis | `NutritionAnalysisPayload` |
+| `POST /api/nutrition/ai-targets` | Nutrition targets (JSON mode) | `NutritionTargetsPayload` |
 
-`ai-generate` passes `jsonMode: true` (mapped to the vendor's JSON mode by the adapter) and expects the model to return a structured mesocycle plan. All other stateless endpoints return Markdown.
+`ai-generate` and `ai-targets` pass `jsonMode: true` (mapped to the vendor's JSON mode by the adapter) and expects the model to return a structured mesocycle plan. All other stateless endpoints return Markdown.
 
 #### `server/utils/ai-payload.ts`
 
@@ -140,7 +142,7 @@ Shared builders used by the stateless endpoints:
 
 #### `server/utils/ai-tools.ts`
 
-10 tools available to the chat endpoint (defined provider-neutrally as `AI_TOOLS: ToolDefinition[]`):
+13 tools available to the chat endpoint (defined provider-neutrally as `AI_TOOLS: ToolDefinition[]`):
 
 | Tool | Returns |
 |---|---|
@@ -152,6 +154,9 @@ Shared builders used by the stateless endpoints:
 | `get_mesocycle_evaluations` | Weekly evaluations of a mesocycle (defaults to active). |
 | `get_previous_mesocycles` | Completed/paused mesocycles with final summary. |
 | `get_weekly_aggregates` | Per-week: sessions, total volume, avg RPE, and volume+sets breakdown by exercise. |
+| `get_diet` | A diet version: meals, foods with grams, daily totals. No args = the version in force now; `date` = the one in force that day; `version_id` = a specific one. |
+| `get_diet_history` | Published diet versions with date range, change note and totals. Chain into `get_diet` for a version's meals. |
+| `search_foods` | The user's food catalogue by name/brand, values per 100 g. |
 | `save_user_note` | Persists a memory note about the user (`AiNote`) surfaced in future system prompts. |
 | `deactivate_user_note` | Marks a saved note inactive by id. |
 
@@ -197,11 +202,38 @@ The `User` model in Prisma stores `hevy_api_key`. The `OPENAI_API_KEY` is read e
 
 Only one mesocycle can be `active` at a time. Both `index.post.ts` (create) and `[id].patch.ts` (update) automatically `updateMany` all other active mesocycles to `paused` before activating a new one.
 
+### Nutrition
+
+`/nutrition` designs a diet; `/nutrition/foods` is the food catalogue; `/nutrition/history` is the change log.
+
+**Everything is per 100 g.** `Food` stores 16 nutrients (kcal + 3 macros + 12 micros) on that basis — no `_100g` suffix on the field names, the basis is documented on the model. `kcal` and the macros are non-null; the 12 micros are nullable, where **null means unknown, never zero**.
+
+**History is immutable, and that is the point.** `DietItem` stores `food_name` + `nutrients_snapshot` (JSON of the food's per-100 g values at insert time), so editing or deleting a `Food` can never rewrite what a past version said. `food_id` is `SetNull` for exactly this reason, which is also why `Food` needs no soft-delete flag.
+
+- `DietPlan` (one `active` per user, `updateMany` demotion like `Mesocycle`) → `DietVersion` → `DietMeal` → `DietItem`.
+- **Only a `draft` version is mutable.** `assertDraft` 409s on anything else; there is no path that edits a published version. "✎ Editar dieta" calls `POST /api/nutrition/plans/:id/draft` → `ensureDraft()`, which deep-clones the active version (snapshots included) and is idempotent. Publishing sets the new version's `start_date` and the old one's `end_date` to today.
+- Ranges are **half-open** `[start_date, end_date)`: publish-and-replace on the same day leaves a version covering no days, and "which diet on date D" stays unambiguous. `resolveVersion({date})` is what the AI's `get_diet` uses.
+- Targets live on `DietVersion`, not `DietPlan` — otherwise the history couldn't say what the athlete was aiming for at the time.
+- `DietMeal.day_type` (`all | training | rest`) lets a plan differ between training and rest days; totals are computed per day type.
+
+**Totals are denormalised and must never drift.** `DietVersion` carries 4 hot columns (`total_kcal` + macros) plus `totals_json` with all 16 nutrients per day type — the same split as `Workout.total_volume` vs `exercises_summary`, so the history list and the chart never parse JSON. **Every write path goes through `recalcVersionTotals()` in `server/utils/diet-service.ts`**; that uniformity is the only thing keeping the columns true. Put new diet mutation logic there, not in an endpoint.
+
+**Partial totals ship with their coverage.** `sumNutrients` returns the sum of whatever foods have the data and is null only when none do; `sumCoverage` records `{known, total}` per nutrient. Returning null as soon as one food lacked a micro was tried and is wrong — food databases carry micros for a minority of products, so one gap would blank the nutrient for the whole diet. A partial figure is a legitimate lower bound; what makes it honest is that it is **never shipped bare**: the UI prefixes it with `≥`, and the AI payload/tool add `micronutrients_partial` saying how many foods backed it. Never present a partial total as complete, and never fill a gap with 0.
+
+**Open Food Facts** (`server/utils/openfoodfacts-client.ts`, no API key, descriptive `User-Agent` required):
+- An unknown barcode returns **HTTP 200 with `{"status":0}`** — a try/catch on the status code never fires, so `fetchOffProduct` checks `status === 1` and returns `null`.
+- Search (`search.openfoodfacts.org/search`) returns **kcal and macros only, no micronutrients**, so importing always re-fetches the full product by code. Never import from a search payload.
+- `<nutrient>_100g` is **always grams**, whatever the sibling `_unit` says (verified: almonds report `calcium_100g: 0.2367` = 237 mg with `calcium_unit: 'g'`). Applying `_unit` to `_100g` would be a 1000× error; `_unit` is consulted only on the `_value` fallback path.
+- Imports are **rejected, not clamped**, when energy is unresolvable or a value is implausible (`NUTRIENT_MAX`) — contributor data really does contain 85 g of sodium per 100 g. A clamped number still reads as authoritative while being wrong.
+- OFF rate-limits search (~10 req/min per IP): the client caches for 10 min and the UI debounces 500 ms. Never call it in a loop.
+- Camera scanning needs `BarcodeDetector` + a secure context, which plain-HTTP LAN deployments don't have — **manual code entry is the primary path**, the camera is progressive enhancement.
+
 ### Frontend patterns
 
 - Data fetching uses Nuxt's `useFetch()` for SSR-compatible calls; mutations use `$fetch()` directly.
 - No global state store (no Pinia). Each page manages its own local `ref()` state.
 - Token counts, costs and dates in the admin panel are formatted with the shared helpers in `app/utils/format.ts` (auto-imported): `formatTokens`, `formatCost`, `formatDateTime`, `formatDateShort`, `NO_VALUE`. Costs use 4 decimals below a cent — 2 would render most per-interaction rows as `0,00 $`. A value that can't be computed renders as `NO_VALUE` (`—`), never `0`.
+- Nutrition components live in `app/components/nutrition/`; shared labels, units and formatters are in `app/utils/nutrition.ts` (auto-imported), which mirrors the label/unit tables in `server/utils/nutrition-calculator.ts` — keep the two in sync. A nutrient with no data renders as `NO_VALUE`, never `0`.
 - Admin analytics components live in `app/components/admin/` (`AiRangeFilter`, `AiRunRateCard`, `AiUsageTrendChart`, `AiModelPricesCard`, `AiUsageByModelCard`, `AiUsageByUserCard`, `AiTopInteractionsCard`, `AiUsageLogCard`); `admin/index.vue` is the orchestrator and owns the selected date range, mirroring how `calendar.vue` owns the date `CalendarGrid` emits.
 - Charts are hand-rolled inline SVG (no chart library) — `AiUsageTrendChart` and `charts/LineChart.vue`. Conventions: hairline **solid** gridlines (`#1e293b`) and axis text `#64748b`, marks capped at 24px with a 2px surface gap between stacked segments, a legend whenever there are ≥2 series, and a table view so no value is reachable only by hovering. Load the `dataviz` skill before adding or restyling one.
 - Child components call `useFetch()` **without `await`** — a top-level await makes the component async and forces a Suspense boundary. Nuxt resolves pending `useFetch` calls before SSR renders either way.

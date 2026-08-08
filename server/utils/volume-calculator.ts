@@ -1,4 +1,22 @@
 /**
+ * The set types Hevy reports on every logged set.
+ *
+ * Only 'warmup' is excluded from effective work: a drop set and a set taken to
+ * failure are both working sets, and a set past failure is arguably the most
+ * stimulating one in the exercise.
+ */
+export type SetType = 'normal' | 'warmup' | 'dropset' | 'failure'
+
+/**
+ * True when the set counts as effective work.
+ *
+ * Sets synced before the type was persisted have no `type` at all; those are
+ * treated as working sets, which is what they were assumed to be anyway.
+ */
+export const isWorkingSet = (set: { type?: string | null } | null | undefined): boolean =>
+  (set?.type ?? 'normal') !== 'warmup';
+
+/**
  * Calculates the total volume (weight x reps) for a given set.
  * If bodyweight exercise, assumes weight is 0 or user's bodyweight if provided.
  */

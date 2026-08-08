@@ -20,7 +20,9 @@ export const TASK_LABELS: Record<string, string> = {
   evaluate: 'Evaluación semanal',
   final_summary: 'Resumen de mesociclo',
   mesocycle_feedback: 'Feedback de plan',
-  mesocycle_generate: 'Generación de mesociclo'
+  mesocycle_generate: 'Generación de mesociclo',
+  nutrition_analysis: 'Análisis de dieta',
+  nutrition_targets: 'Objetivos nutricionales'
 }
 
 export function taskLabel(contextType: string): string {

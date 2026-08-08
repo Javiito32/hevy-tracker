@@ -1,4 +1,5 @@
 import { prisma } from './prisma'
+import { resolveVersion, serializeVersion } from './diet-service'
 
 /**
  * Context builders for the chat endpoint (text-formatted, Spanish).
@@ -154,16 +155,69 @@ export async function buildUserProfileAsync(userId: string): Promise<string> {
 const DAY_NAMES_ES = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado']
 
 /**
+ * Compact text summary of the diet in force, for the chat prompt.
+ *
+ * Deliberately shallow — meal names, their foods and the daily totals — so the
+ * everyday question is answered without a tool call, while anything historical
+ * or detailed goes through `get_diet` / `get_diet_history`.
+ */
+const buildActiveDietSummary = async (userId: string): Promise<string> => {
+  const version = await resolveVersion(userId, {})
+  if (!version) return '- No hay ninguna dieta publicada.'
+
+  const [plan, latestWeight] = await Promise.all([
+    prisma.dietPlan.findUnique({ where: { id: version.diet_plan_id } }),
+    prisma.bodyMetric.findFirst({
+      where: { user_id: userId, weight: { not: null } },
+      orderBy: { date: 'desc' },
+      select: { weight: true }
+    })
+  ])
+
+  const s = serializeVersion(version, { weightKg: latestWeight?.weight ?? null })
+  const t = s.totals.all
+  const num = (v: number | null, unit = '') => (v == null ? 'sin datos' : `${Math.round(v)}${unit}`)
+
+  const lines = [
+    `- Plan: ${plan?.name ?? 'Sin nombre'}${plan?.goal ? ` (objetivo: ${plan.goal})` : ''}`,
+    `- Versión ${s.version_number}${s.start_date ? `, vigente desde el ${new Date(s.start_date).toLocaleDateString('es-ES')}` : ''}`,
+    `- Totales diarios: ${num(t.kcal)} kcal · P ${num(t.protein_g, ' g')} · C ${num(t.carbs_g, ' g')} · G ${num(t.fat_g, ' g')}${s.protein_g_per_kg != null ? ` (${s.protein_g_per_kg} g proteína/kg)` : ''}`
+  ]
+
+  if (s.targets.kcal != null) lines.push(`- Objetivo marcado: ${Math.round(s.targets.kcal)} kcal`)
+  if (s.has_day_split) {
+    lines.push(`- Día de entreno: ${num(s.totals.training.kcal)} kcal · Día de descanso: ${num(s.totals.rest.kcal)} kcal`)
+  }
+
+  lines.push(
+    s.meals.length
+      ? 'Comidas:\n' +
+          s.meals
+            .map((meal: any) => {
+              const foods = meal.items.length
+                ? meal.items.map((item: any) => `${item.food_name} ${Math.round(item.quantity_g)} g`).join(', ')
+                : 'sin alimentos'
+              return `  ${meal.name}${meal.time_of_day ? ` (${meal.time_of_day})` : ''}: ${foods}`
+            })
+            .join('\n')
+      : '- La dieta no tiene comidas definidas.'
+  )
+
+  return lines.join('\n')
+}
+
+/**
  * Lean system prompt for the chat endpoint. Carries only the minimum context
- * (profile + active mesocycle + last 3 workout summaries). Historical data is
- * fetched on-demand by the model via tool calls — see server/utils/ai-tools.ts.
+ * (profile + active mesocycle + last 3 workout summaries + the active diet).
+ * Historical data is fetched on-demand by the model via tool calls — see
+ * server/utils/ai-tools.ts.
  */
 export const buildLeanSystemPrompt = async (userId: string): Promise<string> => {
   const now = new Date()
   const dAgo = (n: number) => { const d = new Date(now); d.setDate(d.getDate() - n); return d }
   const tenWeeksAgo = dAgo(70)
 
-  const [user, activeMesocycle, currentMetric, recentBodyMetrics, recentWorkouts, metric1m, metric3m, activeNotes] = await Promise.all([
+  const [user, activeMesocycle, currentMetric, recentBodyMetrics, recentWorkouts, metric1m, metric3m, activeNotes, dietBlock] = await Promise.all([
     prisma.user.findUnique({ where: { id: userId } }),
     prisma.mesocycle.findFirst({
       where: { user_id: userId, status: 'active' },
@@ -185,7 +239,11 @@ export const buildLeanSystemPrompt = async (userId: string): Promise<string> => 
     }),
     prisma.bodyMetric.findFirst({ where: { user_id: userId, date: { gte: dAgo(42), lte: dAgo(21) } }, orderBy: { date: 'desc' } }),
     prisma.bodyMetric.findFirst({ where: { user_id: userId, date: { gte: dAgo(105), lte: dAgo(70) } }, orderBy: { date: 'desc' } }),
-    prisma.aiNote.findMany({ where: { user_id: userId, is_active: true }, orderBy: { created_at: 'asc' } })
+    prisma.aiNote.findMany({ where: { user_id: userId, is_active: true }, orderBy: { created_at: 'asc' } }),
+    // Compact diet summary. Kept in the prompt rather than behind a tool call so
+    // "¿qué desayuno tengo puesto?" is answered directly, the same reason the
+    // last three workouts are inlined.
+    buildActiveDietSummary(userId)
   ])
 
   const weeklyWeights = computeWeeklyWeights(recentBodyMetrics)
@@ -242,6 +300,9 @@ ${mesoBlock}
 ### ÚLTIMOS 3 ENTRENAMIENTOS (resumen)
 ${recentText}
 
+### DIETA ACTIVA
+${dietBlock}
+
 ### NOTAS RECORDADAS
 ${notesBlock}
 
@@ -256,6 +317,8 @@ Tienes acceso a herramientas para consultar más datos bajo demanda. Úsalas sol
 - Si una herramienta devuelve un error o datos vacíos, dilo claramente en lugar de inventar cifras.
 - Usa \`save_user_note\` cuando el usuario mencione preferencias, contexto temporal (viajes, eventos, estrés), objetivos concretos, restricciones nuevas o contexto nutricional que no esté ya en su perfil. Hazlo en el mismo turno en que el usuario lo menciona.
 - Usa \`deactivate_user_note\` con el ID entre corchetes cuando el usuario confirme que la situación se resolvió, la fecha de la nota ya pasó, o el usuario la contradiga directamente. Si hay duda, no la desactives.
+- Para la dieta: el bloque DIETA ACTIVA ya trae las comidas y los totales de hoy, así que no invoques nada para responder sobre ellos. Usa \`get_diet_history\` para ver cómo ha cambiado la dieta en el tiempo, \`get_diet\` con \`date\` o \`version_id\` para recuperar una dieta pasada, y \`search_foods\` para consultar los valores de un alimento del catálogo.
+- La dieta es un PLAN, no un registro de lo comido: habla de lo que el usuario tiene planificado, nunca de lo que ha ingerido. Un micronutriente ausente es un dato que falta, no una ingesta de cero.
 
 ### REGLAS DE ESTILO
 1. Sé directo y conciso. Markdown con negritas para valores clave y listas para recomendaciones.

@@ -1,9 +1,17 @@
 import { prisma } from './prisma'
+import { resolveVersion, serializeVersion } from './diet-service'
+import { MICRO_KEYS } from './nutrition-calculator'
 
 // ── Interfaces ─────────────────────────────────────────────────────────────────
 
 export interface SetDetail {
   set: number
+  /**
+   * Only emitted for non-'normal' sets, so the model reads a marker rather than
+   * a column that says "normal" on every row. A 'warmup' set must not be read
+   * as effective work.
+   */
+  type?: 'warmup' | 'dropset' | 'failure'
   weight_kg?: number
   reps?: number
   rpe?: number
@@ -90,6 +98,56 @@ export interface CompoundLift {
   date: string
 }
 
+/**
+ * The planned diet as the AI sees it. A PLAN, never a log of what was actually
+ * eaten — every prompt that receives this must say so, or the model will report
+ * intake it has no evidence for.
+ */
+export interface NutritionSnapshot {
+  plan_name: string
+  goal?: string
+  version_number: number
+  in_force_since?: string
+  daily_kcal: number | null
+  daily_protein_g: number | null
+  daily_carbs_g: number | null
+  daily_fat_g: number | null
+  protein_g_per_kg?: number
+  macro_split_pct?: { protein: number | null; carbs: number | null; fat: number | null }
+  targets?: { kcal?: number; protein_g?: number; carbs_g?: number; fat_g?: number }
+  /**
+   * Only the micros with data. A micro absent here is missing from the food
+   * database, not an intake of zero.
+   */
+  micronutrients?: Record<string, number>
+  /**
+   * Micros whose figure above came from only some of the foods, and is
+   * therefore a LOWER BOUND. Shipped so the model can't read an incomplete
+   * total as a deficiency — the prompts spell out that rule.
+   */
+  micronutrients_partial?: Record<string, string>
+  /** Present only when the plan differentiates training and rest days. */
+  training_day?: { kcal: number | null; protein_g: number | null; carbs_g: number | null; fat_g: number | null }
+  rest_day?: { kcal: number | null; protein_g: number | null; carbs_g: number | null; fat_g: number | null }
+  meals: Array<{
+    name: string
+    time_of_day?: string
+    day_type?: string
+    foods: Array<{ name: string; quantity_g: number }>
+  }>
+}
+
+export interface NutritionHistoryEntry {
+  version_number: number
+  from: string
+  to?: string
+  change_note?: string
+  kcal: number
+  protein_g: number
+  carbs_g: number
+  fat_g: number
+}
+
 // ── Task Payload Types ─────────────────────────────────────────────────────────
 
 export interface WorkoutAnalysisPayload {
@@ -128,6 +186,7 @@ export interface WeekEvaluationPayload {
     total_volume_kg: number
   }>
   previous_evaluations: WeeklyEvaluation[]
+  nutrition?: NutritionSnapshot
 }
 
 export interface FinalSummaryPayload {
@@ -146,6 +205,8 @@ export interface FinalSummaryPayload {
   last_workout?: Workout
   weekly_evaluations: WeeklyEvaluation[]
   diary_notes: Array<{ date: string; content: string }>
+  nutrition?: NutritionSnapshot
+  nutrition_history?: NutritionHistoryEntry[]
 }
 
 export interface MesocycleFeedbackPayload {
@@ -169,6 +230,7 @@ export interface MesocycleFeedbackPayload {
     duration_weeks?: number
     weekly_progressions?: WeeklyEvaluation[]
   }
+  nutrition?: NutritionSnapshot
 }
 
 export interface MesocycleGeneratePayload {
@@ -179,6 +241,27 @@ export interface MesocycleGeneratePayload {
   compound_lifts: CompoundLift[]
   previous_mesocycles: Array<{ name: string; goal?: string; split?: string; sessions_per_week?: number }>
   request: { goal: string; days_per_week: number; duration_weeks: number; equipment?: string }
+  nutrition?: NutritionSnapshot
+}
+
+export interface NutritionAnalysisPayload {
+  task: 'nutrition_analysis'
+  today: string
+  athlete: AthleteProfile
+  nutrition: NutritionSnapshot
+  nutrition_history: NutritionHistoryEntry[]
+  training_load: Array<{ week: string; sessions: number; total_volume_kg: number; avg_rpe: number | null }>
+  active_mesocycle?: { name: string; goal?: string; split?: string }
+}
+
+export interface NutritionTargetsPayload {
+  task: 'nutrition_targets'
+  today: string
+  athlete: AthleteProfile
+  request: { goal: string; rate_kg_per_week?: number; notes?: string }
+  current_nutrition?: NutritionSnapshot
+  nutrition_history: NutritionHistoryEntry[]
+  training_load: Array<{ week: string; sessions: number; total_volume_kg: number; avg_rpe: number | null }>
 }
 
 // ── Internal Helpers ───────────────────────────────────────────────────────────
@@ -298,6 +381,7 @@ export function buildWorkoutData(w: any, includeExercises = true): Workout {
           sets: ex.sets,
           sets_detail: (ex.sets_details || []).map((s: any, i: number): SetDetail => {
             const detail: SetDetail = { set: i + 1 }
+            if (s.type && s.type !== 'normal') detail.type = s.type
             if (s.weight != null) detail.weight_kg = Number(s.weight)
             if (s.reps != null) detail.reps = Number(s.reps)
             if (s.rpe) detail.rpe = Number(s.rpe)
@@ -435,4 +519,173 @@ export async function buildLastMesocycleSummaryData(userId: string): Promise<Mes
       }))
     })
   }
+}
+
+// ── Nutrition ──────────────────────────────────────────────────────────────────
+
+/**
+ * The active diet, shaped for a JSON payload.
+ *
+ * Returns undefined when there is no published diet — callers spread it
+ * conditionally so the field is absent rather than null, and a prompt that
+ * never sees `nutrition` simply says nothing about it.
+ *
+ * Reads the version's stored totals; it does not recompute. Those totals were
+ * written by recalcVersionTotals() at edit time and are what the history and
+ * the UI already show, so the AI can never be told a different number than the
+ * user is looking at.
+ */
+export async function buildNutritionSnapshot(userId: string): Promise<NutritionSnapshot | undefined> {
+  const version = await resolveVersion(userId, {})
+  if (!version) return undefined
+
+  const plan = await prisma.dietPlan.findUnique({ where: { id: version.diet_plan_id } })
+  if (!plan) return undefined
+
+  const latestWeight = await prisma.bodyMetric.findFirst({
+    where: { user_id: userId, weight: { not: null } },
+    orderBy: { date: 'desc' },
+    select: { weight: true }
+  })
+
+  const serialized = serializeVersion(version, { weightKg: latestWeight?.weight ?? null })
+  const totals = serialized.totals
+  const split = serialized.macro_split
+
+  // Only micros with data travel — an unknown one is omitted entirely, never
+  // sent as 0. Those backed by just some of the foods are flagged as partial so
+  // a lower bound is never mistaken for the real intake.
+  const micronutrients: Record<string, number> = {}
+  const micronutrientsPartial: Record<string, string> = {}
+  for (const key of MICRO_KEYS) {
+    const value = (totals.all as any)[key]
+    if (value == null) continue
+    micronutrients[key] = value
+    const entry = totals.coverage?.all?.[key]
+    if (entry && entry.known < entry.total) {
+      micronutrientsPartial[key] = `mínimo: solo ${entry.known} de ${entry.total} alimentos tienen este dato`
+    }
+  }
+
+  const dayTotals = (n: any) => ({
+    kcal: n.kcal,
+    protein_g: n.protein_g,
+    carbs_g: n.carbs_g,
+    fat_g: n.fat_g
+  })
+
+  return {
+    plan_name: plan.name,
+    ...(plan.goal && { goal: plan.goal }),
+    version_number: serialized.version_number,
+    ...(serialized.start_date && { in_force_since: serialized.start_date }),
+    daily_kcal: totals.all.kcal,
+    daily_protein_g: totals.all.protein_g,
+    daily_carbs_g: totals.all.carbs_g,
+    daily_fat_g: totals.all.fat_g,
+    ...(serialized.protein_g_per_kg != null && { protein_g_per_kg: serialized.protein_g_per_kg }),
+    ...(split.protein_pct != null && {
+      macro_split_pct: { protein: split.protein_pct, carbs: split.carbs_pct, fat: split.fat_pct }
+    }),
+    ...(Object.values(serialized.targets).some(v => v != null) && {
+      targets: {
+        ...(serialized.targets.kcal != null && { kcal: serialized.targets.kcal }),
+        ...(serialized.targets.protein_g != null && { protein_g: serialized.targets.protein_g }),
+        ...(serialized.targets.carbs_g != null && { carbs_g: serialized.targets.carbs_g }),
+        ...(serialized.targets.fat_g != null && { fat_g: serialized.targets.fat_g })
+      }
+    }),
+    ...(Object.keys(micronutrients).length > 0 && { micronutrients }),
+    ...(Object.keys(micronutrientsPartial).length > 0 && { micronutrients_partial: micronutrientsPartial }),
+    ...(serialized.has_day_split && {
+      training_day: dayTotals(totals.training),
+      rest_day: dayTotals(totals.rest)
+    }),
+    meals: serialized.meals.map((meal: any) => ({
+      name: meal.name,
+      ...(meal.time_of_day && { time_of_day: meal.time_of_day }),
+      ...(meal.day_type !== 'all' && { day_type: meal.day_type }),
+      foods: meal.items.map((item: any) => ({ name: item.food_name, quantity_g: item.quantity_g }))
+    }))
+  }
+}
+
+/**
+ * Published diet versions over time, newest first. Drafts are excluded: they
+ * were never followed, so they are not part of what the athlete ate.
+ */
+export async function buildNutritionHistory(
+  userId: string,
+  limit = 12
+): Promise<NutritionHistoryEntry[]> {
+  const plan = await prisma.dietPlan.findFirst({
+    where: { user_id: userId, status: 'active' },
+    orderBy: { created_at: 'desc' },
+    select: { id: true }
+  })
+  if (!plan) return []
+
+  const versions = await prisma.dietVersion.findMany({
+    where: { diet_plan_id: plan.id, status: { in: ['active', 'superseded'] }, start_date: { not: null } },
+    orderBy: { start_date: 'desc' },
+    take: limit,
+    select: {
+      version_number: true,
+      start_date: true,
+      end_date: true,
+      change_note: true,
+      total_kcal: true,
+      total_protein_g: true,
+      total_carbs_g: true,
+      total_fat_g: true
+    }
+  })
+
+  return versions.map(v => ({
+    version_number: v.version_number,
+    from: v.start_date!.toISOString().substring(0, 10),
+    ...(v.end_date && { to: v.end_date.toISOString().substring(0, 10) }),
+    ...(v.change_note && { change_note: v.change_note }),
+    kcal: v.total_kcal,
+    protein_g: v.total_protein_g,
+    carbs_g: v.total_carbs_g,
+    fat_g: v.total_fat_g
+  }))
+}
+
+/**
+ * Weekly training load, so a diet can be judged against the work it has to
+ * fuel rather than in isolation.
+ */
+export async function buildTrainingLoad(
+  userId: string,
+  weeks = 8
+): Promise<Array<{ week: string; sessions: number; total_volume_kg: number; avg_rpe: number | null }>> {
+  const since = new Date()
+  since.setDate(since.getDate() - weeks * 7)
+
+  const workouts = await prisma.workout.findMany({
+    where: { user_id: userId, date: { gte: since } },
+    orderBy: { date: 'asc' },
+    select: { date: true, total_volume: true, rpe_avg: true }
+  })
+
+  const byWeek = new Map<string, { volume: number; sessions: number; rpes: number[] }>()
+  for (const w of workouts) {
+    const key = getWeekStartKey(new Date(w.date))
+    if (!byWeek.has(key)) byWeek.set(key, { volume: 0, sessions: 0, rpes: [] })
+    const bucket = byWeek.get(key)!
+    bucket.volume += w.total_volume ?? 0
+    bucket.sessions += 1
+    if (w.rpe_avg != null) bucket.rpes.push(w.rpe_avg)
+  }
+
+  return Array.from(byWeek.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([week, b]) => ({
+      week,
+      sessions: b.sessions,
+      total_volume_kg: Math.round(b.volume),
+      avg_rpe: b.rpes.length ? Math.round((b.rpes.reduce((s, r) => s + r, 0) / b.rpes.length) * 10) / 10 : null
+    }))
 }

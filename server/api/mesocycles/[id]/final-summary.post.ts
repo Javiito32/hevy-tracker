@@ -1,6 +1,6 @@
 import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
-import { buildAthleteProfile, buildWorkoutData, type FinalSummaryPayload } from '../../../utils/ai-payload'
+import { buildAthleteProfile, buildWorkoutData, buildNutritionSnapshot, buildNutritionHistory, type FinalSummaryPayload } from '../../../utils/ai-payload'
 import { runAiTask, aiKeysFromConfig } from '../../../utils/ai-service'
 import { FINAL_SUMMARY_PROMPT } from '../../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../../utils/ai-config'
@@ -15,7 +15,7 @@ export default defineEventHandler(async (event) => {
   const mesocycle = await prisma.mesocycle.findFirst({ where: { id, user_id: userId } })
   if (!mesocycle) throw createError({ statusCode: 404, statusMessage: 'Mesocycle not found' })
 
-  const [athlete, allWorkouts, allEvaluations, allNotes] = await Promise.all([
+  const [athlete, allWorkouts, allEvaluations, allNotes, nutrition, nutritionHistory] = await Promise.all([
     buildAthleteProfile(userId),
     prisma.workout.findMany({
       where: { user_id: userId, mesocycle_id: id },
@@ -30,7 +30,9 @@ export default defineEventHandler(async (event) => {
     prisma.mesocycleNote.findMany({
       where: { mesocycle_id: id },
       orderBy: { date: 'asc' }
-    })
+    }),
+    buildNutritionSnapshot(userId),
+    buildNutritionHistory(userId)
   ])
 
   const totalVolume = allWorkouts.reduce((s, w) => s + Number(w.total_volume ?? 0), 0)
@@ -73,7 +75,9 @@ export default defineEventHandler(async (event) => {
     diary_notes: allNotes.map((n: any) => ({
       date: new Date(n.date).toISOString().substring(0, 10),
       content: n.content
-    }))
+    })),
+    ...(nutrition && { nutrition }),
+    ...(nutritionHistory.length > 0 && { nutrition_history: nutritionHistory })
   }
 
   const { content: finalSummary, model } = await runAiTask({

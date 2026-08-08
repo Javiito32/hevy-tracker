@@ -1,6 +1,6 @@
 import { prisma } from './prisma'
 import { fetchHevyWorkouts, fetchHevyWorkoutEvents, fetchHevyBodyMeasurements, fetchHevyBodyMeasurementByDate } from './hevy-client'
-import { calcSetVolume, calcEstimated1RM, calcAverageRPE } from './volume-calculator'
+import { calcSetVolume, calcEstimated1RM, calcAverageRPE, isWorkingSet } from './volume-calculator'
 
 
 async function processAndSaveBodyMetric(userId: string, data: any) {
@@ -89,12 +89,21 @@ async function processAndSaveWorkout(userId: string, w: any, activeMesocycle?: {
       summary.push({
         name: ex.title,
         type: exType,
+        // Hevy's exercise template id — the key that maps this exercise to its
+        // muscle group. Stored now so the classification backfill never has to
+        // re-fetch workouts from the API.
+        exercise_template_id: ex.exercise_template_id ?? null,
         sets: sets.length,
+        working_sets: sets.filter(isWorkingSet).length,
         total_volume: exVolume,
         estimated_1rm: max1RM > 0 ? max1RM : null,
         total_duration_seconds: exDuration > 0 ? exDuration : null,
         total_distance_meters: exDistance > 0 ? exDistance : null,
         sets_details: sets.map((s: any) => ({
+          // 'normal' | 'warmup' | 'dropset' | 'failure', as Hevy reports it.
+          // A warm-up set is not a working set: it must not count toward
+          // effective volume or set counts once those are corrected.
+          type: s.type ?? 'normal',
           weight: s.weight_kg ?? null,
           reps: s.reps ?? null,
           rpe: s.rpe || null,

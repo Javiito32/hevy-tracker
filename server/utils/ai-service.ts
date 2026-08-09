@@ -92,6 +92,19 @@ export async function runAiTask(options: AiTaskOptions): Promise<AiTaskResult> {
     content = result.text ?? ''
 
     const calls = result.toolCalls ?? []
+
+    // Neither an answer nor a tool call means the round was cut off — on a
+    // reasoning model, almost always the budget spent entirely on thinking.
+    // Named here rather than left to fall through: downstream it arrives as an
+    // empty response, which reads as "the model said nothing" and sends you
+    // looking in the wrong place.
+    if (!calls.length && !content.trim()) {
+      throw createError({
+        statusCode: 502,
+        statusMessage: 'La IA agotó su presupuesto de tokens razonando y no llegó a responder. Vuelve a intentarlo; si se repite, hay que subir el límite de tokens.'
+      })
+    }
+
     if (!usesTools || calls.length === 0 || isFinal) break
 
     messages.push({ role: 'assistant', content: result.text ?? '', toolCalls: calls })

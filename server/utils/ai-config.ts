@@ -36,30 +36,27 @@ export const CHAT_HISTORY_WINDOW = 8
  * string, neither of which the athlete can act on.
  */
 export const MAX_OUTPUT_TOKENS = {
-  chat: 5000,
-  analysis: 3000,
-  finalSummary: 5000,
+  chat: 16000,
+  analysis: 16000,
+  finalSummary: 24000,
   /** Small structured payloads (nutrition targets: 5 numbers and a rationale). */
-  generation: 4000,
+  generation: 16000,
   /**
    * A whole mesocycle as JSON: every week, plus every session with all its
-   * exercises. Five training days of six exercises is ~2.5k tokens of object on
-   * its own, before any reasoning. The 3000 this used to share with the
-   * nutrition targets truncated it on anything past a 3-day split.
+   * exercises. Five training days of six exercises is ~3k tokens of object on
+   * its own — the rest of this budget is the reasoning that precedes it.
    */
-  planGeneration: 16000
+  planGeneration: 48000
 } as const
 
 /**
  * Cap applied to the intermediate rounds of a tool-calling task, instead of the
- * task's own (much larger) budget.
+ * task's own (larger) budget.
  *
- * A round whose entire output is a tool call needs a few hundred tokens. Giving
- * it the final answer's budget is not free: `AI_REASONING_EFFORT` sizes the
- * thinking budget as a fraction of `max_tokens`, and thinking is billed at the
- * output rate — the expensive one. Plan generation can chain six rounds, so a
- * 16k cap on each authorises ~8k of reasoning per round to decide which
- * exercises to look up. The final turn still gets the full budget; only the
- * lookups are bounded.
+ * **A round must be able to finish reasoning and still emit its tool call.**
+ * This was set to 4000 to save tokens and did the opposite: the model spent the
+ * whole allowance thinking, got cut off before the call, and the loop exited
+ * with no tool result and no text — a full generation's cost for an empty
+ * response. The budget bounds the round; it must never be what ends it.
  */
-export const TOOL_ROUND_MAX_OUTPUT_TOKENS = 4000
+export const TOOL_ROUND_MAX_OUTPUT_TOKENS = 16000

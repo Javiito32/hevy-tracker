@@ -119,6 +119,9 @@ function parseToolArguments(raw: string | undefined): Record<string, any> {
   try { return JSON.parse(raw || '{}') } catch { return {} }
 }
 
+/** How long a single provider call may take before the SDK aborts it. */
+const REQUEST_TIMEOUT_MS = 20 * 60 * 1000
+
 export const EMPTY_USAGE: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
 
 /** Reads the OpenAI-compatible `usage` block into neutral shape. */
@@ -148,7 +151,16 @@ class OpenAiCompatibleProvider implements AiProvider {
   private client: OpenAI
 
   constructor(apiKey: string, baseURL?: string, defaultHeaders?: Record<string, string>) {
-    this.client = new OpenAI({ apiKey, ...(baseURL && { baseURL }), ...(defaultHeaders && { defaultHeaders }) })
+    this.client = new OpenAI({
+      apiKey,
+      ...(baseURL && { baseURL }),
+      ...(defaultHeaders && { defaultHeaders }),
+      // The SDK defaults to 10 minutes, which a buffered plan generation can
+      // exceed: a whole mesocycle is tens of thousands of tokens of reasoning
+      // and JSON, emitted in one non-streaming response. A client timeout there
+      // aborts a request the provider bills in full and then retries it.
+      timeout: REQUEST_TIMEOUT_MS
+    })
   }
 
   /** Request body shared by the buffered and streaming paths. */

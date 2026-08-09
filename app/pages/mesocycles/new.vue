@@ -243,7 +243,7 @@ const hasEnoughData = computed(() => !!(form.value.goal && form.value.split_desc
 const generatedPlan = ref<{ sessions: any[]; weeks: any[] } | null>(null)
 
 const POLL_MS = 2000
-const POLL_TIMEOUT_MS = 6 * 60 * 1000
+const POLL_TIMEOUT_MS = 15 * 60 * 1000
 
 /**
  * Waits for a generation job, polling until it finishes.

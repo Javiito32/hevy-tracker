@@ -370,6 +370,12 @@ const generateWithAI = async () => {
         equipment: aiEquipment.value || undefined
       }
     })
+    // A response without a job id is not this endpoint answering — a proxy error
+    // page served as 200, or a stale client bundle talking to a newer server.
+    // Checked so it reads as that, instead of as a property access on undefined.
+    if (!started?.jobId) {
+      throw new Error('Respuesta inesperada del servidor al iniciar la generación. Recarga la página con Ctrl+F5 e inténtalo de nuevo.')
+    }
     await consumeGeneration(started.jobId)
   } catch (err: any) {
     generateError.value = err?.data?.statusMessage || err?.data?.message || err?.message || 'Error al generar el plan.'

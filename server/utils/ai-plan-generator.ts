@@ -130,10 +130,28 @@ export async function generateMesocyclePlan(
     })
   }
 
+  // Shape-checked before it leaves the server. `plan.put.ts` validates the same
+  // things at save time, but the form renders a preview of the plan first, and
+  // a null session there surfaces as a raw "Cannot read properties of undefined"
+  // in the browser — an error that says nothing about what actually went wrong.
+  const isUsableExercise = (e: any) => e && typeof e === 'object' && typeof e.name === 'string' && e.name.trim()
+  const malformed = sessions.some((s: any) =>
+    !s || typeof s !== 'object' ||
+    typeof s.name !== 'string' || !s.name.trim() ||
+    !Array.isArray(s.exercises) || !s.exercises.length ||
+    !s.exercises.every(isUsableExercise)
+  )
+  if (malformed) {
+    throw createError({
+      statusCode: 502,
+      statusMessage: 'La IA devolvió un plan con sesiones incompletas. Inténtalo de nuevo.'
+    })
+  }
+
   // Reported rather than silently dropped: a plan whose exercises aren't in the
   // catalogue still trains fine, it just can't be pushed to Hevy.
   const missingIds = sessions.flatMap((s: any) =>
-    (s.exercises ?? [])
+    s.exercises
       .filter((e: any) => !e.exercise_template_id)
       .map((e: any) => e.name)
   )

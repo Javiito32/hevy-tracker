@@ -50,7 +50,8 @@
         </svg>
         {{ generating ? 'Generando...' : 'Generar plan' }}
       </button>
-      <p v-if="generateError" class="text-xs text-danger mt-2">{{ generateError }}</p>
+      <p v-if="generateError" class="text-sm text-danger mt-3">{{ generateError }}</p>
+      <p v-if="generateWarning" class="text-sm text-warn mt-3">{{ generateWarning }}</p>
     </div>
 
     <!-- Main Form -->
@@ -213,6 +214,10 @@ const aiWeeks = ref(8)
 const aiEquipment = ref('')
 const generating = ref(false)
 const generateError = ref('')
+/** Kept apart from the error: a plan with unresolved ids is still a usable plan. */
+const generateWarning = ref('')
+
+const toast = useToast()
 
 const analyzingFeedback = ref(false)
 const aiFeedback = ref('')
@@ -232,6 +237,7 @@ const generatedPlan = ref<{ sessions: any[]; weeks: any[] } | null>(null)
 const generateWithAI = async () => {
   generating.value = true
   generateError.value = ''
+  generateWarning.value = ''
   try {
     const result = await $fetch<{ plan: any; warning?: string }>('/api/mesocycles/ai-generate', {
       method: 'POST',
@@ -266,15 +272,24 @@ const generateWithAI = async () => {
       // Older shape, or a model that ignored the structure. Still usable as prose.
       generatedPlan.value = null
       form.value.split_description = plan.split_description
+    } else {
+      // The server rejects an empty plan, so this is unreachable through it —
+      // but a response that changes no field and says nothing is the one outcome
+      // the user cannot tell apart from a dead button, so it never ships silent.
+      throw new Error('La IA no devolvió ninguna sesión de entrenamiento.')
     }
 
-    if (result.warning) generateError.value = result.warning
+    generateWarning.value = result.warning ?? ''
 
     const end = new Date(form.value.start_date)
     end.setDate(end.getDate() + aiWeeks.value * 7)
     form.value.end_date = end.toISOString().split('T')[0]
+    toast.success('Plan generado. Revísalo antes de guardar.')
   } catch (err: any) {
-    generateError.value = err?.data?.statusMessage || 'Error al generar el plan.'
+    generateError.value = err?.data?.statusMessage || err?.data?.message || err?.message || 'Error al generar el plan.'
+    // Also as a toast: the inline note sits below a button the user is no longer
+    // looking at after a generation that can take a minute.
+    toast.error(generateError.value)
   } finally {
     generating.value = false
   }

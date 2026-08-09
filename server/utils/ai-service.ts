@@ -117,6 +117,56 @@ export async function runAiTask(options: AiTaskOptions): Promise<AiTaskResult> {
   }
 }
 
+/**
+ * Parses the JSON object a generation task was asked for.
+ *
+ * `JSON.parse(content || '{}')` is not enough, and its two failure modes are the
+ * ones these tasks actually hit:
+ *
+ *  - `jsonMode` is a **request**, not a guarantee. It maps to the OpenAI-style
+ *    `response_format`, which providers that don't implement it (Anthropic
+ *    through OpenRouter among them) accept and ignore — so the model answers
+ *    with the object inside a ```json fence, or after a line of prose. Both are
+ *    the right answer in the wrong wrapper, and both make a bare parse throw.
+ *  - An empty string — what a response truncated inside its reasoning block
+ *    leaves behind — parses cleanly as `{}` once defaulted. That is how a failed
+ *    generation reaches the UI as `success: true` carrying nothing, and the
+ *    screen simply doesn't change: no plan, no error, nothing to retry from.
+ *
+ * So: unwrap what the model actually sent, and fail loudly when there is
+ * nothing to unwrap.
+ */
+export function parseAiJson<T = any>(content: string, task: string): T {
+  const text = (content ?? '').trim()
+  if (!text) {
+    throw createError({
+      statusCode: 502,
+      statusMessage: `La IA no devolvió ninguna respuesta al ${task}. Suele deberse a que se agotó el límite de tokens; inténtalo de nuevo.`
+    })
+  }
+
+  for (const candidate of jsonCandidates(text)) {
+    try { return JSON.parse(candidate) as T } catch { /* try the next shape */ }
+  }
+
+  throw createError({
+    statusCode: 502,
+    statusMessage: `La IA no devolvió un JSON válido al ${task}. Inténtalo de nuevo.`
+  })
+}
+
+/** The text as sent, then unfenced, then the outermost {...} in it. */
+function* jsonCandidates(text: string): Generator<string> {
+  yield text
+
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+  if (fenced?.[1]) yield fenced[1].trim()
+
+  const first = text.indexOf('{')
+  const last = text.lastIndexOf('}')
+  if (first !== -1 && last > first) yield text.slice(first, last + 1)
+}
+
 export async function recordAiInteraction(args: {
   userId: string
   contextType: string

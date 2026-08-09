@@ -6,7 +6,7 @@ import {
   buildTrainingLoad,
   type NutritionTargetsPayload
 } from '../../utils/ai-payload'
-import { runAiTask, aiKeysFromConfig } from '../../utils/ai-service'
+import { runAiTask, aiKeysFromConfig, parseAiJson } from '../../utils/ai-service'
 import { NUTRITION_TARGETS_PROMPT } from '../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../utils/ai-config'
 
@@ -63,12 +63,7 @@ export default defineEventHandler(async (event) => {
     jsonMode: true
   })
 
-  let targets: any
-  try {
-    targets = JSON.parse(content || '{}')
-  } catch {
-    throw createError({ statusCode: 500, statusMessage: 'Error al procesar la respuesta de la IA' })
-  }
+  const targets = parseAiJson<any>(content, 'calcular los objetivos')
 
   return { success: true, targets, model }
 })

@@ -161,7 +161,11 @@ Every provider call reports a `TokenUsage` (`{ inputTokens, outputTokens, totalT
 
 `ai-generate` is the exception to "stateless = one shot": it passes `tools` + `toolImpls` to `runAiTask` so the model can look up real exercise ids. See "Structured training plans".
 
-`ai-generate` and `ai-targets` pass `jsonMode: true` (mapped to the vendor's JSON mode by the adapter) and expects the model to return a structured mesocycle plan. All other stateless endpoints return Markdown.
+`ai-generate` and `ai-targets` pass `jsonMode: true` (mapped to the vendor's JSON mode by the adapter) and expect a structured object back. All other stateless endpoints return Markdown.
+
+**`jsonMode` is a request, not a guarantee, so both parse through `parseAiJson()` in `ai-service.ts`** — never `JSON.parse` a model response directly. It maps to OpenAI-style `response_format`, which providers that don't implement it (Anthropic through OpenRouter, the current default) accept and ignore; the model then answers correctly but inside a ```json fence or after a line of prose. `parseAiJson` unwraps that, and **throws a 502 on an empty response instead of defaulting to `{}`** — `JSON.parse(content || '{}')` turned a failed generation into `success: true` carrying an empty object, which reached the form as a button that did nothing. `ai-generate` additionally rejects a plan with no `sessions` for the same reason: the only outcome a user can't act on is silence.
+
+`MAX_OUTPUT_TOKENS.planGeneration` is separate from `generation` because **`AI_REASONING_EFFORT` spends this same budget before the answer starts**. A whole mesocycle is ~2.5k tokens of JSON on a 5-day split; sharing the nutrition targets' 3000 truncated it — mid-object when the reasoning was short, into an empty string when it wasn't.
 
 #### `server/utils/ai-payload.ts`
 

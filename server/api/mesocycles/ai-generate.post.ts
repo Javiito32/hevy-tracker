@@ -1,7 +1,7 @@
 import { prisma } from '../../utils/prisma'
 import { getSessionUser } from '../../utils/session'
 import { buildAthleteProfile, buildWorkoutData, extractCompoundLiftsData, buildNutritionSnapshot, type MesocycleGeneratePayload } from '../../utils/ai-payload'
-import { runAiTask, aiKeysFromConfig } from '../../utils/ai-service'
+import { runAiTask, aiKeysFromConfig, parseAiJson } from '../../utils/ai-service'
 import { MESOCYCLE_GENERATE_PROMPT } from '../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../utils/ai-config'
 import { SEARCH_TEMPLATES_TOOL, searchExerciseTemplates } from '../../utils/exercise-search'
@@ -75,7 +75,7 @@ export default defineEventHandler(async (event) => {
     contextType: 'mesocycle_generate',
     systemPrompt: MESOCYCLE_GENERATE_PROMPT,
     payload,
-    maxOutputTokens: MAX_OUTPUT_TOKENS.generation,
+    maxOutputTokens: MAX_OUTPUT_TOKENS.planGeneration,
     jsonMode: true,
     // The catalogue is ~400 entries — too many for the prompt, and a made-up id
     // yields a plan that looks fine and fails on push. So it looks them up.
@@ -86,16 +86,18 @@ export default defineEventHandler(async (event) => {
     maxToolIterations: 6
   })
 
-  let plan: any
-  try {
-    plan = JSON.parse(content || '{}')
-  } catch {
-    throw createError({ statusCode: 502, statusMessage: 'La IA no devolvió un plan válido. Inténtalo de nuevo.' })
-  }
+  const plan = parseAiJson<any>(content, 'generar el plan')
 
-  // Reported rather than silently dropped: a plan whose exercises aren't in the
-  // catalogue still trains fine, it just can't be pushed to Hevy.
+  // A parsed object with no sessions in it is not a plan. Returned as success it
+  // reaches the form as an empty response — every field left as it was, nothing
+  // to retry from — so it fails here instead, where the reason can be stated.
   const sessions = Array.isArray(plan.sessions) ? plan.sessions : []
+  if (!sessions.length) {
+    throw createError({
+      statusCode: 502,
+      statusMessage: 'La IA devolvió un plan sin sesiones de entrenamiento. Inténtalo de nuevo, o reduce los días por semana.'
+    })
+  }
   const missingIds = sessions.flatMap((s: any) =>
     (s.exercises ?? [])
       .filter((e: any) => !e.exercise_template_id)

@@ -3,7 +3,8 @@
     <div class="px-5 py-3.5 border-b border-line">
       <h2 class="font-display text-sm font-semibold tracking-tight text-ink">Mantenimiento de datos</h2>
       <p class="text-xs text-ink-3 mt-1">
-        Todas las operaciones son reejecutables: se derivan de los datos crudos de Hevy, que nunca se modifican.
+        Las operaciones 1–4 son reejecutables: se derivan de los datos crudos de Hevy, que nunca se modifican.
+        La 5 es una migración de un solo uso y sí escribe sobre la dieta.
       </p>
     </div>
 
@@ -119,6 +120,13 @@ const operations: Operation[] = [
     blockedBy: 'recalc_metrics',
     allowAnyway: true,
     warning: 'Ejecuta antes «Recalcular métricas», o los récords se fijarán sobre los volúmenes inflados.'
+  },
+  {
+    kind: 'fanout_diet_weekdays', order: 5,
+    label: 'Repartir la dieta por días de la semana',
+    description: 'Migración de un solo uso tras el cambio a dietas por día: convierte cada comida en siete, una por día, copiando los alimentos tal cual. Volver a ejecutarla no hace nada.',
+    online: false,
+    warning: 'Es la única operación que escribe sobre la dieta y no se deshace. Ejecútala una vez, justo después de migrar la base de datos.'
   }
 ]
 

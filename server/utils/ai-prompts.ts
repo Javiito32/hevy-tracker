@@ -20,7 +20,8 @@ const SELF_CHECK = 'Antes de finalizar, verifica que cada afirmación esté resp
  * missing-micro rule matters for the same reason — an omitted micronutrient
  * means the food data is incomplete, not that intake is zero.
  */
-const NUTRITION_GROUNDING = `Si el campo "nutrition" está presente, describe la dieta PLANIFICADA por el deportista, no un registro de lo que comió realmente: no afirmes que ha ingerido esas cantidades, sino que ese es su plan. Los micronutrientes ausentes en "micronutrients" son datos que faltan en la base de alimentos, no ingestas de cero: no los interpretes como déficits. Los listados en "micronutrients_partial" son cotas mínimas calculadas solo con parte de los alimentos: puedes citarlos como suelo, nunca como déficit.`
+const NUTRITION_GROUNDING = `Si el campo "nutrition" está presente, describe la dieta PLANIFICADA por el deportista, no un registro de lo que comió realmente: no afirmes que ha ingerido esas cantidades, sino que ese es su plan. Los micronutrientes ausentes en "micronutrients" son datos que faltan en la base de alimentos, no ingestas de cero: no los interpretes como déficits. Los listados en "micronutrients_partial" son cotas mínimas calculadas solo con parte de los alimentos: puedes citarlos como suelo, nunca como déficit.
+La dieta varía por día de la semana. Los campos "daily_*" son la MEDIA de un día planificado, calculada solo sobre los días que tienen comidas ("planned_days_per_week" y "planned_weekdays"): no es un total semanal ni una media sobre siete, y no la atribuyas a un día concreto. "days" trae una línea por cada patrón de día distinto. "meals" describe solo los días de "meals_apply_to"; si "meals_other_days_omitted" es cierto, el resto de días tienen otro menú que no está en estos datos — pídelo con get_diet en vez de suponerlo.`
 
 function buildPrompt(taskInstructions: string): string {
   return `${PERSONA}\n\n${GROUNDING}\n\n${taskInstructions}\n\n${SELF_CHECK}`
@@ -96,7 +97,7 @@ export const NUTRITION_ANALYSIS_PROMPT = buildPrompt(
 (Comenta sólo los presentes en "micronutrients". Si faltan muchos, dilo como limitación de los datos y no como carencia nutricional.)
 
 ## Coherencia con la carga de entreno
-(Cruza "training_load" con la ingesta planificada.)
+(Cruza "training_load" con la ingesta planificada. Si "nutrition.training_weekdays" está presente, contrasta día a día: qué días entrena frente a qué días come más, usando "nutrition.days". Un día de descanso con más carbohidratos que uno de entreno es un hallazgo concreto que merece decirse.)
 
 ## Recomendaciones
 (Cambios concretos y accionables: qué comida tocar, qué alimento subir o bajar y en cuántos gramos.)

@@ -1,7 +1,7 @@
 import { prisma } from './prisma'
 import type { ToolDefinition } from './ai-provider'
-import { resolveVersion, serializeVersion, getActivePlan, toDateKey } from './diet-service'
-import { MICRO_KEYS, NUTRIENT_KEYS } from './nutrition-calculator'
+import { resolveVersion, serializeDietForAi, getActivePlan, toDateKey } from './diet-service'
+import { NUTRIENT_KEYS, WEEKDAY_LABELS_ES, isWeekday } from './nutrition-calculator'
 import { buildMuscleVolumeReport } from './muscle-volume'
 import { getCurrentRecords, RECORD_LABELS, type RecordType } from './personal-records'
 
@@ -28,6 +28,14 @@ const daysAgo = (n: number): Date => {
 const fmtDate = (d: Date | string): string => new Date(d).toISOString().substring(0, 10)
 
 const n1 = (v: any): number | null => v != null ? parseFloat(parseFloat(v).toFixed(1)) : null
+
+/** Spanish weekday of a YYYY-MM-DD, Monday-first like the rest of the app. */
+const weekdayNameOf = (date: string): string | null => {
+  const d = new Date(`${date}T12:00:00.000Z`)
+  if (isNaN(d.getTime())) return null
+  const weekday = ((d.getUTCDay() + 6) % 7) + 1
+  return isWeekday(weekday) ? WEEKDAY_LABELS_ES[weekday].toLowerCase() : null
+}
 
 const summarizeWorkout = (w: any) => {
   const exSummary: any[] = w.exercises_summary ? JSON.parse(w.exercises_summary) : []
@@ -507,53 +515,19 @@ const getDiet: ToolFn = async (userId, args) => {
     })
   ])
 
-  const s = serializeVersion(version, { weightKg: latestWeight?.weight ?? null })
-
-  // Only micros with data are emitted. An omitted one means the food data is
-  // incomplete, not that the plan provides zero — sending 0 would invite the
-  // model to diagnose a deficiency that isn't in evidence. Micros backed by
-  // only some of the foods travel with an explicit "lower bound" warning.
-  const micronutrients: Record<string, number> = {}
-  const micronutrientsPartial: Record<string, string> = {}
-  for (const key of MICRO_KEYS) {
-    const value = (s.totals.all as any)[key]
-    if (value == null) continue
-    micronutrients[key] = value
-    const entry = s.totals.coverage?.all?.[key]
-    if (entry && entry.known < entry.total) {
-      micronutrientsPartial[key] = `mínimo: solo ${entry.known} de ${entry.total} alimentos tienen este dato`
-    }
-  }
-
-  const day = (n: any) => ({ kcal: n.kcal, protein_g: n.protein_g, carbs_g: n.carbs_g, fat_g: n.fat_g })
+  const diet = serializeDietForAi(version, {
+    weightKg: latestWeight?.weight ?? null,
+    // The model asked for the diet, so it gets every distinct day in full.
+    detail: 'full'
+  })
 
   return {
-    is_plan_not_log: true,
-    version_id: s.id,
-    version_number: s.version_number,
-    status: s.status,
+    ...diet,
     plan_name: plan?.name,
     ...(plan?.goal && { goal: plan.goal }),
-    ...(s.start_date && { from: s.start_date }),
-    ...(s.end_date && { to: s.end_date }),
-    ...(Object.values(s.targets).some(v => v != null) && { targets: s.targets }),
-    daily_totals: { ...day(s.totals.all), ...micronutrients },
-    ...(Object.keys(micronutrientsPartial).length > 0 && { micronutrients_partial: micronutrientsPartial }),
-    ...(s.macro_split.protein_pct != null && {
-      macro_split_pct: {
-        protein: s.macro_split.protein_pct,
-        carbs: s.macro_split.carbs_pct,
-        fat: s.macro_split.fat_pct
-      }
-    }),
-    ...(s.protein_g_per_kg != null && { protein_g_per_kg: s.protein_g_per_kg }),
-    ...(s.has_day_split && { training_day: day(s.totals.training), rest_day: day(s.totals.rest) }),
-    meals: s.meals.map((meal: any) => ({
-      name: meal.name,
-      ...(meal.time_of_day && { time_of_day: meal.time_of_day }),
-      ...(meal.day_type !== 'all' && { day_type: meal.day_type }),
-      foods: meal.items.map((item: any) => ({ name: item.food_name, quantity_g: item.quantity_g }))
-    }))
+    // Answering "what did the plan say on 4 March" is better with the weekday
+    // named: the plan varies by day, so the date alone no longer identifies it.
+    ...(args.date && { asked_about: args.date, weekday_of_date: weekdayNameOf(args.date) })
   }
 }
 
@@ -793,8 +767,9 @@ Es LA métrica para juzgar el reparto de volumen en hipertrofia: el tonelaje tot
   },
   {
     name: 'get_diet',
-    description: `Devuelve la dieta del usuario: comidas, alimentos con sus gramos y totales diarios (kcal, macros y los micronutrientes conocidos: fibra, azúcares, grasa saturada, sodio, potasio, calcio, hierro, magnesio, zinc, vitamina D, vitamina C y vitamina B12).
+    description: `Devuelve la dieta del usuario: comidas, alimentos con sus gramos y totales (kcal, macros y los micronutrientes conocidos: fibra, azúcares, grasa saturada, sodio, potasio, calcio, hierro, magnesio, zinc, vitamina D, vitamina C y vitamina B12).
 Sin parámetros devuelve la dieta VIGENTE ahora mismo. Usa "date" para saber qué dieta seguía el usuario en un momento pasado, o "version_id" (aparece en get_diet_history) para una versión concreta.
+LA DIETA VARÍA POR DÍA DE LA SEMANA. "days" trae una línea por cada patrón de día distinto (los días idénticos van agrupados) y "meals_by_day" el detalle de comidas de cada uno. "daily_totals" es la MEDIA de un día planificado, no un total semanal ni una media sobre siete: "planned_days_per_week" y "planned_weekdays" dicen sobre qué días se calcula. Si el usuario pregunta por un día concreto, mira su grupo en "days"/"meals_by_day" en vez de citar la media.
 IMPORTANTE: es la dieta PLANIFICADA, no un registro de lo que comió realmente. No afirmes que ha ingerido esas cantidades. Un micronutriente que no aparece es un dato que falta en la base de alimentos, NO una ingesta de cero: no lo interpretes como una carencia. Los que aparezcan en "micronutrients_partial" son cotas mínimas calculadas solo con parte de los alimentos: no diagnostiques déficit sobre ellos.`,
     parameters: {
       type: 'object',

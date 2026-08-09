@@ -1,5 +1,6 @@
 import { prisma } from './prisma'
 import { resolveVersion, serializeVersion } from './diet-service'
+import { WEEKDAY_SHORT_ES, type Weekday } from './nutrition-calculator'
 
 /**
  * Context builders for the chat endpoint (text-formatted, Spanish).
@@ -175,24 +176,41 @@ const buildActiveDietSummary = async (userId: string): Promise<string> => {
   ])
 
   const s = serializeVersion(version, { weightKg: latestWeight?.weight ?? null })
-  const t = s.totals.all
+  const t = s.totals.average
   const num = (v: number | null, unit = '') => (v == null ? 'sin datos' : `${Math.round(v)}${unit}`)
+  const dayList = (days: number[]) => days.map(d => WEEKDAY_SHORT_ES[d as Weekday]).join(', ')
 
   const lines = [
     `- Plan: ${plan?.name ?? 'Sin nombre'}${plan?.goal ? ` (objetivo: ${plan.goal})` : ''}`,
     `- Versión ${s.version_number}${s.start_date ? `, vigente desde el ${new Date(s.start_date).toLocaleDateString('es-ES')}` : ''}`,
-    `- Totales diarios: ${num(t.kcal)} kcal · P ${num(t.protein_g, ' g')} · C ${num(t.carbs_g, ' g')} · G ${num(t.fat_g, ' g')}${s.protein_g_per_kg != null ? ` (${s.protein_g_per_kg} g proteína/kg)` : ''}`
+    // Stated as a mean with its denominator, never as "the daily totals": the
+    // plan varies by weekday, and an unqualified figure invites the model to
+    // quote it back as what the athlete eats on the day being discussed.
+    `- Media de un día planificado (${s.planned_days.length} de 7: ${dayList(s.planned_days) || 'ninguno'}): ${num(t.kcal)} kcal · P ${num(t.protein_g, ' g')} · C ${num(t.carbs_g, ' g')} · G ${num(t.fat_g, ' g')}${s.protein_g_per_kg != null ? ` (${s.protein_g_per_kg} g proteína/kg)` : ''}`
   ]
 
-  if (s.targets.kcal != null) lines.push(`- Objetivo marcado: ${Math.round(s.targets.kcal)} kcal`)
-  if (s.has_day_split) {
-    lines.push(`- Día de entreno: ${num(s.totals.training.kcal)} kcal · Día de descanso: ${num(s.totals.rest.kcal)} kcal`)
+  if (s.targets.kcal != null) lines.push(`- Objetivo marcado: ${Math.round(s.targets.kcal)} kcal/día`)
+
+  // Only the distinct patterns, so a diet that is the same all week costs one
+  // line and one that varies costs as many as it really has.
+  const groups = s.day_groups
+  if (groups.length > 1) {
+    lines.push(
+      'Días distintos:\n' +
+        groups
+          .map(g => {
+            const day = s.days.find(d => d.weekday === g.weekdays[0])
+            return `  ${dayList(g.weekdays)}: ${num(day?.totals?.kcal ?? null)} kcal`
+          })
+          .join('\n')
+    )
   }
 
+  const detailed = groups[0]
   lines.push(
-    s.meals.length
-      ? 'Comidas:\n' +
-          s.meals
+    detailed
+      ? `Comidas (${dayList(detailed.weekdays)}${groups.length > 1 ? '; los demás días varían, consúltalos con get_diet' : ''}):\n` +
+          detailed.meals
             .map((meal: any) => {
               const foods = meal.items.length
                 ? meal.items.map((item: any) => `${item.food_name} ${Math.round(item.quantity_g)} g`).join(', ')

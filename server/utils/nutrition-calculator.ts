@@ -192,12 +192,34 @@ export const sumNutrients = (contributions: Nutrients[]): Nutrients => {
 /**
  * Per-nutrient tally of how many of the contributions had the data.
  * `known < total` means the matching figure in `sumNutrients` is a lower bound.
+ *
+ * Fully-backed nutrients are omitted rather than recorded as `{known: n, total: n}`:
+ * `isComplete` already reads a missing entry as complete, so this changes nothing
+ * observable and roughly halves a totals_json that now carries eight coverage
+ * maps (seven weekdays plus the average) instead of three.
  */
 export const sumCoverage = (contributions: Nutrients[]): Coverage => {
   const out: Coverage = {}
   for (const key of NUTRIENT_KEYS) {
     const known = contributions.filter(c => c[key] != null).length
-    out[key] = { known, total: contributions.length }
+    if (known < contributions.length) out[key] = { known, total: contributions.length }
+  }
+  return out
+}
+
+/**
+ * Divides already-summed nutrients by a day count, preserving nulls.
+ *
+ * A null stays null — dividing "unknown" gives "unknown", never 0 — and a
+ * divisor of zero yields all-null rather than NaN or Infinity, which is the
+ * right answer for "the average of no days".
+ */
+export const divideNutrients = (totals: Nutrients, divisor: number): Nutrients => {
+  const out = emptyNutrients()
+  if (!Number.isFinite(divisor) || divisor <= 0) return out
+  for (const key of NUTRIENT_KEYS) {
+    const v = totals[key]
+    if (v != null) out[key] = round(v / divisor)
   }
   return out
 }
@@ -208,9 +230,38 @@ export const isComplete = (coverage: Coverage | null | undefined, key: NutrientK
   return !entry || entry.known === entry.total
 }
 
-/** A meal shaped as the totals code needs it: a day_type and scaled items. */
+// ── Weekdays ──────────────────────────────────────────────────────────────────
+
+/** 1 = Monday … 7 = Sunday, the convention PlannedSession.day_of_week uses. */
+export const WEEKDAYS = [1, 2, 3, 4, 5, 6, 7] as const
+export type Weekday = (typeof WEEKDAYS)[number]
+
+export const isWeekday = (value: unknown): value is Weekday =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 7
+
+export const WEEKDAY_LABELS_ES: Record<Weekday, string> = {
+  1: 'Lunes',
+  2: 'Martes',
+  3: 'Miércoles',
+  4: 'Jueves',
+  5: 'Viernes',
+  6: 'Sábado',
+  7: 'Domingo'
+}
+
+export const WEEKDAY_SHORT_ES: Record<Weekday, string> = {
+  1: 'Lun',
+  2: 'Mar',
+  3: 'Mié',
+  4: 'Jue',
+  5: 'Vie',
+  6: 'Sáb',
+  7: 'Dom'
+}
+
+/** A meal shaped as the totals code needs it: a weekday and scaled items. */
 export interface MealForTotals {
-  day_type?: string | null
+  weekday: number
   items: Array<{ quantity_g: number; nutrients_snapshot: string | null }>
 }
 
@@ -222,48 +273,79 @@ export const computeMealTotals = (meal: MealForTotals): Nutrients =>
     )
   )
 
+export interface DayTotals {
+  nutrients: Nutrients
+  coverage: Coverage
+  /** Meals on this day, empty ones included. */
+  meals: number
+  /** Foods on this day. This — not `meals` — is what makes a day "planned". */
+  items: number
+}
+
 export interface VersionTotals {
-  /** Meals eaten every day. The reference figure shown when no day split exists. */
-  all: Nutrients
-  /** day_type 'all' + 'training'. */
-  training: Nutrients
-  /** day_type 'all' + 'rest'. */
-  rest: Nutrients
-  /** How many foods backed each figure above. See `sumCoverage`. */
-  coverage: { all: Coverage; training: Coverage; rest: Coverage }
+  /** Always all seven keys, '1'..'7'. String keys because JSON has no others. */
+  days: Record<string, DayTotals>
+  /** Mean intake of a planned day. The reference figure everything compares to. */
+  average: Nutrients
+  average_coverage: Coverage
+  /** The weekdays that backed `average`. */
+  planned_days: Weekday[]
 }
 
 /**
- * Totals for a whole diet version, per day type.
+ * Totals for a whole diet version, one bucket per weekday plus the weekly mean.
  *
- * `all` is the baseline eaten every day; a training day is that baseline plus
- * the training-only meals, and likewise for rest. A version with no day-specific
- * meals therefore reports the same figures in all three, which is what the
- * phase-1 UI shows.
+ * **The average is taken over the days that have food, not over seven.** Same
+ * reasoning as muscle-volume.ts averaging over the weeks that had training: a
+ * Monday-to-Friday plan divided by 7 reports 71 % of the real intake, turns the
+ * kcal delta amber and has the AI diagnose a deficit the athlete never chose.
+ *
+ * "Has food" is measured in items, not meals: a new plan ships four empty meals
+ * on all seven days, so counting meals would mark every untouched day as planned
+ * from the moment the diet is created.
+ *
+ * A day with no food gets all-null nutrients, never zeros. The file's rule
+ * (null = unknown) gains a second sense here that must not collapse into the
+ * first: *nothing planned* is not *zero eaten* either, and the UI has to be able
+ * to tell them apart.
  */
 export const computeVersionTotals = (meals: MealForTotals[]): VersionTotals => {
-  const contributionsFor = (types: string[]) =>
+  const contributionsOf = (weekday: Weekday) =>
     (meals || [])
-      .filter(m => types.includes(m.day_type || 'all'))
+      .filter(m => m.weekday === weekday)
       .flatMap(m =>
         (m.items || []).map(item =>
           scaleNutrients(parseSnapshot(item.nutrients_snapshot), item.quantity_g)
         )
       )
 
-  const all = contributionsFor(['all'])
-  const training = contributionsFor(['all', 'training'])
-  const rest = contributionsFor(['all', 'rest'])
+  const perDay = new Map<Weekday, Nutrients[]>(WEEKDAYS.map(d => [d, contributionsOf(d)]))
+
+  const days: Record<string, DayTotals> = {}
+  for (const weekday of WEEKDAYS) {
+    const contributions = perDay.get(weekday)!
+    days[String(weekday)] = {
+      nutrients: sumNutrients(contributions),
+      coverage: sumCoverage(contributions),
+      meals: (meals || []).filter(m => m.weekday === weekday).length,
+      items: contributions.length
+    }
+  }
+
+  const planned = WEEKDAYS.filter(d => perDay.get(d)!.length > 0)
+
+  // One flat list of every food eaten across the planned days, so the mean and
+  // its coverage cannot disagree. Note the mean divides by ALL planned days,
+  // including those where a given micronutrient was unknown — dividing only by
+  // the days that had the data would overstate it, and every partial figure in
+  // this app is a lower bound. `average_coverage` is what explains the `≥`.
+  const weekContributions = planned.flatMap(d => perDay.get(d)!)
 
   return {
-    all: sumNutrients(all),
-    training: sumNutrients(training),
-    rest: sumNutrients(rest),
-    coverage: {
-      all: sumCoverage(all),
-      training: sumCoverage(training),
-      rest: sumCoverage(rest)
-    }
+    days,
+    average: divideNutrients(sumNutrients(weekContributions), planned.length),
+    average_coverage: sumCoverage(weekContributions),
+    planned_days: planned
   }
 }
 

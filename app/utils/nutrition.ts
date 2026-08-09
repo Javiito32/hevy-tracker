@@ -158,10 +158,51 @@ export const GOAL_LABELS: Record<string, string> = {
   recomp: 'Recomposición'
 }
 
-export const DAY_TYPE_LABELS: Record<string, string> = {
-  all: 'Todos los días',
-  training: 'Día de entreno',
-  rest: 'Día de descanso'
+// ── Weekdays ──────────────────────────────────────────────────────────────────
+// Mirrors server/utils/nutrition-calculator.ts, for the same reason the nutrient
+// labels above are mirrored rather than imported.
+
+/** 1 = Monday … 7 = Sunday, the convention the whole app uses. */
+export const WEEKDAYS = [1, 2, 3, 4, 5, 6, 7] as const
+export type Weekday = (typeof WEEKDAYS)[number]
+
+export const isWeekday = (value: unknown): value is Weekday =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 7
+
+export const WEEKDAY_LABELS: Record<number, string> = {
+  1: 'Lunes',
+  2: 'Martes',
+  3: 'Miércoles',
+  4: 'Jueves',
+  5: 'Viernes',
+  6: 'Sábado',
+  7: 'Domingo'
+}
+
+export const WEEKDAY_SHORT: Record<number, string> = {
+  1: 'Lun',
+  2: 'Mar',
+  3: 'Mié',
+  4: 'Jue',
+  5: 'Vie',
+  6: 'Sáb',
+  7: 'Dom'
+}
+
+/**
+ * Today as a Monday-first weekday. Same formula as `mondayIndex` in
+ * CalendarGrid.vue — duplicated rather than extracted, like the labels above:
+ * one line is cheaper than coupling the diet designer to the calendar.
+ */
+export const todayWeekday = (date = new Date()): Weekday =>
+  (((date.getDay() + 6) % 7) + 1) as Weekday
+
+/** "lun", "lun y mar", "lun, mar y mié" — for captions and group headings. */
+export const formatWeekdayList = (days: number[], long = false): string => {
+  const names = days.map(d => (long ? WEEKDAY_LABELS[d] : WEEKDAY_SHORT[d])?.toLowerCase()).filter(Boolean)
+  if (names.length === 0) return ''
+  if (names.length === 1) return names[0]
+  return `${names.slice(0, -1).join(', ')} y ${names[names.length - 1]}`
 }
 
 export const VERSION_STATUS_LABELS: Record<string, string> = {

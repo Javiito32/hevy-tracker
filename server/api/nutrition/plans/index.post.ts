@@ -1,5 +1,6 @@
 import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
+import { WEEKDAYS } from '../../../utils/nutrition-calculator'
 
 const DEFAULT_MEALS = ['Desayuno', 'Comida', 'Merienda', 'Cena']
 
@@ -33,8 +34,18 @@ export default defineEventHandler(async (event) => {
           target_protein_g: target_protein_g ? Number(target_protein_g) : null,
           target_carbs_g: target_carbs_g ? Number(target_carbs_g) : null,
           target_fat_g: target_fat_g ? Number(target_fat_g) : null,
+          // The four default slots on all seven days, so a new plan opens ready
+          // on whichever tab the user lands on. Seeding Monday alone would make
+          // "copiar a…" a mandatory first step. They hold no food, and a
+          // planned day is one with food, so they don't touch the average.
           meals: {
-            create: DEFAULT_MEALS.map((mealName, index) => ({ name: mealName, order_index: index }))
+            create: WEEKDAYS.flatMap(weekday =>
+              DEFAULT_MEALS.map((mealName, index) => ({
+                name: mealName,
+                order_index: index,
+                weekday
+              }))
+            )
           }
         }
       }

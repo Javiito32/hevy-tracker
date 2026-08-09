@@ -2,10 +2,13 @@ import { prisma } from '../../../utils/prisma'
 import { requireAdmin } from '../../../utils/session'
 import {
   startJob, runExerciseTemplateSync, runRebuildExercises,
-  runRecalcMetrics, runRecalcRecords, runSync, type JobKind
+  runRecalcMetrics, runRecalcRecords, runFanoutDietWeekdays, runSync, type JobKind
 } from '../../../utils/maintenance'
 
-const KINDS: JobKind[] = ['sync', 'exercise_templates', 'rebuild_exercises', 'recalc_metrics', 'recalc_records']
+const KINDS: JobKind[] = [
+  'sync', 'exercise_templates', 'rebuild_exercises', 'recalc_metrics', 'recalc_records',
+  'fanout_diet_weekdays'
+]
 
 /**
  * Launches a maintenance job and returns its id immediately.
@@ -64,6 +67,8 @@ export default defineEventHandler(async (event) => {
       jobIds.push(await startJob(kind, target.id, (ctx) => runRecalcMetrics(ctx, target.id)))
     } else if (kind === 'recalc_records') {
       jobIds.push(await startJob(kind, target.id, (ctx) => runRecalcRecords(ctx, target.id)))
+    } else if (kind === 'fanout_diet_weekdays') {
+      jobIds.push(await startJob(kind, target.id, (ctx) => runFanoutDietWeekdays(ctx, target.id)))
     }
   }
 

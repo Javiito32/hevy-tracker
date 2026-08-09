@@ -5,6 +5,8 @@ import { writeWorkoutExercises } from './exercise-store'
 import { rebuildPersonalRecords } from './personal-records'
 import { runDetectors } from './plateau-detector'
 import { syncUserData } from './sync-user'
+import { recalcVersionTotals } from './diet-service'
+import { WEEKDAYS } from './nutrition-calculator'
 
 /**
  * Background jobs: the Hevy sync and the admin migrations.
@@ -25,6 +27,7 @@ export type JobKind =
   | 'rebuild_exercises'
   | 'recalc_metrics'
   | 'recalc_records'
+  | 'fanout_diet_weekdays'
   | 'ai_generate_plan'
 
 export const JOB_LABELS: Record<JobKind, string> = {
@@ -33,6 +36,7 @@ export const JOB_LABELS: Record<JobKind, string> = {
   rebuild_exercises: 'Reconstruir estructura de entrenos',
   recalc_metrics: 'Recalcular métricas',
   recalc_records: 'Recalcular récords',
+  fanout_diet_weekdays: 'Repartir la dieta por días de la semana',
   ai_generate_plan: 'Generar mesociclo con IA'
 }
 
@@ -296,6 +300,113 @@ export async function runRecalcRecords(ctx: JobContext, userId: string) {
     await ctx.progress('Recalculando récords', done, total)
   })
   return { records: created }
+}
+
+// ── Migration 5: spread each diet meal across the seven weekdays ────────────
+
+/**
+ * One-off companion to the `diet_weekdays` schema migration.
+ *
+ * That migration seeded every existing meal onto Monday, because `day_type`
+ * carried no weekday to preserve and SQLite has no uuid() to mint the cloned
+ * DietItem rows with. This job finishes the job in TypeScript: each meal becomes
+ * seven, one per weekday, which is what `day_type = 'all'` ("eaten every day")
+ * meant all along.
+ *
+ * **Unlike the other offline migrations, this one mutates source data, not
+ * derived data.** It is not re-runnable in the "everything comes back from
+ * raw_data" sense the file header describes — running it twice would turn 7
+ * meals into 49. Its safety comes from an explicit guard instead: a version is
+ * processed only if its stored totals are still in the pre-weekday shape AND its
+ * meals occupy a single day. The last step per version writes the new totals
+ * shape, so a second run sees the marker and skips.
+ *
+ * Published and superseded versions are migrated too, deliberately. Their meals
+ * are read — the history card expands them, `get_diet` serves them to the AI,
+ * and `ensureDraft` clones the active one — so leaving them on Monday would have
+ * the history assert "Tuesday to Sunday: nothing", which the user never said,
+ * and would fork a Monday-only draft that silently drops six days of the plan
+ * they actually follow. Immutability here protects meaning, not bytes: snapshots
+ * are copied verbatim, no Food is re-read, and the mean over seven identical
+ * days equals the old figure, so no hot column changes value.
+ */
+export async function runFanoutDietWeekdays(ctx: JobContext, userId: string) {
+  const versions = await prisma.dietVersion.findMany({
+    where: { diet_plan: { user_id: userId } },
+    orderBy: { version_number: 'asc' },
+    select: { id: true, version_number: true, totals_json: true }
+  })
+
+  let migrated = 0
+  let skipped = 0
+  let mealsCreated = 0
+
+  for (let i = 0; i < versions.length; i++) {
+    const version = versions[i]
+
+    const meals = await prisma.dietMeal.findMany({
+      where: { diet_version_id: version.id },
+      orderBy: { order_index: 'asc' },
+      include: { items: { orderBy: { order_index: 'asc' } } }
+    })
+
+    let parsed: any = null
+    try {
+      parsed = version.totals_json ? JSON.parse(version.totals_json) : null
+    } catch { /* unparseable counts as legacy */ }
+
+    const legacyShape = !parsed || (parsed.all && !parsed.days)
+    const singleDay = new Set(meals.map(m => m.weekday)).size <= 1
+
+    if (!legacyShape || !singleDay || meals.length === 0) {
+      skipped++
+      continue
+    }
+
+    const source = meals[0]?.weekday ?? 1
+    const targets = WEEKDAYS.filter(d => d !== source)
+
+    await prisma.$transaction(
+      async tx => {
+        for (const weekday of targets) {
+          for (const meal of meals) {
+            await tx.dietMeal.create({
+              data: {
+                diet_version_id: version.id,
+                name: meal.name,
+                weekday,
+                order_index: meal.order_index,
+                time_of_day: meal.time_of_day,
+                // Copied so the row's age doesn't claim the meal was added today.
+                created_at: meal.created_at,
+                items: {
+                  create: meal.items.map(item => ({
+                    food_id: item.food_id,
+                    food_name: item.food_name,
+                    quantity_g: item.quantity_g,
+                    order_index: item.order_index,
+                    // Verbatim. Rebuilding it from Food would let a catalogue
+                    // correction rewrite what a published version said.
+                    nutrients_snapshot: item.nutrients_snapshot,
+                    created_at: item.created_at
+                  }))
+                }
+              }
+            })
+            mealsCreated++
+          }
+        }
+      },
+      { timeout: 30000 }
+    )
+
+    await recalcVersionTotals(version.id)
+    migrated++
+
+    await ctx.progress('Repartiendo la dieta por días', i + 1, versions.length)
+  }
+
+  return { versions: migrated, skipped, meals_created: mealsCreated }
 }
 
 // ── The sync itself ─────────────────────────────────────────────────────────

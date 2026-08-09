@@ -21,13 +21,6 @@
         <template v-else>
           <h3 class="font-semibold text-ink truncate">{{ meal.name }}</h3>
           <span v-if="meal.time_of_day" class="text-xs text-ink-3">{{ meal.time_of_day }}</span>
-          <span
-            v-if="meal.day_type && meal.day_type !== 'all'"
-            class="text-[10px] px-1.5 py-0.5 rounded-full"
-            :class="meal.day_type === 'training' ? 'bg-surface-2 text-ink-2' : 'bg-surface-2 text-ink-3'"
-          >
-            {{ DAY_TYPE_LABELS[meal.day_type] }}
-          </span>
           <button
             v-if="editable"
             @click="startRename"

@@ -72,32 +72,46 @@
       </div>
 
       <div v-if="shown" class="space-y-6">
+        <NutritionWeekStrip v-model="selectedWeekday" :days="shown.days" />
+
         <NutritionNutrientTotals
-          :totals="shown.totals"
+          :days="shown.days"
+          :weekday="selectedWeekday"
+          :average="shown.totals.average"
+          :average-coverage="shown.totals.average_coverage"
+          :average-macro-split="shown.macro_split"
+          :average-protein-per-kg="shown.protein_g_per_kg"
+          :planned-days="shown.planned_days"
           :targets="shown.targets"
-          :macro-split="shown.macro_split"
-          :protein-per-kg="shown.protein_g_per_kg"
-          :has-day-split="shown.has_day_split"
         />
 
-        <div class="flex items-center justify-between">
-          <h2 class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3">Comidas</h2>
-          <button
-            v-if="!isDraft"
-            @click="startEditing"
-            :disabled="working"
-            class="bg-accent text-accent-ink px-4 py-2 rounded-lg hover:opacity-85 transition text-sm font-medium disabled:opacity-60"
-          >
-            {{ working ? 'Abriendo...' : '✎ Editar dieta' }}
-          </button>
+        <div class="flex items-center justify-between gap-3 flex-wrap">
+          <h2 class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3">
+            Comidas del {{ WEEKDAY_LABELS[selectedWeekday].toLowerCase() }}
+          </h2>
+          <div class="flex gap-2">
+            <UiButton v-if="isDraft" variant="secondary" size="sm" @click="openDayTarget">
+              ◎ Objetivo del día
+            </UiButton>
+            <UiButton v-if="isDraft && mealsOfDay.length" variant="secondary" size="sm" @click="openCopyFrom">
+              ⧉ Copiar a…
+            </UiButton>
+            <UiButton v-if="!isDraft" :loading="working" @click="startEditing">✎ Editar dieta</UiButton>
+          </div>
         </div>
 
-        <div v-if="!shown.meals.length" class="bg-surface rounded-card border border-line p-8 text-center text-sm text-ink-3">
-          Esta versión no tiene comidas.
+        <!-- An empty day offers to pull from another one: from here the natural
+             verb is "bring", not "send", and it is the same endpoint reversed. -->
+        <div v-if="!mealsOfDay.length" class="bg-surface rounded-card border border-line p-8 text-center">
+          <p class="text-sm text-ink-3">No hay comidas el {{ WEEKDAY_LABELS[selectedWeekday].toLowerCase() }}.</p>
+          <div v-if="isDraft" class="flex justify-center gap-2 mt-4">
+            <UiButton size="sm" @click="showMealForm = true">+ Añadir comida</UiButton>
+            <UiButton variant="secondary" size="sm" @click="openCopyInto">⧉ Copiar otro día aquí</UiButton>
+          </div>
         </div>
 
         <NutritionMealEditor
-          v-for="meal in shown.meals"
+          v-for="meal in mealsOfDay"
           :key="meal.id"
           :meal="meal"
           :editable="isDraft"
@@ -108,16 +122,65 @@
         />
 
         <button
-          v-if="isDraft"
-          @click="addMeal"
+          v-if="isDraft && mealsOfDay.length"
+          @click="showMealForm = true"
           class="w-full border border-dashed border-line-strong rounded-card py-3 text-sm text-ink-3 hover:text-ink-2 hover:border-line-strong transition"
         >
-          + Añadir comida
+          + Añadir comida al {{ WEEKDAY_LABELS[selectedWeekday].toLowerCase() }}
         </button>
 
         <NutritionAiPanel v-if="!isDraft && shown.status === 'active'" :plan="data.plan" @applied="refresh" />
       </div>
     </template>
+
+    <!-- Nueva comida. Sustituye a un prompt() nativo, que además de no seguir el
+         sistema visual no puede llevar la hora ni decir a qué día va. -->
+    <UiModal
+      :open="showMealForm"
+      title="Nueva comida"
+      :hint="`Se añadirá al ${WEEKDAY_LABELS[selectedWeekday]?.toLowerCase()}.`"
+      size="sm"
+      @close="showMealForm = false"
+    >
+      <form id="meal-form" class="space-y-4" @submit.prevent="addMeal">
+        <UiField label="Nombre" required>
+          <template #default="{ id }">
+            <UiInput :id="id" v-model="mealForm.name" required placeholder="Ej: Media mañana" />
+          </template>
+        </UiField>
+        <UiField label="Hora" hint="Opcional. Es solo una etiqueta en el plan.">
+          <template #default="{ id }">
+            <UiInput :id="id" v-model="mealForm.time_of_day" type="time" />
+          </template>
+        </UiField>
+      </form>
+      <template #footer>
+        <UiButton variant="ghost" @click="showMealForm = false">Cancelar</UiButton>
+        <UiButton type="submit" form="meal-form" :loading="working">Añadir</UiButton>
+      </template>
+    </UiModal>
+
+    <NutritionCopyDayModal
+      v-if="shown"
+      :open="showCopyDay"
+      :version-id="shown.id"
+      :days="shown.days"
+      :default-from="copyFrom"
+      :default-to="copyTo"
+      @close="showCopyDay = false"
+      @copied="onCopied"
+    />
+
+    <NutritionDayTargetModal
+      v-if="shown && currentDay"
+      :open="showDayTarget"
+      :version-id="shown.id"
+      :weekday="selectedWeekday"
+      :base-targets="shown.targets"
+      :day-target="currentDay.target"
+      @close="showDayTarget = false"
+      @saved="onTargetSaved"
+    />
 
     <!-- Barra fija de cambios sin publicar -->
     <ClientOnly>
@@ -174,8 +237,9 @@
                 <textarea v-model="planForm.notes" rows="2" :class="INPUT" placeholder="Contexto, restricciones..."></textarea>
               </div>
               <p class="text-xs text-ink-3">
-                Se creará con las comidas habituales (desayuno, comida, merienda y cena) como borrador.
-                Podrás añadir alimentos y publicarla cuando esté lista.
+                Se creará como borrador con las comidas habituales (desayuno, comida, merienda y cena)
+                en los siete días de la semana. Cada día es independiente: puedes rellenar uno y copiarlo
+                al resto, o darle a cada uno su propio menú.
               </p>
               <div class="flex justify-end gap-3 pt-2">
                 <button type="button" @click="showPlanForm = false" class="px-4 py-2 text-sm text-ink-2 hover:text-ink transition">Cancelar</button>
@@ -248,8 +312,15 @@ const working = ref(false)
 const error = ref('')
 const showPlanForm = ref(false)
 const showPublishForm = ref(false)
+const showMealForm = ref(false)
+const showCopyDay = ref(false)
+const showDayTarget = ref(false)
+const copyFrom = ref(1)
+const copyTo = ref<number[]>([])
 const addFoodOpen = ref(false)
 const addFoodMeal = ref<any | null>(null)
+
+const mealForm = reactive({ name: '', time_of_day: '' })
 
 const planForm = reactive({ name: '', goal: '', notes: '' })
 const publishForm = reactive<Record<string, any>>({
@@ -267,7 +338,60 @@ const publishForm = reactive<Record<string, any>>({
 const shown = computed(() => data.value?.draft ?? data.value?.active ?? null)
 const isDraft = computed(() => shown.value?.status === 'draft')
 
+/**
+ * The selected weekday lives in the URL (`?dia=3`), as the admin panel's tab
+ * does. It matters more here: adding a food goes through a modal and a refresh,
+ * and publishing reloads the whole version — losing the day mid-edit and being
+ * thrown back to Monday would be actively hostile. Defaults to today.
+ */
+const route = useRoute()
+const router = useRouter()
+
+const selectedWeekday = computed<number>({
+  get: () => {
+    const value = Number(route.query.dia)
+    return isWeekday(value) ? value : todayWeekday()
+  },
+  set: (weekday) => {
+    router.replace({ query: { ...route.query, dia: String(weekday) } })
+  }
+})
+
+const mealsOfDay = computed(() =>
+  (shown.value?.meals ?? []).filter((m: any) => m.weekday === selectedWeekday.value)
+)
+
+const currentDay = computed(() =>
+  (shown.value?.days ?? []).find((d: any) => d.weekday === selectedWeekday.value) ?? null
+)
+
 const targetKey = (key: string) => `target_${key === 'kcal' ? 'kcal' : key}`
+
+const openCopyFrom = () => {
+  copyFrom.value = selectedWeekday.value
+  copyTo.value = []
+  showCopyDay.value = true
+}
+
+/** From an empty day, the source is what you pick and this day is the target. */
+const openCopyInto = () => {
+  const firstPlanned = (shown.value?.days ?? []).find((d: any) => d.meals_count > 0)
+  copyFrom.value = firstPlanned?.weekday ?? 1
+  copyTo.value = [selectedWeekday.value]
+  showCopyDay.value = true
+}
+
+const openDayTarget = () => { showDayTarget.value = true }
+
+const onCopied = async () => {
+  showCopyDay.value = false
+  await refresh()
+}
+
+const onTargetSaved = async () => {
+  showDayTarget.value = false
+  await refresh()
+}
 
 const createPlan = async () => {
   working.value = true
@@ -334,21 +458,32 @@ const discardDraft = async () => {
 }
 
 const addMeal = async () => {
-  const name = prompt('Nombre de la comida:', 'Media mañana')
-  if (!name?.trim()) return
+  if (!mealForm.name.trim()) return
+  working.value = true
   try {
     await $fetch('/api/nutrition/meals', {
       method: 'POST',
-      body: { diet_version_id: shown.value.id, name: name.trim() }
+      body: {
+        diet_version_id: shown.value.id,
+        name: mealForm.name.trim(),
+        time_of_day: mealForm.time_of_day || null,
+        // Required by the endpoint: a missing weekday is a 400, not a meal that
+        // quietly lands on Monday while the user watches this tab not change.
+        weekday: selectedWeekday.value
+      }
     })
+    showMealForm.value = false
+    Object.assign(mealForm, { name: '', time_of_day: '' })
     await refresh()
   } catch (err: any) {
     toast.error(err?.data?.statusMessage || 'Error al añadir la comida.')
+  } finally {
+    working.value = false
   }
 }
 
 const deleteMeal = async (meal: any) => {
-  if (!confirm(`¿Eliminar "${meal.name}" y todos sus alimentos?`)) return
+  if (!confirm(`¿Eliminar "${meal.name}" del ${WEEKDAY_LABELS[meal.weekday]?.toLowerCase()} y todos sus alimentos?`)) return
   await $fetch(`/api/nutrition/meals/${meal.id}`, { method: 'DELETE' })
   await refresh()
 }

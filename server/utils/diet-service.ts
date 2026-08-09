@@ -1,5 +1,15 @@
 import { prisma } from './prisma'
-import { computeVersionTotals, macroSplit, proteinPerKg, type VersionTotals } from './nutrition-calculator'
+import {
+  computeVersionTotals,
+  macroSplit,
+  proteinPerKg,
+  isWeekday,
+  WEEKDAYS,
+  WEEKDAY_LABELS_ES,
+  MICRO_KEYS,
+  type VersionTotals,
+  type Weekday
+} from './nutrition-calculator'
 
 /**
  * Everything that mutates a diet goes through this file.
@@ -23,11 +33,36 @@ export const dayAnchor = (date: Date | string = new Date()): Date => {
 export const toDateKey = (date: Date | null | undefined): string | null =>
   date ? date.toISOString().slice(0, 10) : null
 
+/**
+ * The single ordering source for every read path. Meals sort by weekday first,
+ * then by their position within that day — `order_index` is scoped to a day, not
+ * to the version — so a consumer can group by weekday without re-sorting.
+ */
 const MEAL_INCLUDE = {
   meals: {
-    orderBy: { order_index: 'asc' as const },
+    orderBy: [{ weekday: 'asc' as const }, { order_index: 'asc' as const }],
     include: { items: { orderBy: { order_index: 'asc' as const } } }
+  },
+  day_targets: { orderBy: { weekday: 'asc' as const } }
+}
+
+/**
+ * Validates a weekday off a request body, or 400s.
+ *
+ * Deliberately NOT a silent fallback to Monday, which is what the `day_type` it
+ * replaced did with an unrecognised value. That was harmless when every meal
+ * meant 'all'; here it would drop the meal on Monday while the user watches the
+ * Thursday tab not change, with no error anywhere. A 400 makes that visible.
+ */
+export const parseWeekday = (raw: unknown): Weekday => {
+  const value = typeof raw === 'string' ? Number(raw) : raw
+  if (!isWeekday(value)) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: 'El día de la semana debe ser un número del 1 (lunes) al 7 (domingo)'
+    })
   }
+  return value
 }
 
 // ── Plans ─────────────────────────────────────────────────────────────────────
@@ -80,6 +115,9 @@ export const assertDraft = (version: { status: string }) => {
  * A plan with an active version gets a deep copy of it — meals, items and, most
  * importantly, each item's nutrients_snapshot, so the draft starts from exactly
  * what was published rather than from whatever the catalogue says today.
+ *
+ * The copy spans all seven weekdays and the per-day target overrides, so editing
+ * a published diet never quietly loses the days the user isn't looking at.
  */
 export const ensureDraft = async (userId: string, planId: string) => {
   await requireOwnedPlan(userId, planId)
@@ -113,14 +151,27 @@ export const ensureDraft = async (userId: string, planId: string) => {
     }
   })
 
+  if (active?.day_targets?.length) {
+    await prisma.dietDayTarget.createMany({
+      data: active.day_targets.map(t => ({
+        diet_version_id: draft.id,
+        weekday: t.weekday,
+        target_kcal: t.target_kcal,
+        target_protein_g: t.target_protein_g,
+        target_carbs_g: t.target_carbs_g,
+        target_fat_g: t.target_fat_g
+      }))
+    })
+  }
+
   for (const meal of active?.meals ?? []) {
     await prisma.dietMeal.create({
       data: {
         diet_version_id: draft.id,
         name: meal.name,
+        weekday: meal.weekday,
         order_index: meal.order_index,
         time_of_day: meal.time_of_day,
-        day_type: meal.day_type,
         items: {
           create: meal.items.map(item => ({
             food_id: item.food_id,
@@ -156,12 +207,15 @@ export const recalcVersionTotals = async (versionId: string) => {
   return prisma.dietVersion.update({
     where: { id: versionId },
     data: {
-      // The hot columns hold the everyday figures; a plan with no
-      // training/rest split reports the same numbers in all three buckets.
-      total_kcal: totals.all.kcal ?? 0,
-      total_protein_g: totals.all.protein_g ?? 0,
-      total_carbs_g: totals.all.carbs_g ?? 0,
-      total_fat_g: totals.all.fat_g ?? 0,
+      // The hot columns hold the MEAN of a planned day, not a weekly sum: they
+      // are read straight against target_* (which is daily) and plotted as one
+      // point per version in the history chart. `planned_days` travels with them
+      // so no reader ever shows the mean without saying what it averages.
+      total_kcal: totals.average.kcal ?? 0,
+      total_protein_g: totals.average.protein_g ?? 0,
+      total_carbs_g: totals.average.carbs_g ?? 0,
+      total_fat_g: totals.average.fat_g ?? 0,
+      planned_days: totals.planned_days.length,
       totals_json: JSON.stringify(totals)
     }
   })
@@ -278,25 +332,215 @@ export const requireDraftItem = async (userId: string, itemId: string) => {
   return item
 }
 
+// ── Weekday operations ────────────────────────────────────────────────────────
+
+/**
+ * Makes the target weekdays an exact copy of the source one.
+ *
+ * **Replaces, never merges.** The button this serves says "make Tuesday look
+ * like Monday"; merging would leave two Desayunos to delete by hand, with no
+ * undo. Being destructive is the reason CopyDayModal names every day it is about
+ * to overwrite and counts the meals each one loses before the click.
+ *
+ * Snapshots are copied verbatim as strings — re-reading Food here would reprice
+ * a published-then-drafted day against today's catalogue, the same trap
+ * ensureDraft avoids.
+ */
+export const copyWeekday = async (versionId: string, from: Weekday, to: Weekday[]) => {
+  const targets = to.filter(d => d !== from)
+  if (targets.length === 0) return { copied: 0 }
+
+  return prisma.$transaction(
+    async tx => {
+      const source = await tx.dietMeal.findMany({
+        where: { diet_version_id: versionId, weekday: from },
+        orderBy: { order_index: 'asc' },
+        include: { items: { orderBy: { order_index: 'asc' } } }
+      })
+
+      // Items go with their meals through onDelete: Cascade.
+      await tx.dietMeal.deleteMany({
+        where: { diet_version_id: versionId, weekday: { in: targets } }
+      })
+
+      for (const weekday of targets) {
+        for (const meal of source) {
+          await tx.dietMeal.create({
+            data: {
+              diet_version_id: versionId,
+              name: meal.name,
+              weekday,
+              order_index: meal.order_index,
+              time_of_day: meal.time_of_day,
+              items: {
+                create: meal.items.map(item => ({
+                  food_id: item.food_id,
+                  food_name: item.food_name,
+                  quantity_g: item.quantity_g,
+                  order_index: item.order_index,
+                  nutrients_snapshot: item.nutrients_snapshot
+                }))
+              }
+            }
+          })
+        }
+      }
+
+      return { copied: targets.length }
+    },
+    // Six target days of a five-meal, six-food plan is ~216 inserts, past the
+    // 5 s default on a cold SQLite file.
+    { timeout: 15000 }
+  )
+}
+
+/**
+ * The targets in force on one weekday: the override where there is one, the
+ * version's own target otherwise. Resolved here so no client repeats the
+ * fallback and gets it subtly different.
+ */
+export const effectiveTarget = (
+  version: { target_kcal?: number | null; target_protein_g?: number | null; target_carbs_g?: number | null; target_fat_g?: number | null; day_targets?: any[] },
+  weekday: Weekday
+) => {
+  const override = (version.day_targets ?? []).find((t: any) => t.weekday === weekday)
+  return {
+    kcal: override?.target_kcal ?? version.target_kcal ?? null,
+    protein_g: override?.target_protein_g ?? version.target_protein_g ?? null,
+    carbs_g: override?.target_carbs_g ?? version.target_carbs_g ?? null,
+    fat_g: override?.target_fat_g ?? version.target_fat_g ?? null,
+    /** True when at least one macro on this day departs from the base target. */
+    overridden: !!override
+  }
+}
+
+/**
+ * Writes (or clears) the per-day target override for one or more weekdays.
+ *
+ * A row whose four values are all null is deleted rather than stored: "no
+ * override" and "an override that overrides nothing" must not be two states, or
+ * the UI would have to render a difference the user can't see.
+ */
+export const saveDayTargets = async (
+  versionId: string,
+  weekdays: Weekday[],
+  values: {
+    target_kcal?: number | null
+    target_protein_g?: number | null
+    target_carbs_g?: number | null
+    target_fat_g?: number | null
+  }
+) => {
+  const empty =
+    values.target_kcal == null &&
+    values.target_protein_g == null &&
+    values.target_carbs_g == null &&
+    values.target_fat_g == null
+
+  for (const weekday of weekdays) {
+    if (empty) {
+      await prisma.dietDayTarget.deleteMany({ where: { diet_version_id: versionId, weekday } })
+      continue
+    }
+    await prisma.dietDayTarget.upsert({
+      where: { diet_version_id_weekday: { diet_version_id: versionId, weekday } },
+      create: { diet_version_id: versionId, weekday, ...values },
+      update: values
+    })
+  }
+}
+
 // ── Serialisation ─────────────────────────────────────────────────────────────
 
 export const parseTotals = (totalsJson: string | null): VersionTotals | null => {
   if (!totalsJson) return null
   try {
     const parsed = JSON.parse(totalsJson)
-    // Rows written before coverage existed have no `coverage` key; treating it
-    // as absent is right — `isComplete` then reports "complete", which is the
-    // same thing those totals already claimed.
-    return parsed?.all ? parsed : null
+    // Totals in the pre-weekday shape ({"all","training","rest"}) return null on
+    // purpose. serializeVersion then recomputes from the meals, which before the
+    // fan-out job means "everything on Monday" — the truthful reading of an
+    // unmigrated row, and self-healing the moment the job runs. Synthesising
+    // seven identical days from `all` instead would disguise an unmigrated
+    // database and make the job look optional.
+    return parsed?.days ? parsed : null
   } catch {
     return null
   }
 }
 
-/** Shapes a version (with meals included) for API responses and AI payloads. */
+/** A meal as the API and the AI serializers both see it. */
+const serializeMeal = (meal: any) => ({
+  id: meal.id,
+  name: meal.name,
+  weekday: meal.weekday,
+  order_index: meal.order_index,
+  time_of_day: meal.time_of_day,
+  items: (meal.items ?? []).map((item: any) => ({
+    id: item.id,
+    food_id: item.food_id,
+    food_name: item.food_name,
+    quantity_g: item.quantity_g,
+    order_index: item.order_index,
+    nutrients_snapshot: item.nutrients_snapshot
+  }))
+})
+
+/**
+ * What makes two weekdays "the same day": the meals in order, each with its
+ * name, time and foods in grams. Rounded to the gram because a plan is not
+ * prescribed to a tenth, and a 0.1 g difference splitting a group would show the
+ * user two identical-looking days side by side.
+ */
+const daySignature = (meals: any[]): string =>
+  JSON.stringify(
+    meals.map(m => [
+      m.name,
+      m.time_of_day ?? '',
+      (m.items ?? []).map((i: any) => [i.food_name, Math.round(i.quantity_g)])
+    ])
+  )
+
+/**
+ * Collapses identical weekdays into groups, in weekday order.
+ *
+ * One definition of "identical" shared by the history card and both AI payloads:
+ * a real diet has two or three distinct patterns, so this is also the entire
+ * token strategy for sending a seven-day plan to a model.
+ */
+export const buildDayGroups = (meals: any[]) => {
+  const byDay = new Map<Weekday, any[]>(WEEKDAYS.map(d => [d, []]))
+  for (const meal of meals ?? []) {
+    if (isWeekday(meal.weekday)) byDay.get(meal.weekday)!.push(meal)
+  }
+
+  const groups: Array<{ weekdays: Weekday[]; signature: string; meals: any[] }> = []
+  for (const weekday of WEEKDAYS) {
+    const dayMeals = byDay.get(weekday)!
+    // A day with no food is not "the same as" another empty day in any useful
+    // sense — grouping them would produce a "Sáb · Dom" heading over nothing.
+    if (dayMeals.every(m => (m.items ?? []).length === 0)) continue
+
+    const signature = daySignature(dayMeals)
+    const existing = groups.find(g => g.signature === signature)
+    if (existing) existing.weekdays.push(weekday)
+    else groups.push({ weekdays: [weekday], signature, meals: dayMeals.map(serializeMeal) })
+  }
+
+  return groups.map(({ weekdays, meals }) => ({ weekdays, meals }))
+}
+
+/**
+ * Shapes a version (with meals included) for API responses and AI payloads.
+ *
+ * `meals` stays FLAT, each carrying its weekday, and the page filters. Grouping
+ * server-side would churn MealEditor, AddFoodModal and DietVersionCard for
+ * nothing — they all still want the meal object they already handle. What the
+ * server does add is `days`, so no client has to repeat the target fallback or
+ * the 4/4/9 arithmetic per weekday.
+ */
 export const serializeVersion = (version: any, options: { weightKg?: number | null } = {}) => {
   const totals = parseTotals(version.totals_json) ?? computeVersionTotals(version.meals ?? [])
-  const hasDaySplit = (version.meals ?? []).some((m: any) => (m.day_type || 'all') !== 'all')
+  const weightKg = options.weightKg ?? null
 
   return {
     id: version.id,
@@ -306,6 +550,7 @@ export const serializeVersion = (version: any, options: { weightKg?: number | nu
     start_date: toDateKey(version.start_date),
     end_date: toDateKey(version.end_date),
     change_note: version.change_note,
+    /** The base target. Days that depart from it carry their own in `days`. */
     targets: {
       kcal: version.target_kcal,
       protein_g: version.target_protein_g,
@@ -313,23 +558,158 @@ export const serializeVersion = (version: any, options: { weightKg?: number | nu
       fat_g: version.target_fat_g
     },
     totals,
-    has_day_split: hasDaySplit,
-    macro_split: macroSplit(totals.all),
-    protein_g_per_kg: proteinPerKg(totals.all, options.weightKg ?? null),
-    meals: (version.meals ?? []).map((meal: any) => ({
-      id: meal.id,
-      name: meal.name,
-      order_index: meal.order_index,
-      time_of_day: meal.time_of_day,
-      day_type: meal.day_type,
-      items: (meal.items ?? []).map((item: any) => ({
-        id: item.id,
-        food_id: item.food_id,
-        food_name: item.food_name,
-        quantity_g: item.quantity_g,
-        order_index: item.order_index,
-        nutrients_snapshot: item.nutrients_snapshot
+    planned_days: totals.planned_days,
+    macro_split: macroSplit(totals.average),
+    protein_g_per_kg: proteinPerKg(totals.average, weightKg),
+    days: WEEKDAYS.map(weekday => {
+      const day = totals.days[String(weekday)]
+      return {
+        weekday,
+        planned: (day?.items ?? 0) > 0,
+        meals_count: day?.meals ?? 0,
+        items_count: day?.items ?? 0,
+        totals: day?.nutrients ?? null,
+        coverage: day?.coverage ?? {},
+        macro_split: day ? macroSplit(day.nutrients) : null,
+        protein_g_per_kg: day ? proteinPerKg(day.nutrients, weightKg) : null,
+        target: effectiveTarget(version, weekday)
+      }
+    }),
+    day_groups: buildDayGroups(version.meals ?? []),
+    meals: (version.meals ?? []).map(serializeMeal)
+  }
+}
+
+// ── AI serialisation ──────────────────────────────────────────────────────────
+
+const weekdayName = (weekday: Weekday) => WEEKDAY_LABELS_ES[weekday].toLowerCase()
+
+const macrosOf = (n: any) =>
+  n ? { kcal: n.kcal, protein_g: n.protein_g, carbs_g: n.carbs_g, fat_g: n.fat_g } : null
+
+export interface DietAiOptions {
+  weightKg?: number | null
+  /**
+   * 'full' sends every distinct day's meals — for `get_diet`, which the model
+   * called on purpose. 'representative' sends the macro line of every day but
+   * the meals of only the most common one, for the snapshot that rides in every
+   * context payload.
+   */
+  detail: 'full' | 'representative'
+}
+
+/**
+ * The one place a diet is shaped for a model.
+ *
+ * `get_diet` and `buildNutritionSnapshot` were near-identical copies before the
+ * weekday split, and both would now need the same non-trivial day collapsing.
+ * Two copies would drift exactly where it costs most: the model would see one
+ * set of figures in its permanent context and another from its own tool call,
+ * with no way to tell which is right.
+ *
+ * **Identical days are collapsed into groups** — that is the whole token
+ * strategy for a seven-day plan. A real diet has two or three distinct patterns
+ * (weekdays vs weekend, training vs rest), so the payload lands near what a
+ * single-day plan used to cost.
+ */
+export const serializeDietForAi = (version: any, options: DietAiOptions) => {
+  const s = serializeVersion(version, { weightKg: options.weightKg ?? null })
+
+  // Only micros with data are emitted. An omitted one means the food data is
+  // incomplete, not that the plan provides zero — sending 0 would invite the
+  // model to diagnose a deficiency that isn't in evidence. Micros backed by only
+  // some of the foods travel with an explicit "lower bound" warning, which the
+  // weekly mean makes more necessary, not less: averaging understates twice.
+  const micronutrients: Record<string, number> = {}
+  const micronutrientsPartial: Record<string, string> = {}
+  for (const key of MICRO_KEYS) {
+    const value = (s.totals.average as any)[key]
+    if (value == null) continue
+    micronutrients[key] = value
+    const entry = s.totals.average_coverage?.[key]
+    if (entry && entry.known < entry.total) {
+      micronutrientsPartial[key] = `mínimo: solo ${entry.known} de ${entry.total} alimentos tienen este dato`
+    }
+  }
+
+  const groups = s.day_groups
+  // The group covering most days is the one worth spelling out when the payload
+  // has to stay small. Ties go to the earlier weekday, which `day_groups`
+  // ordering already gives us.
+  const representative = groups.reduce(
+    (best, g) => (best && best.weekdays.length >= g.weekdays.length ? best : g),
+    groups[0]
+  )
+
+  const mealsOf = (group: { meals: any[] }) =>
+    group.meals
+      .filter(m => (m.items ?? []).length > 0)
+      .map(meal => ({
+        name: meal.name,
+        ...(meal.time_of_day && { time_of_day: meal.time_of_day }),
+        foods: meal.items.map((item: any) => ({ name: item.food_name, quantity_g: item.quantity_g }))
       }))
+
+  const dayTargets = s.days
+    .filter(d => d.target.overridden)
+    .map(d => ({
+      weekday: weekdayName(d.weekday),
+      kcal: d.target.kcal,
+      protein_g: d.target.protein_g,
+      carbs_g: d.target.carbs_g,
+      fat_g: d.target.fat_g
     }))
+
+  return {
+    is_plan_not_log: true,
+    version_id: s.id,
+    version_number: s.version_number,
+    status: s.status,
+    ...(s.start_date && { from: s.start_date }),
+    ...(s.end_date && { to: s.end_date }),
+    ...(Object.values(s.targets).some(v => v != null) && { targets: s.targets }),
+    ...(dayTargets.length > 0 && { targets_by_weekday: dayTargets }),
+
+    /** Mean of a PLANNED day. Not a weekly total, and not a mean over seven. */
+    daily_totals: { ...macrosOf(s.totals.average), ...micronutrients },
+    planned_days_per_week: s.planned_days.length,
+    planned_weekdays: s.planned_days.map(weekdayName),
+    ...(Object.keys(micronutrientsPartial).length > 0 && { micronutrients_partial: micronutrientsPartial }),
+    ...(s.macro_split.protein_pct != null && {
+      macro_split_pct: {
+        protein: s.macro_split.protein_pct,
+        carbs: s.macro_split.carbs_pct,
+        fat: s.macro_split.fat_pct
+      }
+    }),
+    ...(s.protein_g_per_kg != null && { protein_g_per_kg: s.protein_g_per_kg }),
+
+    /** One line per distinct day pattern, always complete. */
+    days: groups.map(g => ({
+      weekdays: g.weekdays.map(weekdayName),
+      ...macrosOf(s.days.find(d => d.weekday === g.weekdays[0])?.totals)
+    })),
+
+    ...(options.detail === 'full'
+      ? {
+          meals_by_day: groups.map(g => ({
+            weekdays: g.weekdays.map(weekdayName),
+            meals: mealsOf(g)
+          }))
+        }
+      : {
+          // Always present, even for a diet with no food at all: a consumer that
+          // has to check whether `meals` exists ends up guessing what its
+          // absence means.
+          meals: representative ? mealsOf(representative) : [],
+          ...(representative && { meals_apply_to: representative.weekdays.map(weekdayName) }),
+          // Stated rather than implied: without this the model answers about
+          // Saturday using Monday's foods, which is the whole risk of sending a
+          // representative day instead of all of them.
+          meals_other_days_omitted: groups.length > 1,
+          ...(groups.length > 1 && {
+            note: 'Solo se detallan las comidas del patrón de día más frecuente. Usa get_diet para ver las de un día concreto.'
+          })
+        })
   }
 }

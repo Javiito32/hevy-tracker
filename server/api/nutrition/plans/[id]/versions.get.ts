@@ -5,6 +5,10 @@ import { requireOwnedPlan, toDateKey } from '../../../../utils/diet-service'
 /**
  * Version history for the timeline and the history page. Reads the denormalised
  * total columns only — no meals, no JSON parsing — which is what they exist for.
+ *
+ * Those totals are the mean of a planned day, so `planned_days` has to come with
+ * them: an average shown without its denominator is exactly the unlabelled
+ * number this app avoids everywhere else.
  */
 export default defineEventHandler(async (event) => {
   const { id: userId } = await getSessionUser(event)
@@ -26,6 +30,7 @@ export default defineEventHandler(async (event) => {
       total_protein_g: true,
       total_carbs_g: true,
       total_fat_g: true,
+      planned_days: true,
       target_kcal: true,
       created_at: true,
       _count: { select: { meals: true } }

@@ -1,6 +1,6 @@
 import { prisma } from './prisma'
-import { resolveVersion, serializeVersion } from './diet-service'
-import { MICRO_KEYS } from './nutrition-calculator'
+import { resolveVersion, serializeDietForAi } from './diet-service'
+import { WEEKDAY_LABELS_ES, isWeekday } from './nutrition-calculator'
 
 // ── Interfaces ─────────────────────────────────────────────────────────────────
 
@@ -108,13 +108,28 @@ export interface NutritionSnapshot {
   goal?: string
   version_number: number
   in_force_since?: string
+  /**
+   * The MEAN of a planned day — not a weekly total, and not a mean over seven.
+   * `planned_days_per_week` says what it averages over. The field names predate
+   * the weekday split and are kept so the prompts read unchanged.
+   */
   daily_kcal: number | null
   daily_protein_g: number | null
   daily_carbs_g: number | null
   daily_fat_g: number | null
+  planned_days_per_week?: number
+  planned_weekdays?: string[]
   protein_g_per_kg?: number
   macro_split_pct?: { protein: number | null; carbs: number | null; fat: number | null }
   targets?: { kcal?: number; protein_g?: number; carbs_g?: number; fat_g?: number }
+  /** Only the weekdays whose target departs from the base one. */
+  targets_by_weekday?: Array<{
+    weekday: string
+    kcal: number | null
+    protein_g: number | null
+    carbs_g: number | null
+    fat_g: number | null
+  }>
   /**
    * Only the micros with data. A micro absent here is missing from the food
    * database, not an intake of zero.
@@ -126,15 +141,29 @@ export interface NutritionSnapshot {
    * total as a deficiency — the prompts spell out that rule.
    */
   micronutrients_partial?: Record<string, string>
-  /** Present only when the plan differentiates training and rest days. */
-  training_day?: { kcal: number | null; protein_g: number | null; carbs_g: number | null; fat_g: number | null }
-  rest_day?: { kcal: number | null; protein_g: number | null; carbs_g: number | null; fat_g: number | null }
+  /**
+   * One line per distinct day pattern, identical weekdays grouped. Always
+   * complete — it is `meals` below that is abridged.
+   */
+  days?: Array<{
+    weekdays: string[]
+    kcal: number | null
+    protein_g: number | null
+    carbs_g: number | null
+    fat_g: number | null
+  }>
+  /** The weekdays whose menu `meals` actually describes. */
+  meals_apply_to?: string[]
+  /** True when other days have a different menu that is not in this payload. */
+  meals_other_days_omitted?: boolean
+  note?: string
   meals: Array<{
     name: string
     time_of_day?: string
-    day_type?: string
     foods: Array<{ name: string; quantity_g: number }>
   }>
+  /** Which weekdays the athlete trains on, from the active mesocycle's plan. */
+  training_weekdays?: string[]
 }
 
 export interface NutritionHistoryEntry {
@@ -556,72 +585,62 @@ export async function buildNutritionSnapshot(userId: string): Promise<NutritionS
   const plan = await prisma.dietPlan.findUnique({ where: { id: version.diet_plan_id } })
   if (!plan) return undefined
 
-  const latestWeight = await prisma.bodyMetric.findFirst({
-    where: { user_id: userId, weight: { not: null } },
-    orderBy: { date: 'desc' },
-    select: { weight: true }
+  const [latestWeight, trainingSessions] = await Promise.all([
+    prisma.bodyMetric.findFirst({
+      where: { user_id: userId, weight: { not: null } },
+      orderBy: { date: 'desc' },
+      select: { weight: true }
+    }),
+    // Which weekdays the athlete actually trains, straight off the active
+    // mesocycle. This is what the old training/rest day_type buckets were
+    // reaching for, now grounded in the plan instead of a manual flag: it turns
+    // "your carbs are 320 g" into "your carbs are highest on your rest days".
+    prisma.plannedSession.findMany({
+      where: { mesocycle: { user_id: userId, status: 'active' }, day_of_week: { not: null } },
+      select: { day_of_week: true },
+      distinct: ['day_of_week']
+    })
+  ])
+
+  const trainingWeekdays = trainingSessions
+    .map(s => s.day_of_week)
+    .filter(isWeekday)
+    .sort((a, b) => a - b)
+    .map(d => WEEKDAY_LABELS_ES[d].toLowerCase())
+
+  // 'representative' rather than 'full': this snapshot rides in every context
+  // payload, so it carries the macro line of every distinct day but the meals of
+  // only the most common one. The prompts say the per-day detail is a get_diet
+  // call away — without that instruction the model answers about Saturday using
+  // the weekday menu.
+  const diet = serializeDietForAi(version, {
+    weightKg: latestWeight?.weight ?? null,
+    detail: 'representative'
   })
 
-  const serialized = serializeVersion(version, { weightKg: latestWeight?.weight ?? null })
-  const totals = serialized.totals
-  const split = serialized.macro_split
-
-  // Only micros with data travel — an unknown one is omitted entirely, never
-  // sent as 0. Those backed by just some of the foods are flagged as partial so
-  // a lower bound is never mistaken for the real intake.
-  const micronutrients: Record<string, number> = {}
-  const micronutrientsPartial: Record<string, string> = {}
-  for (const key of MICRO_KEYS) {
-    const value = (totals.all as any)[key]
-    if (value == null) continue
-    micronutrients[key] = value
-    const entry = totals.coverage?.all?.[key]
-    if (entry && entry.known < entry.total) {
-      micronutrientsPartial[key] = `mínimo: solo ${entry.known} de ${entry.total} alimentos tienen este dato`
-    }
-  }
-
-  const dayTotals = (n: any) => ({
-    kcal: n.kcal,
-    protein_g: n.protein_g,
-    carbs_g: n.carbs_g,
-    fat_g: n.fat_g
-  })
+  // The tool payload carries a few fields only a tool result needs (its own id,
+  // the draft/active status); the snapshot renames the rest to the names every
+  // prompt already refers to.
+  const { is_plan_not_log, version_id, status, from, to, daily_totals, version_number, ...rest } =
+    diet as any
+  const { kcal, protein_g, carbs_g, fat_g, ...micronutrients } = daily_totals ?? {}
 
   return {
     plan_name: plan.name,
     ...(plan.goal && { goal: plan.goal }),
-    version_number: serialized.version_number,
-    ...(serialized.start_date && { in_force_since: serialized.start_date }),
-    daily_kcal: totals.all.kcal,
-    daily_protein_g: totals.all.protein_g,
-    daily_carbs_g: totals.all.carbs_g,
-    daily_fat_g: totals.all.fat_g,
-    ...(serialized.protein_g_per_kg != null && { protein_g_per_kg: serialized.protein_g_per_kg }),
-    ...(split.protein_pct != null && {
-      macro_split_pct: { protein: split.protein_pct, carbs: split.carbs_pct, fat: split.fat_pct }
-    }),
-    ...(Object.values(serialized.targets).some(v => v != null) && {
-      targets: {
-        ...(serialized.targets.kcal != null && { kcal: serialized.targets.kcal }),
-        ...(serialized.targets.protein_g != null && { protein_g: serialized.targets.protein_g }),
-        ...(serialized.targets.carbs_g != null && { carbs_g: serialized.targets.carbs_g }),
-        ...(serialized.targets.fat_g != null && { fat_g: serialized.targets.fat_g })
-      }
-    }),
+    version_number,
+    ...(from && { in_force_since: from }),
+    // Names kept from before the weekday split so every prompt reads unchanged —
+    // but these are now the MEAN of a planned day. `planned_days_per_week` in
+    // `rest` is what stops that from being read as a seven-day average.
+    daily_kcal: kcal ?? null,
+    daily_protein_g: protein_g ?? null,
+    daily_carbs_g: carbs_g ?? null,
+    daily_fat_g: fat_g ?? null,
     ...(Object.keys(micronutrients).length > 0 && { micronutrients }),
-    ...(Object.keys(micronutrientsPartial).length > 0 && { micronutrients_partial: micronutrientsPartial }),
-    ...(serialized.has_day_split && {
-      training_day: dayTotals(totals.training),
-      rest_day: dayTotals(totals.rest)
-    }),
-    meals: serialized.meals.map((meal: any) => ({
-      name: meal.name,
-      ...(meal.time_of_day && { time_of_day: meal.time_of_day }),
-      ...(meal.day_type !== 'all' && { day_type: meal.day_type }),
-      foods: meal.items.map((item: any) => ({ name: item.food_name, quantity_g: item.quantity_g }))
-    }))
-  }
+    ...(trainingWeekdays.length > 0 && { training_weekdays: trainingWeekdays }),
+    ...rest
+  } as NutritionSnapshot
 }
 
 /**

@@ -607,22 +607,33 @@ model DietVersion {
   target_carbs_g   Float?
   target_fat_g     Float?
 
-  /// Denormalised totals for the reference day, rewritten by
-  /// recalcVersionTotals() on every draft mutation. Columns rather than JSON so
-  /// the history list and the timeline chart sort and plot without parsing —
-  /// the same split as Workout.total_volume vs Workout.exercises_summary.
+  /// Denormalised MEAN DAILY totals, rewritten by recalcVersionTotals() on every
+  /// draft mutation. Columns rather than JSON so the history list and the
+  /// timeline chart sort and plot without parsing — the same split as
+  /// Workout.total_volume vs Workout.exercises_summary.
+  ///
+  /// These are averages over the weekdays that actually have food (see
+  /// `planned_days`), NOT weekly sums: a Mon–Fri plan divided by 7 would report
+  /// 71 % of the real intake and manufacture a deficit that isn't there. An
+  /// average is also the only figure comparable with target_kcal, which is daily.
   total_kcal      Float @default(0)
   total_protein_g Float @default(0)
   total_carbs_g   Float @default(0)
   total_fat_g     Float @default(0)
-  /// Full 16-nutrient totals per day type, JSON:
-  /// {"all":{...},"training":{...},"rest":{...}}. See nutrition-calculator.ts.
+  /// How many weekdays backed the averages above. Kept as a column because
+  /// plans/[id]/versions.get.ts reads hot columns only, by design — without it
+  /// the history would show a mean with no idea what it is a mean of.
+  planned_days    Int   @default(0)
+  /// Full 16-nutrient totals per weekday, JSON:
+  /// {"days":{"1":{...},…,"7":{...}},"average":{...},"average_coverage":{...},
+  ///  "planned_days":[1,2,3]}. See nutrition-calculator.ts.
   totals_json     String?
 
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
-  meals DietMeal[]
+  meals       DietMeal[]
+  day_targets DietDayTarget[]
 
   @@unique([diet_plan_id, version_number])
   @@index([diet_plan_id, status])
@@ -633,17 +644,50 @@ model DietMeal {
   diet_version_id String
   diet_version    DietVersion @relation(fields: [diet_version_id], references: [id], onDelete: Cascade)
   name            String
+  /// 1 = Monday … 7 = Sunday, the same convention as PlannedSession.day_of_week.
+  ///
+  /// Every weekday holds its OWN independent meal list: a meal eaten all week is
+  /// seven rows, not one row with a flag. That redundancy is the feature — it is
+  /// what lets Tuesday be edited without touching Monday. It replaced a
+  /// `day_type` of all|training|rest that no part of the UI could ever set.
+  ///
+  /// No @default on purpose: Prisma then refuses any create that omits it, so a
+  /// forgotten weekday is a compile error rather than a meal silently piling up
+  /// on Monday — the likeliest bug in this design.
+  weekday         Int
+  /// Position within its own weekday, not within the version.
   order_index     Int         @default(0)
   /// Free text "08:00". No timezone semantics — it is a label on a plan.
   time_of_day     String?
-  /// all | training | rest. 'all' is eaten every day; the other two let the plan
-  /// differ between training and rest days without duplicating the whole diet.
-  day_type        String      @default("all")
   created_at      DateTime    @default(now())
 
   items DietItem[]
 
-  @@index([diet_version_id, order_index])
+  @@index([diet_version_id, weekday, order_index])
+}
+
+/// A per-weekday OVERRIDE of the version's daily targets, for plans that vary
+/// the intake across the week (carb cycling, a bigger training day).
+///
+/// It is an override rather than a required row per day: a diet with the same
+/// target all week stores nothing here, and every existing reader keeps working
+/// off DietVersion.target_* unchanged. Resolution lives in `effectiveTarget`.
+model DietDayTarget {
+  id              String      @id @default(uuid())
+  diet_version_id String
+  diet_version    DietVersion @relation(fields: [diet_version_id], references: [id], onDelete: Cascade)
+  /// 1 = Monday … 7 = Sunday.
+  weekday         Int
+  /// null = this macro inherits the version's target. A row whose four values are
+  /// all null is deleted, so "no override" and "empty override" are one state.
+  target_kcal      Float?
+  target_protein_g Float?
+  target_carbs_g   Float?
+  target_fat_g     Float?
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  @@unique([diet_version_id, weekday])
 }
 
 model DietItem {

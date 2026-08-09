@@ -16,9 +16,14 @@
       </div>
 
       <div class="flex items-center gap-4 flex-shrink-0">
+        <!-- The figure is a mean, so it is labelled as one and travels with the
+             number of days it averages. "28 comidas" (four slots × seven days)
+             would be true and useless. -->
         <div class="text-right">
-          <div class="text-sm text-ink-2">{{ formatNutrientValue(version.total_kcal, 'kcal') }} kcal</div>
-          <div class="text-xs text-ink-3">{{ version.meals_count }} comidas</div>
+          <div class="text-sm text-ink-2">{{ formatNutrientValue(version.total_kcal, 'kcal') }} kcal/día</div>
+          <div class="text-xs text-ink-3">
+            media de {{ version.planned_days ?? 0 }} {{ (version.planned_days ?? 0) === 1 ? 'día' : 'días' }}
+          </div>
         </div>
         <span class="text-ink-3 text-xs">{{ expanded ? '▲' : '▼' }}</span>
       </div>
@@ -36,23 +41,35 @@
         <UiSpinner class="text-ink-3" />
       </div>
 
-      <div v-else-if="detail" class="space-y-3">
-        <div v-for="meal in detail.version.meals" :key="meal.id">
-          <div class="flex items-center justify-between text-xs mb-1">
-            <span class="text-ink-2 font-medium">
-              {{ meal.name }}
-              <span v-if="meal.time_of_day" class="text-ink-3 ml-1">{{ meal.time_of_day }}</span>
-              <span v-if="meal.day_type !== 'all'" class="text-ink-3 ml-1">· {{ DAY_TYPE_LABELS[meal.day_type] }}</span>
-            </span>
+      <!-- Grouped by identical day, so five equal weekdays render once instead
+           of five times. The grouping comes from the server so the history, the
+           designer and the AI all mean the same thing by "the same day". -->
+      <div v-else-if="detail" class="space-y-5">
+        <div v-for="(group, index) in detail.version.day_groups" :key="index">
+          <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-2">
+            {{ group.weekdays.map((d: number) => WEEKDAY_SHORT[d]).join(' · ') }}
+          </p>
+          <div class="space-y-3">
+            <div v-for="meal in group.meals" :key="meal.id">
+              <div class="flex items-center justify-between text-xs mb-1">
+                <span class="text-ink-2 font-medium">
+                  {{ meal.name }}
+                  <span v-if="meal.time_of_day" class="text-ink-3 ml-1">{{ meal.time_of_day }}</span>
+                </span>
+              </div>
+              <ul class="text-sm text-ink-3 space-y-0.5 pl-3 border-l border-line">
+                <li v-for="item in meal.items" :key="item.id" class="flex justify-between gap-3">
+                  <span class="truncate">{{ item.food_name }}</span>
+                  <span class="text-ink-3 flex-shrink-0">{{ formatGrams(item.quantity_g) }}</span>
+                </li>
+                <li v-if="!meal.items.length" class="text-ink-3 text-xs">Sin alimentos</li>
+              </ul>
+            </div>
           </div>
-          <ul class="text-sm text-ink-3 space-y-0.5 pl-3 border-l border-line">
-            <li v-for="item in meal.items" :key="item.id" class="flex justify-between gap-3">
-              <span class="truncate">{{ item.food_name }}</span>
-              <span class="text-ink-3 flex-shrink-0">{{ formatGrams(item.quantity_g) }}</span>
-            </li>
-            <li v-if="!meal.items.length" class="text-ink-3 text-xs">Sin alimentos</li>
-          </ul>
         </div>
+        <p v-if="!detail.version.day_groups?.length" class="text-sm text-ink-3">
+          Esta versión no tiene ningún día con alimentos.
+        </p>
       </div>
     </div>
   </div>

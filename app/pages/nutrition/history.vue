@@ -27,8 +27,11 @@
       <!-- Evolución -->
       <div class="bg-surface rounded-card border border-line overflow-hidden">
         <div class="px-5 py-3.5 border-b border-line flex flex-wrap items-center justify-between gap-3">
+          <!-- "media diaria" is not decoration: since the diet varies by
+               weekday, each point is the mean of that version's planned days. -->
           <h2 class="font-display text-sm font-semibold tracking-tight text-ink">
             Evolución de {{ NUTRIENT_LABELS[metric].toLowerCase() }}
+            <span class="font-sans font-normal text-ink-3">· media diaria</span>
           </h2>
           <div class="flex gap-1">
             <button
@@ -72,6 +75,7 @@
                   <tr class="border-b border-line text-[11px] text-ink-3 uppercase tracking-wide">
                     <th class="py-2 text-left">Versión</th>
                     <th class="py-2 text-left">Desde</th>
+                    <th class="py-2 text-right">Días</th>
                     <th v-for="key in MACRO_KEYS" :key="key" class="py-2 text-right">
                       {{ NUTRIENT_SHORT_LABELS[key] }}
                     </th>
@@ -81,6 +85,7 @@
                   <tr v-for="v in chronological" :key="v.id" class="border-b border-line/50">
                     <td class="py-2 text-ink-2">v{{ v.version_number }}</td>
                     <td class="py-2 text-ink-2">{{ formatDateShort(v.start_date) }}</td>
+                    <td class="py-2 text-right text-ink-3 font-data">{{ v.planned_days ?? NO_VALUE }}</td>
                     <td v-for="key in MACRO_KEYS" :key="key" class="py-2 text-right text-ink-2">
                       {{ formatNutrientValue(totalFor(v, key), key) }}
                     </td>

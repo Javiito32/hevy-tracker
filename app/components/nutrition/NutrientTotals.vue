@@ -1,19 +1,22 @@
 <template>
   <div class="bg-surface rounded-card border border-line overflow-hidden">
     <div class="px-5 py-3.5 border-b border-line flex items-center justify-between gap-3 flex-wrap">
-      <h2 class="font-display text-sm font-semibold tracking-tight text-ink">Totales diarios</h2>
-      <div v-if="hasDaySplit" class="flex gap-1">
+      <h2 class="font-display text-sm font-semibold tracking-tight text-ink">
+        {{ mode === 'day' ? WEEKDAY_LABELS[weekday] : 'Media semanal' }}
+      </h2>
+      <!-- Day vs week, NOT a day picker: the day comes from the page, so this
+           card and the meal list below it can never disagree again. -->
+      <div class="flex gap-1">
         <button
-          v-for="key in DAY_KEYS"
-          :key="key"
-          @click="dayType = key"
+          v-for="option in MODES"
+          :key="option.value"
+          type="button"
+          @click="mode = option.value"
           class="px-2.5 py-1 text-xs rounded-lg transition"
-          :class="dayType === key
+          :class="mode === option.value
             ? 'bg-accent text-accent-ink'
             : 'bg-surface-2 border border-line-strong hover:border-ink-3 text-ink-2'"
-        >
-          {{ DAY_TABS[key] }}
-        </button>
+        >{{ option.label }}</button>
       </div>
     </div>
 
@@ -25,10 +28,26 @@
             {{ formatNutrientValue(current.kcal, 'kcal') }}
             <span class="text-base font-normal text-ink-3 ml-1">kcal</span>
           </div>
-          <div v-if="targets?.kcal" class="text-xs mt-1" :class="kcalDeltaClass">
-            Objetivo {{ formatNutrientValue(targets.kcal, 'kcal') }} kcal
+
+          <!-- An empty day reads as "—", never as 0, and never against a target:
+               a −2400 kcal deficit against nothing planned is not a finding. -->
+          <p v-if="mode === 'day' && !isPlanned" class="text-xs text-ink-3 mt-1">
+            Este día no tiene comidas. No cuenta para la media semanal.
+          </p>
+          <div v-else-if="activeTarget?.kcal" class="text-xs mt-1" :class="kcalDeltaClass">
+            Objetivo {{ formatNutrientValue(activeTarget.kcal, 'kcal') }} kcal
             <span v-if="kcalDelta !== null">({{ kcalDelta > 0 ? '+' : '' }}{{ kcalDelta }})</span>
+            <span v-if="mode === 'day' && dayTarget?.overridden" class="text-ink-3"> · propio de este día</span>
           </div>
+
+          <!-- The mean never appears without its denominator. -->
+          <p v-if="mode === 'week'" class="text-xs text-ink-3 mt-1">
+            <template v-if="plannedDays.length">
+              Media de {{ plannedDays.length }} {{ plannedDays.length === 1 ? 'día' : 'días' }} con comidas
+              ({{ formatWeekdayList(plannedDays) }}).
+            </template>
+            <template v-else>Ningún día tiene comidas todavía.</template>
+          </p>
         </div>
         <div v-if="proteinPerKg != null" class="text-right">
           <div class="font-display text-sm font-semibold tracking-tight text-ink">{{ proteinPerKg.toLocaleString('es-ES', { maximumFractionDigits: 2 }) }}</div>
@@ -89,21 +108,60 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 
+/**
+ * Totals for the selected weekday, or the mean of the planned days.
+ *
+ * The selected day is a prop, not local state. Its predecessor owned its own
+ * day switcher, which changed the figures in this card but not the meal list
+ * underneath — two controls for one question, disagreeing.
+ */
 const props = defineProps<{
-  totals: any
+  /** `days` from serializeVersion: per-weekday totals, coverage, split, target. */
+  days: Array<any>
+  /** The weekday the page is showing. */
+  weekday: number
+  average: any
+  averageCoverage?: any
+  averageMacroSplit?: any | null
+  averageProteinPerKg?: number | null
+  plannedDays: number[]
+  /** The version's base targets; a day may override them. */
   targets?: any | null
-  macroSplit?: any | null
-  proteinPerKg?: number | null
-  hasDaySplit?: boolean
 }>()
 
-const DAY_KEYS = ['all', 'training', 'rest'] as const
-const DAY_TABS: Record<string, string> = { all: 'Base', training: 'Entreno', rest: 'Descanso' }
+const MODES = [
+  { value: 'day' as const, label: 'Día' },
+  { value: 'week' as const, label: 'Media semanal' }
+]
 const MACRO_BARS = ['protein_g', 'carbs_g', 'fat_g'] as const
 
-const dayType = ref<'all' | 'training' | 'rest'>('all')
+const mode = ref<'day' | 'week'>('day')
 
-const current = computed(() => props.totals?.[dayType.value] ?? props.totals?.all ?? {})
+const day = computed(() => props.days?.find((d: any) => d.weekday === props.weekday) ?? null)
+const isPlanned = computed(() => !!day.value?.planned)
+const dayTarget = computed(() => day.value?.target ?? null)
+
+const current = computed(() =>
+  (mode.value === 'day' ? day.value?.totals : props.average) ?? {}
+)
+
+const coverage = computed(() =>
+  (mode.value === 'day' ? day.value?.coverage : props.averageCoverage) ?? {}
+)
+
+/** A day with no food has no target to miss — see the template. */
+const activeTarget = computed(() => {
+  if (mode.value === 'week') return props.targets ?? null
+  return isPlanned.value ? dayTarget.value : null
+})
+
+const macroSplit = computed(() =>
+  (mode.value === 'day' ? day.value?.macro_split : props.averageMacroSplit) ?? null
+)
+
+const proteinPerKg = computed(() =>
+  (mode.value === 'day' ? day.value?.protein_g_per_kg : props.averageProteinPerKg) ?? null
+)
 
 const unknownCount = computed(() => MICRO_KEYS.filter(k => current.value[k] == null).length)
 
@@ -113,17 +171,25 @@ const unknownCount = computed(() => MICRO_KEYS.filter(k => current.value[k] == n
  * micronutrients, since food databases rarely carry them for every product.
  */
 const partialFor = (key: string) => {
-  const entry = props.totals?.coverage?.[dayType.value]?.[key]
+  const entry = coverage.value?.[key]
   return entry && entry.known > 0 && entry.known < entry.total ? entry : null
 }
 
 const partialCount = computed(() => MICRO_KEYS.filter(k => partialFor(k)).length)
 
 const targetFor = (key: string) =>
-  ({ protein_g: props.targets?.protein_g, carbs_g: props.targets?.carbs_g, fat_g: props.targets?.fat_g } as any)[key] ?? null
+  ({
+    protein_g: activeTarget.value?.protein_g,
+    carbs_g: activeTarget.value?.carbs_g,
+    fat_g: activeTarget.value?.fat_g
+  } as any)[key] ?? null
 
 const splitPct = (key: string) =>
-  ({ protein_g: props.macroSplit?.protein_pct, carbs_g: props.macroSplit?.carbs_pct, fat_g: props.macroSplit?.fat_pct } as any)[key] ?? null
+  ({
+    protein_g: macroSplit.value?.protein_pct,
+    carbs_g: macroSplit.value?.carbs_pct,
+    fat_g: macroSplit.value?.fat_pct
+  } as any)[key] ?? null
 
 /**
  * Bars fill against the target when one is set, and against the largest macro
@@ -138,8 +204,8 @@ const barWidth = (key: string) => {
 }
 
 const kcalDelta = computed(() => {
-  if (!props.targets?.kcal || current.value.kcal == null) return null
-  return Math.round(current.value.kcal - props.targets.kcal)
+  if (!activeTarget.value?.kcal || current.value.kcal == null) return null
+  return Math.round(current.value.kcal - activeTarget.value.kcal)
 })
 
 const kcalDeltaClass = computed(() => {

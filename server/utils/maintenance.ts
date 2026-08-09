@@ -25,17 +25,19 @@ export type JobKind =
   | 'rebuild_exercises'
   | 'recalc_metrics'
   | 'recalc_records'
+  | 'ai_generate_plan'
 
 export const JOB_LABELS: Record<JobKind, string> = {
   sync: 'Sincronización con Hevy',
   exercise_templates: 'Catálogo de ejercicios',
   rebuild_exercises: 'Reconstruir estructura de entrenos',
   recalc_metrics: 'Recalcular métricas',
-  recalc_records: 'Recalcular récords'
+  recalc_records: 'Recalcular récords',
+  ai_generate_plan: 'Generar mesociclo con IA'
 }
 
 /** Jobs that touch the network. The rest run entirely on stored data. */
-export const ONLINE_JOBS: JobKind[] = ['sync', 'exercise_templates']
+export const ONLINE_JOBS: JobKind[] = ['sync', 'exercise_templates', 'ai_generate_plan']
 
 interface JobContext {
   jobId: string
@@ -48,18 +50,26 @@ interface JobContext {
  * The promise is deliberately not awaited: the endpoint answers as soon as the
  * row exists so the UI can start polling. Errors are captured onto the row
  * rather than escaping into an unhandled rejection.
+ *
+ * `reuseRunning` (default true) returns the job already in flight instead of
+ * starting a second one. That is right for everything that writes to the
+ * database — two syncs would race over the same rows — and wrong for a job
+ * whose result depends on its arguments, where the caller asking for a 5-day
+ * block would silently receive the 3-day one still running.
  */
 export async function startJob(
   kind: JobKind,
   userId: string | null,
-  run: (ctx: JobContext) => Promise<Record<string, unknown>>
+  run: (ctx: JobContext) => Promise<Record<string, unknown>>,
+  options: { reuseRunning?: boolean } = {}
 ): Promise<string> {
-  const existing = await prisma.maintenanceJob.findFirst({
-    where: { kind, user_id: userId, status: { in: ['pending', 'running'] } },
-    select: { id: true }
-  })
-  // Re-entering a running job would have two writers racing over the same rows.
-  if (existing) return existing.id
+  if (options.reuseRunning !== false) {
+    const existing = await prisma.maintenanceJob.findFirst({
+      where: { kind, user_id: userId, status: { in: ['pending', 'running'] } },
+      select: { id: true }
+    })
+    if (existing) return existing.id
+  }
 
   const job = await prisma.maintenanceJob.create({
     data: { kind, user_id: userId, status: 'running', started_at: new Date(), message: 'Iniciando…' }

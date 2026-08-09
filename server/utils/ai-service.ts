@@ -1,5 +1,6 @@
 import { prisma } from './prisma'
 import { createAiProvider, type AiKeys, type TokenUsage, type ToolDefinition, type ChatMessage } from './ai-provider'
+import { TOOL_ROUND_MAX_OUTPUT_TOKENS } from './ai-config'
 
 /** Extracts the AI provider keys from Nuxt's runtime config. */
 export function aiKeysFromConfig(config: { openaiApiKey?: string; openrouterApiKey?: string }): AiKeys {
@@ -32,6 +33,12 @@ interface AiTaskOptions {
   toolImpls?: Record<string, (args: any) => Promise<unknown>>
   /** Rounds of tool calls before the model is forced to answer. */
   maxToolIterations?: number
+  /**
+   * Called after each round of tool calls, with the 1-based round number.
+   * Lets a long task report where it is; a generation that takes minutes with
+   * no sign of life is indistinguishable from one that hung.
+   */
+  onToolRound?: (round: number, toolNames: string[]) => Promise<void>
 }
 
 interface AiTaskResult {
@@ -61,7 +68,12 @@ export async function runAiTask(options: AiTaskOptions): Promise<AiTaskResult> {
   for (let iteration = 0; iteration < maxIterations; iteration++) {
     const isFinal = iteration === maxIterations - 1
     const result = await provider.generate(messages, {
-      maxOutputTokens: options.maxOutputTokens,
+      // Intermediate rounds emit a tool call, not the answer, so they are capped
+      // well below the task's budget — that budget also sizes the reasoning
+      // allowance, which is billed as output on every one of them.
+      maxOutputTokens: usesTools && !isFinal
+        ? Math.min(options.maxOutputTokens, TOOL_ROUND_MAX_OUTPUT_TOKENS)
+        : options.maxOutputTokens,
       // JSON mode is withheld until the final turn: a model forced to emit JSON
       // cannot express a tool call, so requesting both at once silently
       // disables the tools.
@@ -97,6 +109,10 @@ export async function runAiTask(options: AiTaskOptions): Promise<AiTaskResult> {
       }
       messages.push({ role: 'tool', content: JSON.stringify(output), toolCallId: call.id })
     }
+
+    // Advisory only: a failed progress report must never lose the generation
+    // that has already been paid for.
+    await options.onToolRound?.(iteration + 1, calls.map(c => c.name)).catch(() => {})
   }
 
   if (totalUsage.totalTokens > 0) {

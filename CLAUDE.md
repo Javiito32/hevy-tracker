@@ -161,6 +161,10 @@ Every provider call reports a `TokenUsage` (`{ inputTokens, outputTokens, totalT
 
 `ai-generate` is the exception to "stateless = one shot": it passes `tools` + `toolImpls` to `runAiTask` so the model can look up real exercise ids. See "Structured training plans".
 
+**`ai-generate` is also the only AI endpoint that runs as a background job.** `POST /api/mesocycles/ai-generate` returns a `jobId`; the form polls `GET /api/mesocycles/ai-generate/:jobId`. Several rounds of catalogue lookups plus a final turn emitting the whole block is minutes of model time, which sits past the read timeout of any reverse proxy in front of the app — the proxy answered **504 while the generation ran to completion behind it**, so the tokens were spent and the plan discarded. It is started with `reuseRunning: false`: unlike the sync, each generation answers a different set of parameters, so handing back the job already in flight would return a plan for days/weeks nobody asked for. The task logic lives in `server/utils/ai-plan-generator.ts`, not the endpoint, so the job body and the request handler can't drift.
+
+**A generation is expensive, so nothing is spent on one that cannot succeed.** The endpoint verifies the API key *and* that `ExerciseTemplate` is non-empty before starting the job — with no catalogue the model burns every tool round on empty searches and returns a plan with no ids, which is a full generation's cost to learn what a `COUNT(*)` answers. For the same reason `runAiTask` caps intermediate tool rounds at `TOOL_ROUND_MAX_OUTPUT_TOKENS` rather than the task's own budget: `AI_REASONING_EFFORT` sizes the thinking allowance as a fraction of `max_tokens` and thinking bills as output, so a 16k cap on a round that only emits a tool call authorises ~8k of billed reasoning to decide what to look up. The client stores the job id in `sessionStorage` and resumes on mount — a reload used to discard a plan already paid for.
+
 `ai-generate` and `ai-targets` pass `jsonMode: true` (mapped to the vendor's JSON mode by the adapter) and expect a structured object back. All other stateless endpoints return Markdown.
 
 **`jsonMode` is a request, not a guarantee, so both parse through `parseAiJson()` in `ai-service.ts`** — never `JSON.parse` a model response directly. It maps to OpenAI-style `response_format`, which providers that don't implement it (Anthropic through OpenRouter, the current default) accept and ignore; the model then answers correctly but inside a ```json fence or after a line of prose. `parseAiJson` unwraps that, and **throws a 502 on an empty response instead of defaulting to `{}`** — `JSON.parse(content || '{}')` turned a failed generation into `success: true` carrying an empty object, which reached the form as a button that did nothing. `ai-generate` additionally rejects a plan with no `sessions` for the same reason: the only outcome a user can't act on is silence.
@@ -274,11 +278,12 @@ It **refuses a partial push**: Hevy accepts exercises only by template id, so an
 
 ### Background jobs & admin migrations — `server/utils/maintenance.ts`
 
-One `MaintenanceJob` row type serves the sync and the four migrations, because they share one problem: they outlast a request and the caller needs to watch them. `startJob()` returns immediately and captures errors onto the row rather than into an unhandled rejection; a job of the same kind already running is returned instead of started twice.
+One `MaintenanceJob` row type serves the sync, the four migrations and AI plan generation, because they share one problem: they outlast a request and the caller needs to watch them. `startJob()` returns immediately and captures errors onto the row rather than into an unhandled rejection; a job of the same kind already running is returned instead of started twice, unless the caller passes `reuseRunning: false` — right for a job whose result depends on its arguments, wrong for anything that writes to the database, where two runs would race over the same rows.
 
 | Job | Network | Notes |
 |---|---|---|
 | `exercise_templates` | Hevy | Global. Any user's key reads the same non-custom catalogue. |
+| `ai_generate_plan` | OpenRouter | Mesocycle generation. `reuseRunning: false`; not in the admin `KINDS` allowlist, since it needs request parameters. |
 | `rebuild_exercises` | none | `raw_data` → `WorkoutExercise`/`ExerciseSet` + template links. |
 | `recalc_metrics` | none | Applies the corrected rules to stored workouts. Reports `volume_delta_kg` — almost always negative, the warm-up tonnage that used to count. |
 | `recalc_records` | none | Must run **after** `recalc_metrics`, or it enshrines the inflated volumes. |

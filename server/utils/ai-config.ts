@@ -49,3 +49,17 @@ export const MAX_OUTPUT_TOKENS = {
    */
   planGeneration: 16000
 } as const
+
+/**
+ * Cap applied to the intermediate rounds of a tool-calling task, instead of the
+ * task's own (much larger) budget.
+ *
+ * A round whose entire output is a tool call needs a few hundred tokens. Giving
+ * it the final answer's budget is not free: `AI_REASONING_EFFORT` sizes the
+ * thinking budget as a fraction of `max_tokens`, and thinking is billed at the
+ * output rate — the expensive one. Plan generation can chain six rounds, so a
+ * 16k cap on each authorises ~8k of reasoning per round to decide which
+ * exercises to look up. The final turn still gets the full budget; only the
+ * lookups are bounded.
+ */
+export const TOOL_ROUND_MAX_OUTPUT_TOKENS = 4000

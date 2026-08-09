@@ -36,20 +36,26 @@
           <input v-model="aiEquipment" type="text" placeholder="ej. gimnasio completo..." class="w-full bg-surface-2 border border-line-strong hover:border-ink-3 rounded-lg px-3 py-2 text-sm text-ink placeholder:text-ink-3 focus:outline-none focus:ring-2 focus:ring-focus focus:border-transparent transition" />
         </div>
       </div>
-      <button
-        @click="generateWithAI"
-        :disabled="!aiGoal || !aiDays || !aiWeeks || generating"
-        class="flex items-center gap-2 px-4 py-2 bg-accent text-accent-ink text-sm rounded-lg hover:opacity-85 disabled:opacity-50 transition"
-      >
-        <svg v-if="generating" class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-        </svg>
-        <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-        </svg>
-        {{ generating ? 'Generando...' : 'Generar plan' }}
-      </button>
+      <div class="flex flex-wrap items-center gap-3">
+        <button
+          @click="generateWithAI"
+          :disabled="!aiGoal || !aiDays || !aiWeeks || generating"
+          class="flex items-center gap-2 px-4 py-2 bg-accent text-accent-ink text-sm rounded-lg hover:opacity-85 disabled:opacity-50 transition"
+        >
+          <svg v-if="generating" class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          <svg v-else class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+          </svg>
+          {{ generating ? 'Generando...' : 'Generar plan' }}
+        </button>
+        <span v-if="generating && generateStatus" class="text-xs text-ink-3">{{ generateStatus }}</span>
+      </div>
+      <p v-if="generating" class="text-xs text-ink-3 mt-2">
+        Puede tardar un par de minutos. Mantén esta pestaña abierta.
+      </p>
       <p v-if="generateError" class="text-sm text-danger mt-3">{{ generateError }}</p>
       <p v-if="generateWarning" class="text-sm text-warn mt-3">{{ generateWarning }}</p>
     </div>
@@ -186,7 +192,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
@@ -216,6 +222,8 @@ const generating = ref(false)
 const generateError = ref('')
 /** Kept apart from the error: a plan with unresolved ids is still a usable plan. */
 const generateWarning = ref('')
+/** Live step reported by the job — a minutes-long wait needs to show a pulse. */
+const generateStatus = ref('')
 
 const toast = useToast()
 
@@ -234,12 +242,126 @@ const hasEnoughData = computed(() => !!(form.value.goal && form.value.split_desc
  */
 const generatedPlan = ref<{ sessions: any[]; weeks: any[] } | null>(null)
 
-const generateWithAI = async () => {
+const POLL_MS = 2000
+const POLL_TIMEOUT_MS = 6 * 60 * 1000
+
+/**
+ * Waits for a generation job, polling until it finishes.
+ *
+ * The work outlasts an HTTP request by minutes, so the request that starts it
+ * returns a job id and this reads the result off the job row. Capped so a job
+ * the server lost (a restart mid-generation leaves its row `running` forever)
+ * eventually reports something instead of spinning until the tab is closed.
+ */
+const pollGeneration = async (jobId: string) => {
+  const deadline = Date.now() + POLL_TIMEOUT_MS
+
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, POLL_MS))
+
+    const job = await $fetch<{
+      status: string; message: string | null; error: string | null
+      plan: any; warning: string | null; finished: boolean
+    }>(`/api/mesocycles/ai-generate/${jobId}`)
+
+    if (job.message) generateStatus.value = job.message
+    if (!job.finished) continue
+    if (job.status === 'error') throw new Error(job.error || 'La generación falló.')
+    return { plan: job.plan, warning: job.warning ?? undefined }
+  }
+
+  // Flagged so the caller keeps the job id: the generation is probably still
+  // running, and reissuing it would pay for the same plan twice.
+  throw Object.assign(
+    new Error('La generación sigue en curso y está tardando más de lo normal. Recarga la página en un minuto para recoger el resultado.'),
+    { keepJob: true }
+  )
+}
+
+/**
+ * The job currently in flight, remembered across a reload.
+ *
+ * A generation costs real money and runs for minutes on the server whether or
+ * not anyone is watching. Losing the id — a refresh, a poll that gave up — used
+ * to mean the plan was produced, paid for and discarded.
+ */
+const RESUME_KEY = 'mesocycle-generation-job'
+
+const applyPlan = (result: { plan: any; warning?: string }) => {
+  const plan = result.plan ?? {}
+  if (plan.name) form.value.name = plan.name
+  if (plan.goal) form.value.goal = plan.goal
+  if (plan.notes) form.value.notes = plan.notes
+
+  if (Array.isArray(plan.sessions) && plan.sessions.length) {
+    generatedPlan.value = { sessions: plan.sessions, weeks: plan.weeks ?? [] }
+    form.value.target_sessions_weekly = plan.sessions.length
+    // Preview only — savePlan() regenerates this from the stored structure,
+    // which is the copy that stays authoritative.
+    form.value.split_description = plan.sessions.map((s: any) => {
+      const day = s.day_of_week ? `${DAY_NAMES[s.day_of_week]}: ` : ''
+      const lines = (s.exercises ?? []).map((e: any) => {
+        const reps = e.rep_min && e.rep_max
+          ? (e.rep_min === e.rep_max ? e.rep_min : `${e.rep_min}-${e.rep_max}`)
+          : '?'
+        return `  · ${e.name} — ${e.target_sets}×${reps}${e.target_rir != null ? ` @${e.target_rir} RIR` : ''}`
+      })
+      return `${day}${s.name}\n${lines.join('\n')}`
+    }).join('\n\n')
+  } else if (plan.split_description) {
+    // Older shape, or a model that ignored the structure. Still usable as prose.
+    generatedPlan.value = null
+    form.value.split_description = plan.split_description
+  } else {
+    // The server rejects an empty plan, so this is unreachable through it —
+    // but a response that changes no field and says nothing is the one outcome
+    // the user cannot tell apart from a dead button, so it never ships silent.
+    throw new Error('La IA no devolvió ninguna sesión de entrenamiento.')
+  }
+
+  generateWarning.value = result.warning ?? ''
+
+  // Taken from the plan the model actually returned, not from the form field:
+  // on a resumed generation the field holds its default, not what was asked for.
+  const weeks = Array.isArray(plan.weeks) && plan.weeks.length ? plan.weeks.length : aiWeeks.value
+  const end = new Date(form.value.start_date)
+  end.setDate(end.getDate() + weeks * 7)
+  form.value.end_date = end.toISOString().split('T')[0]
+}
+
+/** Shared by a fresh generation and by one resumed after a reload. */
+const consumeGeneration = async (jobId: string) => {
   generating.value = true
   generateError.value = ''
   generateWarning.value = ''
   try {
-    const result = await $fetch<{ plan: any; warning?: string }>('/api/mesocycles/ai-generate', {
+    sessionStorage.setItem(RESUME_KEY, jobId)
+    const result = await pollGeneration(jobId)
+    applyPlan(result)
+    sessionStorage.removeItem(RESUME_KEY)
+    toast.success('Plan generado. Revísalo antes de guardar.')
+  } catch (err: any) {
+    generateError.value = err?.data?.statusMessage || err?.data?.message || err?.message || 'Error al generar el plan.'
+    // Also as a toast: the inline note sits below a button the user is no longer
+    // looking at after a generation that can take a minute.
+    toast.error(generateError.value)
+    // The id is kept on a timeout — the job may still be running, and it is the
+    // only handle on work already paid for. A job that reported an error is done
+    // and has nothing left to collect.
+    if (!err?.keepJob) sessionStorage.removeItem(RESUME_KEY)
+  } finally {
+    generating.value = false
+    generateStatus.value = ''
+  }
+}
+
+const generateWithAI = async () => {
+  generating.value = true
+  generateError.value = ''
+  generateWarning.value = ''
+  generateStatus.value = 'Iniciando…'
+  try {
+    const started = await $fetch<{ jobId: string }>('/api/mesocycles/ai-generate', {
       method: 'POST',
       body: {
         goal: aiGoal.value,
@@ -248,52 +370,23 @@ const generateWithAI = async () => {
         equipment: aiEquipment.value || undefined
       }
     })
-    const plan = result.plan
-    if (plan.name) form.value.name = plan.name
-    if (plan.goal) form.value.goal = plan.goal
-    if (plan.notes) form.value.notes = plan.notes
-
-    if (Array.isArray(plan.sessions) && plan.sessions.length) {
-      generatedPlan.value = { sessions: plan.sessions, weeks: plan.weeks ?? [] }
-      form.value.target_sessions_weekly = plan.sessions.length
-      // Preview only — savePlan() regenerates this from the stored structure,
-      // which is the copy that stays authoritative.
-      form.value.split_description = plan.sessions.map((s: any) => {
-        const day = s.day_of_week ? `${DAY_NAMES[s.day_of_week]}: ` : ''
-        const lines = (s.exercises ?? []).map((e: any) => {
-          const reps = e.rep_min && e.rep_max
-            ? (e.rep_min === e.rep_max ? e.rep_min : `${e.rep_min}-${e.rep_max}`)
-            : '?'
-          return `  · ${e.name} — ${e.target_sets}×${reps}${e.target_rir != null ? ` @${e.target_rir} RIR` : ''}`
-        })
-        return `${day}${s.name}\n${lines.join('\n')}`
-      }).join('\n\n')
-    } else if (plan.split_description) {
-      // Older shape, or a model that ignored the structure. Still usable as prose.
-      generatedPlan.value = null
-      form.value.split_description = plan.split_description
-    } else {
-      // The server rejects an empty plan, so this is unreachable through it —
-      // but a response that changes no field and says nothing is the one outcome
-      // the user cannot tell apart from a dead button, so it never ships silent.
-      throw new Error('La IA no devolvió ninguna sesión de entrenamiento.')
-    }
-
-    generateWarning.value = result.warning ?? ''
-
-    const end = new Date(form.value.start_date)
-    end.setDate(end.getDate() + aiWeeks.value * 7)
-    form.value.end_date = end.toISOString().split('T')[0]
-    toast.success('Plan generado. Revísalo antes de guardar.')
+    await consumeGeneration(started.jobId)
   } catch (err: any) {
     generateError.value = err?.data?.statusMessage || err?.data?.message || err?.message || 'Error al generar el plan.'
-    // Also as a toast: the inline note sits below a button the user is no longer
-    // looking at after a generation that can take a minute.
     toast.error(generateError.value)
-  } finally {
     generating.value = false
+    generateStatus.value = ''
   }
 }
+
+// A generation left running by a reload is picked back up rather than reissued.
+onMounted(() => {
+  const jobId = sessionStorage.getItem(RESUME_KEY)
+  if (jobId) {
+    generateStatus.value = 'Retomando la generación en curso…'
+    void consumeGeneration(jobId)
+  }
+})
 
 const DAY_NAMES = ['', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
 

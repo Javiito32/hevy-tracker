@@ -209,7 +209,19 @@ Tool implementations enforce `user_id` scoping — they never access another use
 
 ### Admin panel & AI usage analytics
 
-`/admin` (middleware `admin`) reports AI usage and cost. All endpoints gate on `requireAdmin()`.
+`/admin` (middleware `admin`) is **five tabs**, one per question the panel answers. All endpoints gate on `requireAdmin()`.
+
+| Tab (`?tab=`) | Contents |
+|---|---|
+| `maintenance` | `MaintenanceCard` (the four operations) + `UnclassifiedCard` |
+| `jobs` | `JobsCard` — the job log and live progress |
+| `users` | `UsersCard` — account table and all-time AI usage |
+| `ai` | Range filter, range-scoped totals, run rate, trend chart, prices, breakdowns, usage log |
+| `db` | `DbExplorerCard` — read-only database explorer |
+
+It was one column of ten cards, which meant scrolling past a month of token costs to reach a maintenance operation. The tab lives in the **query string**, not in a `ref`: a panel this deep is worth a URL, and a reload should not throw you back to the first tab. Tabs use `v-if`, not `v-show` — the trend chart measures its own SVG — but `/api/admin/users` and `/api/admin/ai-stats` are fetched by **the page**, not the tabs: `userOptions` feeds both the maintenance target selector and the AI usage log, and a `useFetch` inside a `v-if` would re-run on every switch.
+
+`useMaintenanceJobs()` (`app/composables/useMaintenanceJobs.ts`) owns the job list, module-level via `useState` like `useToast`. Operations and history sit in different tabs but still depend on each other — the dependency gating reads which kinds have completed — and one poller must serve both. The interval is a **module variable**, and it stops itself when nothing is running, which is why unmounting a tab must not tear it down: the other tab may still be watching the same job.
 
 | Endpoint | Purpose |
 |---|---|
@@ -225,6 +237,23 @@ Tool implementations enforce `user_id` scoping — they never access another use
 - **`rowCost` returns `null`, never an estimate**, when the model is unpriced or the row predates the in/out split. Totals therefore exclude those rows and report `unpriced_count` / `no_breakdown_count` so the UI can flag a figure as partial. Don't "fill the gap" with an assumed input/output ratio — an invented number that looks authoritative is worse than a `—`.
 - Aggregation is a **JS reduction over one query**, not `groupBy`: every dimension the panel needs (user, task type) lives on the parent `AiConversation`, and Prisma can't group across a relation.
 - The users table (`/api/admin/users`) reports **all-time** usage; `ai-stats` is the date-scoped view.
+
+#### Database explorer — `server/utils/db-explorer.ts`
+
+Read-only browsing of every table, in place of running `prisma studio` beside the app: that is a separate process, it writes, and it knows nothing of this interface.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/admin/db/tables` | Every model with its scalar columns and row count, plus the operator table and the allowed page sizes. |
+| `GET /api/admin/db/rows?table&page&pageSize&sortBy&sortDir&field&op&value&full` | One page of rows + `total`, `fields`, `truncated`. |
+
+**No SQL is ever constructed.** The table name is resolved against `Prisma.dmmf.datamodel.models`, sort and filter fields against that model's scalar fields, and the operator against what the field's type allows — anything unrecognised is a **400, not a query**. Only `findMany` and `count` are ever called on the resolved delegate (`delegateFor`: lowercase the first letter). There is no write path, and nothing here goes near `$queryRawUnsafe`.
+
+- **Relations are excluded** and the `select` is explicit: `findMany()` bare would ship whatever column the schema grows next.
+- `REDACTED_FIELDS` (`password_hash`, `hevy_api_key`) never leave the server — masked to `••••••••`, and `null` stays `null` so "hidden" and "empty" don't look alike. Those columns are also **not filterable and not sortable**: `contains` over a hash, or paging through a sort on one, reads it back a comparison at a time.
+- Text over `CELL_MAX_CHARS = 200` is cut for the grid and the affected fields reported in `truncated`, so the UI knows where to offer the row detail. One `Workout.raw_data` is tens of KB of JSON; fifty of them is a multi-megabyte response for a table nobody can read. The dialog re-fetches the row with `full=1` rather than reconstructing it.
+- `pageSize` is validated against `PAGE_SIZES`, never a free-form number — an arbitrary `take` is a trivial DoS against the panel itself.
+- No `mode: 'insensitive'` on `contains`: Prisma's SQLite connector doesn't support it, and `LIKE` is already case-insensitive for ASCII.
 
 #### The trend chart
 
@@ -374,7 +403,7 @@ Shared form surface is `.ui-control` in `main.css` — one place, because Input,
 - Desktop groups use `UiNavMenu` (click to open, Escape and outside-click to close, parent marked active when any child is). On the phone the same groups render as **labelled sections** in the hamburger panel, not nested dropdowns — a menu inside a menu is one tap too many with chalk on your hands.
 - Status colour never carries meaning alone. Positive and danger sit close together under deuteranopia, so every verdict also ships a glyph, a written label, and (in the volume chart) a position against the MEV/MAV/MRV ticks.
 - **The muscle-volume ramp is opacities of `--ink`, not a hue.** `MuscleHeatmap` steps `[0.14, 0.32, 0.5, 0.7, 0.9]` over the card surface, so the ramp is monotone **by construction** in both themes — more sets is always more contrast — and there is no second palette to keep validated. It replaced five fixed blues that ran dark→light, which is backwards on chalk: the heaviest weeks would have come out palest. A zero week renders as bare surface with a hairline, never as the faintest step: "no training" and "a little training" must not look like neighbours. The cell label flips to `text-bg` on the top two steps.
-- Admin analytics components live in `app/components/admin/` (`AiRangeFilter`, `AiRunRateCard`, `AiUsageTrendChart`, `AiModelPricesCard`, `AiUsageByModelCard`, `AiUsageByUserCard`, `AiTopInteractionsCard`, `AiUsageLogCard`); `admin/index.vue` is the orchestrator and owns the selected date range, mirroring how `calendar.vue` owns the date `CalendarGrid` emits.
+- Admin components live in `app/components/admin/` (`MaintenanceCard`, `UnclassifiedCard`, `JobsCard`, `UsersCard`, `DbExplorerCard`, and the eight `Ai*` analytics cards); `admin/index.vue` is the orchestrator and owns the selected tab and date range, mirroring how `calendar.vue` owns the date `CalendarGrid` emits. Types shared between the page and a card go in `app/utils/admin.ts` — `<script setup>` cannot export, which is the same reason `Verdict` lives in `theme.ts` and not in `UiBadge`.
 - Charts are hand-rolled inline SVG (no chart library) — `AiUsageTrendChart`, `charts/LineChart.vue`, and the three in `body.vue`. **Chrome wears Tailwind token classes, not presentation attributes**: `class="stroke-line"`, `class="fill-ink-3 font-data"`, `class="stroke-surface"`. A presentation attribute cannot take a `var()`, which is why these are classes; and the point ring in `LineChart` is a knockout in the *card surface*, so hardcoding it (it was `#0f172a`) drew a black halo around every point once the surface turned to chalk. Series colours go through `:style`, which does accept `var()`. Marks capped at 24px with a 2px surface gap between stacked segments, a legend whenever there are ≥2 series, and a table view so no value is reachable only by hovering. Load the `dataviz` skill before adding or restyling one.
 - **No dual-axis charts.** Two measures on different scales get stacked panels sharing one time axis, never a left and a right axis. `body.vue` had two of them — kg vs body-fat %, and HRV ms vs resting bpm — and a dual axis lets you slide one scale against the other until the lines cross wherever you like, so the reader sees "fat crossed above weight in March", a statement about the axis choice rather than about the athlete. Each pair is now a tall panel plus a short one (`FAT_H` / `HR_H`), which keeps the comparison over time and removes the false crossing.
 - **`npm run palette`** re-validates both categorical columns against both surfaces (`#131316` iron, `#F7F7F5` chalk) with the vendored `scripts/validate_palette.js`. Run it before changing any series colour. The light column is deliberately darker than the `dataviz` reference column: the reference warned below 3:1 on chalk for 4 of 5 slots, and in an app this full of 2px line charts that means a line you cannot see. The trade is a worst adjacent CVD ΔE of 7.9 — inside the 6–8 band, which is legal only with secondary encoding, and these charts carry it (legend always present, plus a table view).

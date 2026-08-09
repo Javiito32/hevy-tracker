@@ -50,87 +50,25 @@
         </button>
       </div>
 
-      <!-- Live progress + history -->
-      <div v-if="jobs.length" class="border-t border-line pt-5">
-        <div class="flex items-center justify-between mb-3">
-          <h3 class="font-display text-sm font-semibold tracking-tight text-ink">Trabajos recientes</h3>
-          <span v-if="anyRunning" class="text-xs text-ink-2 flex items-center gap-1.5">
-            <span class="w-1.5 h-1.5 rounded-full bg-ink-2 animate-pulse"></span>
-            en curso
-          </span>
-        </div>
-
-        <div class="space-y-2">
-          <div
-            v-for="job in jobs"
-            :key="job.id"
-            class="bg-surface-2/40 border border-line rounded-lg px-4 py-3"
-          >
-            <div class="flex items-center justify-between gap-3 flex-wrap">
-              <div class="flex items-center gap-2 min-w-0">
-                <span
-                  class="w-2 h-2 rounded-full flex-shrink-0"
-                  :class="{
-                    'bg-ink-2 animate-pulse': job.status === 'running' || job.status === 'pending',
-                    'bg-positive': job.status === 'done',
-                    'bg-danger': job.status === 'error'
-                  }"
-                ></span>
-                <span class="text-sm text-ink-2 truncate">{{ job.label }}</span>
-                <span v-if="job.user_name" class="text-xs text-ink-3 truncate">· {{ job.user_name }}</span>
-              </div>
-              <span class="text-xs text-ink-3 font-mono">{{ formatDateTime(job.created_at) }}</span>
-            </div>
-
-            <!-- Determinate bar only when a total is known; otherwise the label
-                 carries the state rather than a bar that fakes a percentage. -->
-            <div v-if="job.status === 'running'" class="mt-2">
-              <p class="text-xs text-ink-3 mb-1">
-                {{ job.message }}
-                <span v-if="job.progress_total > 0" class="font-mono">
-                  ({{ job.progress_current }}/{{ job.progress_total }})
-                </span>
-              </p>
-              <div v-if="job.progress_total > 0" class="w-full bg-surface-2 rounded-full h-1">
-                <div
-                  class="bg-accent h-1 rounded-full transition-all"
-                  :style="{ width: Math.min(100, (job.progress_current / job.progress_total) * 100) + '%' }"
-                ></div>
-              </div>
-            </div>
-
-            <p v-else-if="job.status === 'done' && job.result" class="text-xs text-positive/80 mt-1.5 font-mono">
-              {{ describeResult(job.result) }}
-            </p>
-            <p v-else-if="job.status === 'error'" class="text-xs text-danger mt-1.5">{{ job.error }}</p>
-          </div>
-        </div>
+      <!-- The history itself lives in the «Trabajos» tab; this is the pointer to
+           it, shown only while something is actually running. -->
+      <div v-if="anyRunning" class="border-t border-line pt-5 flex items-center gap-2 text-xs text-ink-2">
+        <span class="w-1.5 h-1.5 rounded-full bg-ink-2 animate-pulse flex-shrink-0"></span>
+        <span>Hay una operación en curso — su progreso se ve en la pestaña «Trabajos».</span>
       </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, onMounted } from 'vue'
 
 const toast = useToast()
 
 const props = defineProps<{ users: Array<{ id: string; name: string }> }>()
 
-interface Job {
-  id: string
-  kind: string
-  label: string
-  user_id: string | null
-  user_name: string | null
-  status: string
-  progress_current: number
-  progress_total: number
-  message: string | null
-  result: Record<string, any> | null
-  error: string | null
-  created_at: string
-}
+/** Job state is shared with the «Trabajos» tab — see `useMaintenanceJobs`. */
+const { anyRunning, completed, loadJobs, startPolling } = useMaintenanceJobs()
 
 interface Operation {
   kind: string
@@ -185,30 +123,7 @@ const operations: Operation[] = [
 ]
 
 const targetUser = ref('__all__')
-const jobs = ref<Job[]>([])
 const busy = ref(false)
-let timer: ReturnType<typeof setInterval> | null = null
-
-const anyRunning = computed(() =>
-  jobs.value.some(j => j.status === 'running' || j.status === 'pending')
-)
-
-/** Kinds that have completed at least once, used to gate the dependent steps. */
-const completed = computed(() => {
-  const done = new Set<string>()
-  for (const j of jobs.value) if (j.status === 'done') done.add(j.kind)
-  return done
-})
-
-const loadJobs = async () => {
-  try {
-    const res = await $fetch<{ jobs: Job[]; running: boolean }>('/api/admin/jobs')
-    jobs.value = res.jobs
-  } catch {
-    // Polling failures are transient and self-correcting; surfacing one as an
-    // error banner would flash noise every time a request is slow.
-  }
-}
 
 const confirmAndRun = async (op: Operation) => {
   const who = targetUser.value === '__all__' ? 'todos los usuarios' : props.users.find(u => u.id === targetUser.value)?.name
@@ -226,6 +141,7 @@ const confirmAndRun = async (op: Operation) => {
     })
     await loadJobs()
     startPolling()
+    toast.success(`«${op.label}» lanzada. Sigue su progreso en la pestaña «Trabajos».`)
   } catch (err: any) {
     toast.error(err?.data?.message ?? 'No se pudo lanzar la operación.')
   } finally {
@@ -233,27 +149,8 @@ const confirmAndRun = async (op: Operation) => {
   }
 }
 
-/** Poll only while something is running — a job list at rest doesn't change. */
-const startPolling = () => {
-  if (timer) return
-  timer = setInterval(async () => {
-    await loadJobs()
-    if (!anyRunning.value) stopPolling()
-  }, 2000)
-}
-const stopPolling = () => {
-  if (timer) { clearInterval(timer); timer = null }
-}
-
-const describeResult = (r: Record<string, any>): string =>
-  Object.entries(r)
-    .filter(([, v]) => typeof v === 'number' || typeof v === 'string')
-    .map(([k, v]) => `${k}: ${v}`)
-    .join(' · ')
-
 onMounted(async () => {
   await loadJobs()
   if (anyRunning.value) startPolling()
 })
-onBeforeUnmount(stopPolling)
 </script>

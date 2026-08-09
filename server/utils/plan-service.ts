@@ -103,6 +103,21 @@ export async function savePlan(
 
   const unmatched: string[] = []
 
+  // The replace destroys the rows that carry `hevy_routine_id`, so the link to
+  // the routine already living in the athlete's Hevy account has to be carried
+  // across by hand. Without this, editing a pushed plan makes the next push
+  // create a second set of routines beside the first — the exact duplication
+  // `hevy_routine_id` exists to prevent.
+  //
+  // Matched on name, not order: reordering the week is a normal edit and must
+  // not re-point "Empuje A" at the routine that used to be "Tirón A". A renamed
+  // session legitimately loses the link and is pushed as a new routine.
+  const previous = await prisma.plannedSession.findMany({
+    where: { mesocycle_id: mesocycleId, hevy_routine_id: { not: null } },
+    select: { name: true, hevy_routine_id: true, pushed_at: true }
+  })
+  const pushedByName = new Map(previous.map(s => [s.name.trim().toLowerCase(), s]))
+
   await prisma.$transaction([
     prisma.plannedSession.deleteMany({ where: { mesocycle_id: mesocycleId } }),
     prisma.mesocycleWeek.deleteMany({ where: { mesocycle_id: mesocycleId } })
@@ -110,6 +125,7 @@ export async function savePlan(
 
   let exerciseCount = 0
   for (const [index, session] of sessions.entries()) {
+    const carried = pushedByName.get(session.name.trim().toLowerCase())
     await prisma.plannedSession.create({
       data: {
         mesocycle_id: mesocycleId,
@@ -117,6 +133,8 @@ export async function savePlan(
         order_index: index,
         day_of_week: session.day_of_week ?? null,
         notes: session.notes ?? null,
+        hevy_routine_id: carried?.hevy_routine_id ?? null,
+        pushed_at: carried?.pushed_at ?? null,
         exercises: {
           create: session.exercises.map((e, i) => {
             const linked = e.exercise_template_id && known.has(e.exercise_template_id)

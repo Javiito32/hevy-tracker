@@ -195,7 +195,10 @@ model Workout {
   ai_model             String?
 
   mesocycle_id         String?
-  mesocycle            Mesocycle? @relation(fields: [mesocycle_id], references: [id])
+  /// SetNull, stated explicitly: deleting a block must never delete the
+  /// sessions logged during it. The workout is the record of what happened;
+  /// the block was only the plan it was attributed to.
+  mesocycle            Mesocycle? @relation(fields: [mesocycle_id], references: [id], onDelete: SetNull)
 
   session_notes        SessionNote[]
   exercises            WorkoutExercise[]
@@ -400,7 +403,10 @@ model SessionNote {
 model MesocycleEvaluation {
   id               String    @id @default(uuid())
   mesocycle_id     String
-  mesocycle        Mesocycle @relation(fields: [mesocycle_id], references: [id])
+  /// Cascades like MesocycleNote: an evaluation is a reading of one block and
+  /// means nothing once the block is gone. Without this the relation defaults
+  /// to Restrict, which makes any evaluated mesocycle undeletable.
+  mesocycle        Mesocycle @relation(fields: [mesocycle_id], references: [id], onDelete: Cascade)
   week_number      Int
   evaluation_date  DateTime
   summary          String?

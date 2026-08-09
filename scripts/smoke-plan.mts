@@ -160,6 +160,84 @@ async function main() {
       check('porcentaje coherente', row.adherence_pct === Math.round((1 / 12) * 100), `→ ${row.adherence_pct}`)
     }
 
+    console.log('\n── Editar el plan conserva el enlace con Hevy ──')
+    // savePlan replaces rather than merges, which destroys the rows carrying
+    // hevy_routine_id. If that link is not carried across, the next push builds
+    // a second set of routines beside the ones already in the athlete's account.
+    await prisma.plannedSession.updateMany({
+      where: { mesocycle_id: meso.id, name: 'Empuje' },
+      data: { hevy_routine_id: 'HEVY_R1', pushed_at: new Date() }
+    })
+    const beforeEdit = await loadPlan(meso.id, user.id)
+    await savePlan(meso.id, user.id, beforeEdit.sessions.map(s => ({
+      name: s.name,
+      day_of_week: s.day_of_week,
+      notes: s.notes,
+      exercises: s.exercises.map(e => ({
+        exercise_template_id: e.exercise_template_id,
+        name: e.name,
+        target_sets: e.target_sets + 1, // a real edit
+        rep_min: e.rep_min, rep_max: e.rep_max, target_rir: e.target_rir, rest_seconds: e.rest_seconds
+      }))
+    })), beforeEdit.weeks.map(w => ({
+      week_number: w.week_number, is_deload: w.is_deload,
+      target_rir: w.target_rir, volume_multiplier: w.volume_multiplier, notes: w.notes
+    })))
+    const afterEdit = await loadPlan(meso.id, user.id)
+    const pushed = afterEdit.sessions.find(s => s.name === 'Empuje')
+    check('conserva hevy_routine_id al editar', pushed?.hevy_routine_id === 'HEVY_R1', `→ ${pushed?.hevy_routine_id}`)
+    check('conserva pushed_at', pushed?.pushed_at != null)
+    check('aplica la edición', pushed?.exercises[0].target_sets === 5, `→ ${pushed?.exercises[0].target_sets}`)
+    check('una sesión nunca enviada sigue sin id',
+      afterEdit.sessions.filter(s => s.name !== 'Empuje').every(s => s.hevy_routine_id === null))
+
+    // Renaming is the one case that legitimately drops the link: re-pointing
+    // "Empuje A" at the routine that used to be "Tirón A" would be worse.
+    await savePlan(meso.id, user.id, [{
+      name: 'Empuje renombrado', day_of_week: 1,
+      exercises: [{ exercise_template_id: 'SP_BENCH', name: 'Bench Press (Barbell)', target_sets: 4 }]
+    }], [])
+    const renamed = await loadPlan(meso.id, user.id)
+    check('renombrar una sesión suelta el enlace', renamed.sessions[0].hevy_routine_id === null,
+      `→ ${renamed.sessions[0].hevy_routine_id}`)
+
+    console.log('\n── Eliminar el mesociclo ──')
+    const delMeso = await prisma.mesocycle.create({
+      data: { user_id: user.id, name: 'A borrar', start_date: new Date(), status: 'paused' }
+    })
+    await savePlan(delMeso.id, user.id, [{
+      name: 'S1', day_of_week: 1,
+      exercises: [{ exercise_template_id: 'SP_BENCH', name: 'Bench Press (Barbell)', target_sets: 3 }]
+    }], [{ week_number: 1 }])
+    await prisma.mesocycleEvaluation.create({
+      data: { mesocycle_id: delMeso.id, week_number: 1, evaluation_date: new Date(), summary: 'x' }
+    })
+    await prisma.mesocycleNote.create({
+      data: { mesocycle_id: delMeso.id, date: new Date(), content: 'x' }
+    })
+    const keptWorkout = await prisma.workout.findFirst({ where: { user_id: user.id } })
+    if (keptWorkout) {
+      await prisma.workout.update({ where: { id: keptWorkout.id }, data: { mesocycle_id: delMeso.id } })
+    }
+
+    // Restrict on MesocycleEvaluation used to make any evaluated block
+    // undeletable; the cascade added in 20260809142206 is what this asserts.
+    await prisma.mesocycle.delete({ where: { id: delMeso.id } })
+    check('borra el mesociclo', (await prisma.mesocycle.findUnique({ where: { id: delMeso.id } })) === null)
+    check('cascada: evaluaciones',
+      (await prisma.mesocycleEvaluation.count({ where: { mesocycle_id: delMeso.id } })) === 0)
+    check('cascada: notas',
+      (await prisma.mesocycleNote.count({ where: { mesocycle_id: delMeso.id } })) === 0)
+    check('cascada: sesiones planificadas',
+      (await prisma.plannedSession.count({ where: { mesocycle_id: delMeso.id } })) === 0)
+    check('cascada: semanas',
+      (await prisma.mesocycleWeek.count({ where: { mesocycle_id: delMeso.id } })) === 0)
+    if (keptWorkout) {
+      const survivor = await prisma.workout.findUnique({ where: { id: keptWorkout.id } })
+      check('el entrenamiento sobrevive al borrado', survivor !== null)
+      check('y solo pierde la asociación al bloque', survivor?.mesocycle_id === null, `→ ${survivor?.mesocycle_id}`)
+    }
+
     console.log('\n── renderSplitDescription ──')
     const rendered = renderSplitDescription([
       { name: 'Empuje', day_of_week: 1, exercises: [

@@ -109,14 +109,72 @@
               </button>
             </div>
           </form>
+
+          <!-- Destructive zone. Two steps, and the second one names what
+               survives: the fear when deleting a block is losing the training,
+               and the training is exactly what is kept. -->
+          <div class="mt-6 pt-5 border-t border-line">
+            <template v-if="!confirmingDelete">
+              <div class="flex items-center justify-between gap-3 flex-wrap">
+                <div>
+                  <p class="text-sm font-medium text-ink">Eliminar mesociclo</p>
+                  <p class="text-xs text-ink-3 mt-0.5">Se borra el plan, las evaluaciones y las notas del bloque.</p>
+                </div>
+                <UiButton size="sm" variant="danger" @click="confirmingDelete = true">Eliminar</UiButton>
+              </div>
+            </template>
+
+            <div v-else class="bg-danger/5 border border-danger/40 rounded-card p-4">
+              <p class="text-sm font-medium text-danger">¿Eliminar «{{ mesocycle.name }}»?</p>
+              <ul class="text-xs text-ink-2 mt-2 space-y-1 list-disc pl-4">
+                <li>Se eliminan la rutina, las {{ evaluations?.length ?? 0 }} evaluaciones semanales y las notas del bloque.</li>
+                <li><strong>Tus entrenamientos no se borran.</strong> Los {{ mesocycle.workouts?.length ?? 0 }} registrados durante el bloque siguen en tu historial, solo dejan de estar asociados a él.</li>
+                <li>Las rutinas ya enviadas a Hevy siguen en tu cuenta de Hevy; bórralas allí si quieres.</li>
+              </ul>
+              <p class="text-xs text-ink-3 mt-3">Esto no se puede deshacer.</p>
+              <div class="flex justify-end gap-3 mt-4">
+                <UiButton size="sm" variant="ghost" :disabled="deleting" @click="confirmingDelete = false">Cancelar</UiButton>
+                <UiButton size="sm" variant="danger" :loading="deleting" @click="deleteMesocycle">Sí, eliminar</UiButton>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
       <!-- The plan: what to do next, and whether the block is being followed. -->
+      <div class="flex items-center justify-between gap-3 mb-3 flex-wrap">
+        <div>
+          <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3">Rutina</p>
+          <p class="text-xs text-ink-3 mt-0.5">La prescripción estructurada: lo que se envía a Hevy.</p>
+        </div>
+        <UiButton size="sm" variant="secondary" @click="showPlanEditor = true">
+          {{ plan?.has_plan ? 'Editar rutina' : 'Crear rutina' }}
+        </UiButton>
+      </div>
+
       <div v-if="nextSession?.has_plan" class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
         <MesocycleNextSession :data="nextSession" @push="pushToHevy" />
         <MesocyclePlanAdherence :adherence="plan?.adherence" />
       </div>
+
+      <!-- Without this, a block with no structured plan showed nothing at all
+           here and there was no way in to build one. -->
+      <div v-else class="bg-surface border border-line rounded-card mb-6">
+        <UiEmptyState
+          title="Este bloque no tiene rutina estructurada"
+          description="Sin sesiones y ejercicios prescritos no hay próxima sesión, ni adherencia, ni nada que enviar a Hevy."
+        >
+          <UiButton size="sm" variant="secondary" @click="showPlanEditor = true">Crear rutina</UiButton>
+        </UiEmptyState>
+      </div>
+
+      <MesocyclePlanEditor
+        :open="showPlanEditor"
+        :mesocycle-id="mesocycleId"
+        :plan="plan"
+        @close="showPlanEditor = false"
+        @saved="onPlanSaved"
+      />
 
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <!-- Left column: info + workouts list -->
@@ -408,6 +466,16 @@ const pushToHevy = async () => {
 const { data: evaluations, pending: evalsLoading, refresh: refreshEvals } = useFetch(`/api/mesocycles/${mesocycleId}/evaluations`)
 const { data: notes, pending: notesLoading, refresh: refreshNotes } = useFetch(`/api/mesocycles/${mesocycleId}/notes`)
 
+/**
+ * The plan the editor just wrote is what three of this page's cards are drawn
+ * from, and `savePlan` derives `split_description` / `target_sessions_weekly`
+ * onto the mesocycle itself — so the block row is refreshed too, not just the plan.
+ */
+const showPlanEditor = ref(false)
+const onPlanSaved = async () => {
+  await Promise.all([refresh(), refreshPlan(), refreshNext()])
+}
+
 const statusChanging = ref(false)
 const showEditModal = ref(false)
 const savingEdit = ref(false)
@@ -424,6 +492,8 @@ const openEdit = () => {
     target_sessions_weekly: m.target_sessions_weekly ?? 4,
     notes: m.notes ?? ''
   }
+  // Reopening the dialog must not reopen it on the armed confirmation.
+  confirmingDelete.value = false
   showEditModal.value = true
 }
 
@@ -443,6 +513,30 @@ const saveMesocycle = async () => {
     toast.error(err?.data?.message ?? 'No se pudieron guardar los cambios.')
   } finally {
     savingEdit.value = false
+  }
+}
+
+const confirmingDelete = ref(false)
+const deleting = ref(false)
+
+/**
+ * Two-step, in-dialog. Not `confirm()`: the thing worth saying here is what
+ * survives the delete, and a native dialog can only carry one line of text.
+ */
+const deleteMesocycle = async () => {
+  deleting.value = true
+  try {
+    const res = await $fetch<{ workouts_kept: number }>(`/api/mesocycles/${mesocycleId}`, { method: 'DELETE' })
+    showEditModal.value = false
+    toast.success(
+      res.workouts_kept
+        ? `Mesociclo eliminado. Tus ${res.workouts_kept} entrenamientos siguen en el historial.`
+        : 'Mesociclo eliminado.'
+    )
+    await navigateTo('/mesocycles')
+  } catch (err: any) {
+    toast.error(err?.data?.message ?? 'No se pudo eliminar el mesociclo.')
+    deleting.value = false
   }
 }
 

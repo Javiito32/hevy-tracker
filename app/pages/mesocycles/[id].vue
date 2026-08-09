@@ -68,7 +68,7 @@
       </div>
 
       <!-- Edit modal -->
-      <div v-if="showEditModal" class="fixed inset-0 bg-bg/80 backdrop-blur-sm z-[90] flex items-center justify-center p-4" .self="showEditModal = false">
+      <div v-if="showEditModal" class="fixed inset-0 bg-bg/80 backdrop-blur-sm z-[90] flex items-center justify-center p-4" @click.self="showEditModal = false">
         <div class="bg-surface border border-line-strong rounded-card w-full max-w-lg max-h-[90vh] overflow-y-auto p-6">
           <h2 class="text-lg font-bold text-ink mb-5">Editar mesociclo</h2>
           <form @submit.prevent="saveMesocycle" class="space-y-4">
@@ -439,6 +439,8 @@ const saveMesocycle = async () => {
     })
     await refresh()
     showEditModal.value = false
+  } catch (err: any) {
+    toast.error(err?.data?.message ?? 'No se pudieron guardar los cambios.')
   } finally {
     savingEdit.value = false
   }

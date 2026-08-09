@@ -293,22 +293,58 @@ const rowsQuery = computed(() => ({
     : {})
 }))
 
-// `immediate: false` waits for a table name — the first render has none, and a
-// request with `table=` is a 400. The watch on `rowsQuery` fires as soon as the
-// schema lands and a table is selected, and on every control change after that.
-const { data: rowsData, pending: rowsPending, error: rowsError } = useFetch<RowsResponse>(
-  '/api/admin/db/rows',
-  { query: rowsQuery, immediate: false, watch: [rowsQuery] }
-)
+/**
+ * Loaded with `$fetch` rather than `useFetch`, deliberately.
+ *
+ * The grid can't fetch until a table name exists, and `useFetch(…, { immediate:
+ * false, watch: [rowsQuery] })` only ever fires on a *change*: when the schema
+ * arrives in the hydration payload the table is picked during setup, before the
+ * fetch is even created, so nothing changes afterwards and the grid sat at
+ * "Sin filas" forever. Sorting, filtering and paging are client-side
+ * interactions anyway — there is nothing here to render on the server.
+ *
+ * `rowsPending` starts true so "not loaded yet" and "this table is empty" can
+ * never look the same, which is what made the bug invisible.
+ */
+const rowsData = ref<RowsResponse | null>(null)
+const rowsPending = ref(true)
+const rowsError = ref<string | null>(null)
+
+/** Guards against out-of-order responses: clicking two tables quickly must not
+ *  paint the first one's rows over the second's. */
+let requestSeq = 0
+
+const loadRows = async () => {
+  // Nothing to render on the server: the result would be thrown away at
+  // hydration, where the immediate watch below runs again with the table
+  // already picked from the payload.
+  if (!import.meta.client || !table.value) return
+  const seq = ++requestSeq
+  rowsPending.value = true
+  rowsError.value = null
+  try {
+    const res = await $fetch<RowsResponse>('/api/admin/db/rows', { query: rowsQuery.value })
+    if (seq !== requestSeq) return
+    rowsData.value = res
+  } catch (err: any) {
+    if (seq !== requestSeq) return
+    rowsData.value = null
+    rowsError.value = err?.data?.message ?? 'No se pudieron cargar las filas.'
+  } finally {
+    if (seq === requestSeq) rowsPending.value = false
+  }
+}
+
+// Immediate: the table may already be selected by the time this runs (schema
+// from the payload), in which case there is no later change to wait for.
+watch(rowsQuery, loadRows, { immediate: true })
 
 const rows = computed(() => rowsData.value?.rows ?? [])
 const fields = computed(() => rowsData.value?.fields ?? currentTable.value?.fields ?? [])
 const total = computed(() => rowsData.value?.total ?? 0)
 const truncated = computed(() => rowsData.value?.truncated ?? [])
 
-const rowsErrorMessage = computed(
-  () => (rowsError.value as any)?.data?.message ?? 'No se pudieron cargar las filas.'
-)
+const rowsErrorMessage = computed(() => rowsError.value ?? 'No se pudieron cargar las filas.')
 
 const firstRowIndex = computed(() => (page.value - 1) * pageSize.value + 1)
 const lastRowIndex = computed(() => Math.min(page.value * pageSize.value, total.value))

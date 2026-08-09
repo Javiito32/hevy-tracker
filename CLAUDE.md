@@ -254,6 +254,7 @@ Read-only browsing of every table, in place of running `prisma studio` beside th
 - Text over `CELL_MAX_CHARS = 200` is cut for the grid and the affected fields reported in `truncated`, so the UI knows where to offer the row detail. One `Workout.raw_data` is tens of KB of JSON; fifty of them is a multi-megabyte response for a table nobody can read. The dialog re-fetches the row with `full=1` rather than reconstructing it.
 - `pageSize` is validated against `PAGE_SIZES`, never a free-form number — an arbitrary `take` is a trivial DoS against the panel itself.
 - No `mode: 'insensitive'` on `contains`: Prisma's SQLite connector doesn't support it, and `LIKE` is already case-insensitive for ASCII.
+- The grid loads with **`$fetch` in an immediate watcher**, not `useFetch`. It can't query until a table name exists, and `useFetch(…, { immediate: false, watch: [query] })` only fires on a *change* — when the schema arrives in the hydration payload the table is picked during setup, before the fetch exists, so nothing ever changes and the grid stays empty. Its `pending` also starts `true`, so "not loaded yet" and "this table is empty" never render alike; that is what hid the bug. A request-sequence guard drops out-of-order responses.
 
 #### The trend chart
 

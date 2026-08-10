@@ -107,9 +107,16 @@ async function main() {
     check('ninguno descartado', rebuild.skipped === 0)
     check('detecta el ejercicio sin plantilla', rebuild.unlinked_exercises === 1, `→ ${rebuild.unlinked_exercises}`)
 
+    // The rebuild is also the offline route to relearning the athlete's own
+    // name for each template — the link it writes is what the name is read from.
+    check('aprende los nombres de los ejercicios', rebuild.exercise_names_updated >= 1,
+      JSON.stringify(rebuild))
+
     const rebuild2 = await runRebuildExercises(ctx as any, user.id)
     check('reejecutable sin duplicar', rebuild2.rebuilt === WEEKS &&
       await prisma.workoutExercise.count({ where: { user_id: user.id } }) === WEEKS * 2 + 1)
+    check('y no reescribe los nombres ya aprendidos', rebuild2.exercise_names_updated === 0,
+      `→ ${rebuild2.exercise_names_updated}`)
 
     console.log('\n── Migración 5: ejercicios sin clasificar ──')
     const unclassified = await findUnclassifiedExercises(user.id)
@@ -187,6 +194,7 @@ async function main() {
     await prisma.personalRecord.deleteMany({ where: { user_id: user.id } })
     await prisma.trainingAlert.deleteMany({ where: { user_id: user.id } })
     await prisma.exerciseMuscleOverride.deleteMany({ where: { user_id: user.id } })
+    await prisma.exerciseTemplateAlias.deleteMany({ where: { user_id: user.id } })
     await prisma.workout.deleteMany({ where: { user_id: user.id } })
     await prisma.exerciseTemplate.deleteMany({ where: { id: { in: ['SM_BENCH', 'SM_SQUAT'] } } })
     await prisma.user.delete({ where: { id: user.id } })

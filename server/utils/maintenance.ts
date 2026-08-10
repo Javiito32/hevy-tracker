@@ -2,6 +2,8 @@ import { prisma } from './prisma'
 import { fetchHevyExerciseTemplates } from './hevy-client'
 import { buildWorkoutMetrics, metricsFromStoredSummary } from './workout-metrics'
 import { writeWorkoutExercises } from './exercise-store'
+import { refreshTemplateAliases } from './exercise-aliases'
+import { relabelPlannedExercises } from './plan-service'
 import { rebuildPersonalRecords } from './personal-records'
 import { runDetectors } from './plateau-detector'
 import { syncUserData } from './sync-user'
@@ -231,7 +233,28 @@ export async function runRebuildExercises(ctx: JobContext, userId: string) {
     where: { user_id: userId, exercise_template_id: null }
   })
 
-  return { rebuilt, from_summary: fromSummary, skipped, unlinked_exercises: unlinked }
+  // The links are what the aliases are read from, so relearn the athlete's name
+  // for each template in the same pass, and carry it into any plan still naming
+  // the exercise in Hevy's catalogue English. This is the offline route to
+  // correcting an existing database — no API call, and re-runnable: relabelling
+  // stops at the first pass where every stored name already agrees.
+  //
+  // It is the one thing here that writes outside the derived tables. The names
+  // are display text on rows the template id already identifies, so no
+  // prescription changes, and `split_description` is re-rendered by the same
+  // function `savePlan` uses rather than patched separately.
+  const aliases = await refreshTemplateAliases(userId)
+  const relabelled = await relabelPlannedExercises(userId)
+
+  return {
+    rebuilt,
+    from_summary: fromSummary,
+    skipped,
+    unlinked_exercises: unlinked,
+    exercise_names_learned: aliases.templates,
+    exercise_names_updated: aliases.written,
+    plan_exercises_relabelled: relabelled.exercises
+  }
 }
 
 // ── Migration 3: recalculate metrics ────────────────────────────────────────

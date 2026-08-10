@@ -2,6 +2,8 @@ import { prisma } from './prisma'
 import { fetchHevyWorkouts, fetchHevyWorkoutEvents, fetchHevyBodyMeasurements } from './hevy-client'
 import { buildWorkoutMetrics } from './workout-metrics'
 import { writeWorkoutExercises } from './exercise-store'
+import { refreshTemplateAliases } from './exercise-aliases'
+import { relabelPlannedExercises } from './plan-service'
 import { detectPersonalRecords } from './personal-records'
 import { runDetectors } from './plateau-detector'
 
@@ -231,6 +233,19 @@ export async function syncUserData(
     } catch (err) {
       console.error(`Error detectando récords en workout ${workoutId}:`, err)
     }
+  }
+
+  // Learn the athlete's own name for each catalogue exercise from what was just
+  // imported. Before the detectors, since it is what makes a plan and a session
+  // refer to the same movement by the same name, and failing it must not cost
+  // the sync any more than a failing detector does.
+  try {
+    await refreshTemplateAliases(userId)
+    // And carry the names already stored in a plan along with them, so an
+    // existing block stops describing itself in Hevy's catalogue English.
+    await relabelPlannedExercises(userId)
+  } catch (err) {
+    console.error(`Error actualizando nombres de ejercicios para ${userId}:`, err)
   }
 
   await onProgress?.('Analizando estancamiento y fatiga')

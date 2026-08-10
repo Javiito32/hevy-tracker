@@ -70,7 +70,7 @@ export default defineEventHandler(async (event) => {
     for (const e of session.exercises) {
       const targetReps = e.rep_max ?? e.rep_min ?? 8
       const rir = weekPlan?.target_rir ?? e.target_rir ?? null
-      const suggestion = await suggestLoad(userId, e.name, targetReps, rir)
+      const suggestion = await suggestLoad(userId, e.name, targetReps, rir, e.exercise_template_id)
 
       const setCount = weekPlan?.volume_multiplier
         ? Math.max(1, Math.round(e.target_sets * weekPlan.volume_multiplier))

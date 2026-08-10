@@ -5,10 +5,11 @@
  *   DATABASE_URL="file:./prisma/dev.db" npx tsx scripts/smoke-plan.mts
  */
 import { PrismaClient } from '@prisma/client'
-import { savePlan, loadPlan, getNextSession, getAdherence, suggestLoad, renderSplitDescription } from '../server/utils/plan-service'
+import { savePlan, loadPlan, getNextSession, getAdherence, suggestLoad, renderSplitDescription, relabelPlannedExercises } from '../server/utils/plan-service'
 import { searchExerciseTemplates } from '../server/utils/exercise-search'
 import { buildWorkoutMetrics } from '../server/utils/workout-metrics'
 import { writeWorkoutExercises } from '../server/utils/exercise-store'
+import { refreshTemplateAliases } from '../server/utils/exercise-aliases'
 
 const prisma = new PrismaClient()
 let failures = 0
@@ -201,6 +202,122 @@ async function main() {
     check('renombrar una sesión suelta el enlace', renamed.sessions[0].hevy_routine_id === null,
       `→ ${renamed.sessions[0].hevy_routine_id}`)
 
+    console.log('\n── El plan y la sesión, en dos idiomas ──')
+    // The case every check above missed, because they log the workout under the
+    // very title the catalogue gave the plan. Hevy does not: `GET
+    // /v1/exercise_templates` answers in English whatever language the app is
+    // set to, while the workout it returns carries the title as it was logged.
+    // So a default exercise arrives under two names, and pairing plan with
+    // session *by name* found nothing but custom exercises — the ones the
+    // athlete named themselves, once, in their own language.
+    const rawEs = {
+      id: 'sp-2', title: 'Tirón',
+      start_time: new Date(Date.now() - 2 * 86400000).toISOString(),
+      end_time: new Date(Date.now() - 2 * 86400000).toISOString(),
+      exercises: [{
+        title: 'Remo con barra (Barra)', exercise_template_id: 'SP_ROW',
+        sets: [
+          { type: 'warmup', weight_kg: 40, reps: 10, rpe: null },
+          { type: 'normal', weight_kg: 80, reps: 10, rpe: 8 },
+          { type: 'normal', weight_kg: 80, reps: 9, rpe: 9 }
+        ]
+      }]
+    }
+    const mEs = buildWorkoutMetrics(rawEs)
+    const wEs = await prisma.workout.create({
+      data: {
+        user_id: user.id, hevy_id: rawEs.id, name: rawEs.title, mesocycle_id: meso.id,
+        date: new Date(rawEs.start_time), total_volume: mEs.totalVolume, total_tonnage: mEs.totalTonnage,
+        rpe_avg: mEs.rpeAvg, exercises_summary: JSON.stringify(mEs.summary), raw_data: JSON.stringify(rawEs)
+      }
+    })
+    await writeWorkoutExercises(wEs.id, user.id, wEs.date, mEs.summary)
+
+    const learned = await refreshTemplateAliases(user.id)
+    check('aprende el nombre del ejercicio del historial', learned.written >= 1, JSON.stringify(learned))
+    const alias = await prisma.exerciseTemplateAlias.findFirst({
+      where: { user_id: user.id, exercise_template_id: 'SP_ROW' }
+    })
+    check('guarda el título en el idioma del atleta',
+      alias?.title === 'Remo con barra (Barra)', `→ ${alias?.title}`)
+
+    // Saved exactly as the picker used to store it: the English catalogue title.
+    await savePlan(meso.id, user.id, [{
+      name: 'Tirón', day_of_week: null,
+      exercises: [{
+        exercise_template_id: 'SP_ROW', name: 'Barbell Row',
+        target_sets: 4, rep_min: 8, rep_max: 10, target_rir: 2
+      }]
+    }], [{ week_number: 3, target_rir: 2, volume_multiplier: 1 }])
+
+    const bilingual = await loadPlan(meso.id, user.id)
+    check('el plan se lee en el idioma del atleta',
+      bilingual.sessions[0].exercises[0].name === 'Remo con barra (Barra)',
+      `→ ${bilingual.sessions[0].exercises[0].name}`)
+    const storedEs = await prisma.plannedExercise.findFirst({
+      where: { exercise_template_id: 'SP_ROW' }, select: { name: true }
+    })
+    check('y se guarda así, no solo al leerlo', storedEs?.name === 'Remo con barra (Barra)', `→ ${storedEs?.name}`)
+    const splitEs = await prisma.mesocycle.findUnique({ where: { id: meso.id }, select: { split_description: true } })
+    check('la prosa derivada hereda el nombre',
+      (splitEs?.split_description ?? '').includes('Remo con barra'), splitEs?.split_description ?? '')
+
+    // A plan written before the alias existed keeps the English name in the row
+    // and in the prose derived from it. Both are what `relabelPlannedExercises`
+    // catches up on the next sync, without the athlete re-saving anything.
+    await prisma.plannedExercise.updateMany({
+      where: { exercise_template_id: 'SP_ROW' }, data: { name: 'Barbell Row' }
+    })
+    await prisma.mesocycle.update({
+      where: { id: meso.id }, data: { split_description: 'Tirón\n  · Barbell Row — 4×8-10 @2 RIR' }
+    })
+    const relabelled = await relabelPlannedExercises(user.id)
+    check('renombra el plan ya guardado', relabelled.exercises === 1, JSON.stringify(relabelled))
+    const afterRelabel = await prisma.mesocycle.findUnique({
+      where: { id: meso.id }, select: { split_description: true }
+    })
+    check('y vuelve a derivar la prosa',
+      (afterRelabel?.split_description ?? '').includes('Remo con barra'), afterRelabel?.split_description ?? '')
+    check('una segunda pasada no toca nada',
+      (await relabelPlannedExercises(user.id)).exercises === 0)
+
+    const adhEs = await getAdherence(user.id, meso.id)
+    // 2 working sets logged; the warm-up is not work. Prescribed 4×3 semanas.
+    check('cuenta las series aunque los nombres no coincidan',
+      adhEs.has_plan && adhEs.rows[0].actual_sets === 2,
+      `→ ${adhEs.has_plan ? adhEs.rows[0].actual_sets : '-'}`)
+    check('y no marca como no entrenado lo que sí se entrenó',
+      adhEs.has_plan && (adhEs.rows[0].adherence_pct ?? 0) > 0)
+
+    const loadEs = await suggestLoad(user.id, 'Barbell Row', 10, 2, 'SP_ROW')
+    check('sugiere carga desde un historial con otro nombre',
+      loadEs.weight_kg !== null, `→ ${loadEs.weight_kg}`)
+    check('cita la sesión en español', loadEs.last_performance?.weight_kg === 80)
+    // Pinning what the id buys: on the name alone there is nothing to find.
+    check('sin el id no habría historial que encontrar',
+      (await suggestLoad(user.id, 'Barbell Row', 10, 2)).weight_kg === null)
+
+    // A session logged before its template linked carries no id at all, and the
+    // name is the only thing left identifying it. Passing an id must not hide it.
+    await prisma.workoutExercise.updateMany({
+      where: { user_id: user.id, exercise_template_id: 'SP_ROW' },
+      data: { exercise_template_id: null }
+    })
+    const viaName = await suggestLoad(user.id, 'Remo con barra (Barra)', 10, 2, 'SP_ROW')
+    check('sin enlace, el nombre recupera el historial', viaName.weight_kg !== null, `→ ${viaName.weight_kg}`)
+    await prisma.workoutExercise.updateMany({
+      where: { user_id: user.id, name: 'Remo con barra (Barra)' },
+      data: { exercise_template_id: 'SP_ROW' }
+    })
+
+    const searchEs = await searchExerciseTemplates(user.id, { query: 'Remo' })
+    check('el buscador encuentra por el nombre en español',
+      searchEs.results.some(r => r.id === 'SP_ROW'), JSON.stringify(searchEs.results.map(r => r.title)))
+    check('y devuelve el título que verá el atleta',
+      searchEs.results.find(r => r.id === 'SP_ROW')?.title === 'Remo con barra (Barra)')
+    check('el nombre en inglés del catálogo sigue encontrándolo',
+      (await searchExerciseTemplates(user.id, { query: 'Barbell Row' })).results.some(r => r.id === 'SP_ROW'))
+
     console.log('\n── Eliminar el mesociclo ──')
     const delMeso = await prisma.mesocycle.create({
       data: { user_id: user.id, name: 'A borrar', start_date: new Date(), status: 'paused' }
@@ -255,6 +372,7 @@ async function main() {
     await prisma.plannedSession.deleteMany({ where: { mesocycle: { user_id: user.id } } })
     await prisma.mesocycleWeek.deleteMany({ where: { mesocycle: { user_id: user.id } } })
     await prisma.mesocycle.deleteMany({ where: { user_id: user.id } })
+    await prisma.exerciseTemplateAlias.deleteMany({ where: { user_id: user.id } })
     await prisma.exerciseTemplate.deleteMany({ where: { id: { in: ['SP_BENCH', 'SP_ROW'] } } })
     await prisma.user.delete({ where: { id: user.id } })
     await prisma.$disconnect()

@@ -238,6 +238,30 @@ model ExerciseTemplate {
   @@index([title])
 }
 
+/// The title Hevy's app shows *this* athlete for a catalogue template.
+///
+/// `GET /v1/exercise_templates` answers in English whatever language the app is
+/// set to, but the workouts the same API returns carry the title as it was
+/// logged — Spanish, here. The same movement therefore arrives under two names:
+/// "Bench Press (Barbell)" in a plan built from the catalogue, "Press de banca
+/// (Barra)" in the session that performed it.
+///
+/// Per user, not a column on ExerciseTemplate, because a non-custom template is
+/// one global row: writing the localised title onto it would rename the
+/// exercise for every other athlete in whatever language synced last.
+model ExerciseTemplateAlias {
+  id                   String   @id @default(uuid())
+  user_id              String
+  exercise_template_id String
+  /// Learned from the athlete's own history, where Hevy reports both the
+  /// template id and the localised title on every logged exercise.
+  title                String
+  updated_at           DateTime @updatedAt
+
+  @@unique([user_id, exercise_template_id])
+  @@index([user_id, title])
+}
+
 /// Manual muscle-group assignment for exercises the catalogue can't resolve —
 /// a custom exercise deleted in Hevy, or a workout logged before the template
 /// existed. Matched by exercise name because that is all such rows have left.

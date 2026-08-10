@@ -1,5 +1,6 @@
 import { prisma } from './prisma'
 import { calcE1RMWithRPE } from './volume-calculator'
+import { loadTemplateTitles, normalizeExerciseName, resolveTitle } from './exercise-aliases'
 
 /**
  * The structured training plan.
@@ -101,6 +102,14 @@ export async function savePlan(
       })).map(t => t.id))
     : new Set<string>()
 
+  // A linked exercise is named by the catalogue, never by the caller: the plan
+  // editor only ever adds exercises from the picker and the generator only from
+  // its search, so there is no hand-typed name to preserve — and letting an
+  // English title through here is what put the plan and the session log into
+  // two different languages. Unlinked rows keep whatever name they arrived with,
+  // since nothing else identifies them.
+  const aliases = await loadTemplateTitles(userId, proposedIds)
+
   const unmatched: string[] = []
 
   // The replace destroys the rows that carry `hevy_routine_id`, so the link to
@@ -142,7 +151,7 @@ export async function savePlan(
             exerciseCount++
             return {
               exercise_template_id: linked ? e.exercise_template_id : null,
-              name: e.name,
+              name: linked ? resolveTitle(aliases, e.exercise_template_id, e.name) : e.name,
               order_index: i,
               target_sets: e.target_sets ?? 3,
               rep_min: e.rep_min ?? null,
@@ -198,6 +207,24 @@ export async function loadPlan(mesocycleId: string, userId: string) {
   })
   if (!mesocycle) throw createError({ statusCode: 404, message: 'Mesociclo no encontrado' })
 
+  // The displayed name is resolved on read, not trusted from the row. Plans
+  // written before the catalogue spoke the athlete's language stored the
+  // English title, and a plan is read far more often than it is saved — fixing
+  // it here means an existing block reads correctly without being re-saved,
+  // while `savePlan` keeps the stored copy in step for anything reading the
+  // table directly.
+  const aliases = await loadTemplateTitles(
+    userId,
+    mesocycle.planned_sessions.flatMap(s => s.exercises.map(e => e.exercise_template_id))
+  )
+  const sessions = mesocycle.planned_sessions.map(s => ({
+    ...s,
+    exercises: s.exercises.map(e => ({
+      ...e,
+      name: resolveTitle(aliases, e.exercise_template_id, e.name)
+    }))
+  }))
+
   return {
     mesocycle_id: mesocycle.id,
     name: mesocycle.name,
@@ -205,9 +232,63 @@ export async function loadPlan(mesocycleId: string, userId: string) {
     end_date: mesocycle.end_date,
     hevy_folder_id: mesocycle.hevy_folder_id,
     weeks: mesocycle.planned_weeks,
-    sessions: mesocycle.planned_sessions,
-    has_plan: mesocycle.planned_sessions.length > 0
+    sessions,
+    has_plan: sessions.length > 0
   }
+}
+
+/**
+ * Rewrites stored plan names into the athlete's language.
+ *
+ * `loadPlan` already resolves the name on the way out, so this is not what
+ * makes the plan *read* correctly — it is what makes `split_description`
+ * correct, and that column is prose shown on the mesocycle page and fed to
+ * every prompt in ai-prompts.ts. Deriving it is `savePlan`'s job; re-deriving
+ * it here goes through the same `renderSplitDescription` so the two cannot
+ * disagree.
+ *
+ * Only rows whose stored name already disagrees with the athlete's are
+ * touched, and only mesocycles that actually changed are re-rendered, so a
+ * second run does nothing — which is what makes it safe to call after every
+ * sync. A mesocycle with no structured plan is never touched: its
+ * `split_description` is hand-written prose that nothing here derives.
+ */
+export async function relabelPlannedExercises(
+  userId: string
+): Promise<{ exercises: number; mesocycles: number }> {
+  const rows = await prisma.plannedExercise.findMany({
+    where: {
+      exercise_template_id: { not: null },
+      planned_session: { mesocycle: { user_id: userId } }
+    },
+    select: {
+      id: true, name: true, exercise_template_id: true,
+      planned_session: { select: { mesocycle_id: true } }
+    }
+  })
+  if (rows.length === 0) return { exercises: 0, mesocycles: 0 }
+
+  const aliases = await loadTemplateTitles(userId, rows.map(r => r.exercise_template_id))
+  const touched = new Set<string>()
+  let renamed = 0
+
+  for (const row of rows) {
+    const title = row.exercise_template_id ? aliases.get(row.exercise_template_id) : undefined
+    if (!title || title === row.name) continue
+    await prisma.plannedExercise.update({ where: { id: row.id }, data: { name: title } })
+    touched.add(row.planned_session.mesocycle_id)
+    renamed++
+  }
+
+  for (const mesocycleId of touched) {
+    const plan = await loadPlan(mesocycleId, userId)
+    await prisma.mesocycle.update({
+      where: { id: mesocycleId },
+      data: { split_description: renderSplitDescription(plan.sessions) }
+    })
+  }
+
+  return { exercises: renamed, mesocycles: touched.size }
 }
 
 /** 1-based week of the block on a given date. */
@@ -235,21 +316,42 @@ export async function suggestLoad(
   userId: string,
   exerciseName: string,
   targetReps: number,
-  targetRir: number | null
+  targetRir: number | null,
+  templateId: string | null = null
 ): Promise<SuggestedLoad> {
-  const last = await prisma.workoutExercise.findFirst({
-    where: { user_id: userId, name: exerciseName },
-    orderBy: { date: 'desc' },
-    select: {
-      date: true, best_e1rm: true, top_set_weight: true, top_set_reps: true,
-      sets: {
-        where: { set_type: { not: 'warmup' } },
-        orderBy: { weight_kg: 'desc' },
-        take: 1,
-        select: { weight_kg: true, reps: true, rpe: true }
-      }
+  const select = {
+    date: true, best_e1rm: true, top_set_weight: true, top_set_reps: true,
+    sets: {
+      where: { set_type: { not: 'warmup' } },
+      orderBy: { weight_kg: 'desc' as const },
+      take: 1,
+      select: { weight_kg: true, reps: true, rpe: true }
     }
-  })
+  }
+
+  // Template id first. Keyed on the name alone, a default exercise never
+  // matched its own history — the plan asks for "Bench Press (Barbell)" and the
+  // log holds "Press de banca (Barra)" — so every non-custom lift reported "sin
+  // historial" and offered no load.
+  let last = templateId
+    ? await prisma.workoutExercise.findFirst({
+        where: { user_id: userId, exercise_template_id: templateId },
+        orderBy: { date: 'desc' },
+        select
+      })
+    : null
+
+  // Falling back rather than OR-ing the two: sessions logged before the
+  // template linked carry no id at all, and those are found by name. Kept as a
+  // second query so a name shared by two different exercises can never outrank
+  // the one the id actually identifies.
+  if (!last) {
+    last = await prisma.workoutExercise.findFirst({
+      where: { user_id: userId, name: exerciseName },
+      orderBy: { date: 'desc' },
+      select
+    })
+  }
 
   if (!last?.sets.length || !last.sets[0].weight_kg) {
     return {
@@ -334,7 +436,7 @@ export async function getNextSession(userId: string, mesocycleId: string) {
       // The week's RIR overrides the exercise's: a deload week is defined by
       // backing everything off, not by exceptions per movement.
       const rir = weekPlan?.target_rir ?? e.target_rir ?? null
-      const suggestion = await suggestLoad(userId, e.name, targetReps, rir)
+      const suggestion = await suggestLoad(userId, e.name, targetReps, rir, e.exercise_template_id)
       return {
         ...e,
         target_sets: weekPlan?.volume_multiplier
@@ -368,20 +470,41 @@ export async function getAdherence(userId: string, mesocycleId: string) {
 
   const weeksElapsed = Math.max(1, weekNumberFor(plan.start_date, new Date()))
 
+  // Grouped by template id *and* name so both keys are available below. Matching
+  // on the name alone is what this used to do, and it only ever worked for
+  // custom exercises: Hevy's catalogue names a default exercise in English while
+  // the session that performed it is logged in the athlete's language, so every
+  // non-custom lift scored 0% no matter how faithfully it was trained.
   const performed = await prisma.workoutExercise.groupBy({
-    by: ['name'],
+    by: ['exercise_template_id', 'name'],
     where: { user_id: userId, workout: { mesocycle_id: mesocycleId } },
     _sum: { working_sets: true },
     _count: { _all: true }
   })
-  const performedByName = new Map(performed.map(p => [
-    p.name.toLowerCase(),
-    { sets: p._sum.working_sets ?? 0, sessions: p._count._all }
-  ]))
+
+  const byTemplate = new Map<string, { sets: number; sessions: number }>()
+  const byName = new Map<string, { sets: number; sessions: number }>()
+  for (const p of performed) {
+    const done = { sets: p._sum.working_sets ?? 0, sessions: p._count._all }
+    // The same template can appear under more than one name — a rename mid-block,
+    // or a workout logged before the template linked — so accumulate, don't set.
+    const add = (map: Map<string, { sets: number; sessions: number }>, key: string) => {
+      const prev = map.get(key)
+      map.set(key, prev
+        ? { sets: prev.sets + done.sets, sessions: prev.sessions + done.sessions }
+        : { ...done })
+    }
+    if (p.exercise_template_id) add(byTemplate, p.exercise_template_id)
+    add(byName, normalizeExerciseName(p.name))
+  }
 
   const rows = plan.sessions.flatMap(s =>
     s.exercises.map(e => {
-      const done = performedByName.get(e.name.toLowerCase())
+      // Template id first: it is the same string in every language and survives
+      // a rename. The name is the fallback for an exercise the catalogue never
+      // resolved, on either side.
+      const done = (e.exercise_template_id ? byTemplate.get(e.exercise_template_id) : undefined)
+        ?? byName.get(normalizeExerciseName(e.name))
       const plannedSets = e.target_sets * weeksElapsed
       const actualSets = done?.sets ?? 0
       return {

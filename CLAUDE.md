@@ -43,7 +43,7 @@ server/
                    AI:        ai-provider, ai-service, ai-chat, ai-prompts, ai-context,
                               ai-payload, ai-tools, ai-config, ai-usage, conversations
                    Training:  volume-calculator, workout-metrics, exercise-store,
-                              exercise-search, muscle-groups, muscle-volume,
+                              exercise-search, exercise-aliases, muscle-groups, muscle-volume,
                               plateau-detector, personal-records, plan-service
                    Infra:     prisma, hevy-client, sync-user, maintenance
                    Nutrition: openfoodfacts-client, nutrition-calculator, diet-service, food-input
@@ -90,6 +90,19 @@ The sync runs as a **background job**, not inline: `POST /api/sync` returns a `j
 Every aggregate reads these tables; `exercises_summary` survives only as the immutable display snapshot (the same split as `DietItem.nutrients_snapshot`). `user_id` and `date` are denormalised onto `WorkoutExercise` so muscle-group and date-range aggregates never join through `Workout`.
 
 Written by `writeWorkoutExercises()` in `server/utils/exercise-store.ts`, which **replaces rather than merges** — a workout edited in Hevy can lose an exercise, and merging would strand it forever. Template linking is a separate best-effort pass (`linkTemplates`), because Hevy reports ids the local catalogue may not have yet and a dangling FK would fail the whole insert.
+
+#### Exercise names — `server/utils/exercise-aliases.ts`
+
+**Hevy answers the catalogue in English and the workouts in the athlete's language.** `GET /v1/exercise_templates` returns "Bench Press (Barbell)" whatever the app is set to, while the workout that performed it is logged as "Press de banca (Barra)". The same movement therefore arrives under two names, and there is no locale parameter to ask the catalogue for.
+
+**So nothing matches exercises by name.** Matching goes through `exercise_template_id`, which is the same string in every language and survives a rename. Name matching only ever worked for **custom** exercises — the ones the athlete named themselves, once, in their own language — which is exactly what made the bug look like "custom exercises work and default ones don't". `getAdherence` scored every non-custom lift 0 %, and `suggestLoad` reported "sin historial" for lifts with years of it.
+
+`ExerciseTemplateAlias` recovers the translation from the athlete's own history, where every logged exercise carries both the template id and the localised title. **Per user, not a column on `ExerciseTemplate`**: a non-custom template is one global row, so writing the localised title onto it would rename the exercise for everybody else in whatever language synced last.
+
+- `refreshTemplateAliases(userId)` — one grouped query over the whole history; the **most recently logged** title wins, so a rename in Hevy propagates instead of being outvoted by years of the old name. Writes only what changed, so it is a no-op once converged.
+- Runs after every sync **and** at the end of `rebuild_exercises` — the offline route to correcting an existing database, no API call needed.
+- `searchExerciseTemplates` searches the English title **and** the alias, and returns the alias. Both, because neither is complete: the alias only exists for movements already performed, and the catalogue is the only name a brand-new one has. Before this, "press banca" matched nothing and the picker copied the English title straight into the plan.
+- **An exercise never performed has no alias and nothing to invent one from**, so `resolveTitle` falls back to the catalogue title rather than returning null. That is the one place English can still surface, and it resolves itself the first time the exercise is logged.
 
 #### Muscle groups — `server/utils/muscle-groups.ts` + `muscle-volume.ts`
 
@@ -297,6 +310,9 @@ Stored, not derived: deriving "best ever" per page load rescans the history and 
 - `suggestLoad()` anchors to what the athlete **last actually did**, via an e1RM, not to a percentage of an untested 1RM. It returns `null` with a stated reason when there's no history — an invented starting weight in a barbell app is how people get hurt. Rounded to 2.5 kg, the smallest increment most gyms can load.
 - A week's `target_rir` and `volume_multiplier` **override** the exercise's: a deload is defined by backing everything off, not by per-movement exceptions.
 - `getAdherence()` counts *sets performed vs prescribed*, per exercise. The old "sessions this week" counted showing up. Over-performing (≥130%) is scored amber, not green — it's a deviation from the plan.
+- **`getAdherence()` and `suggestLoad()` pair plan with performance by `exercise_template_id`**, name only as the fallback for an exercise the catalogue never resolved on either side. See "Exercise names" — matching by name scored every non-custom lift at zero.
+- **A linked exercise is named by the catalogue, not by the caller.** `savePlan` overwrites `name` with the athlete's title for the template, and `loadPlan` resolves it again on read so an existing block reads correctly without being re-saved. There is no hand-typed name to lose: the plan editor only ever adds exercises from the picker (`PlanEditor.vue`) and the generator only from its search. Exercises with no template id keep whatever name they arrived with — nothing else identifies them.
+- `relabelPlannedExercises()` carries newly learned names into plans already stored, and re-derives `split_description` through the same `renderSplitDescription` `savePlan` uses. Runs after every sync and in `rebuild_exercises`; a second pass does nothing.
 
 `ai-generate` is the **only stateless endpoint with tool calling**: the catalogue is ~400 entries (too many to inline) and an invented `exercise_template_id` yields a plan that looks fine and fails on push, so the model searches via `search_exercise_templates` (`server/utils/exercise-search.ts`). `runAiTask` therefore withholds `jsonMode` until the final turn — a model forced to emit JSON cannot express a tool call — and **sums usage across iterations**, since each round is separately billed.
 
@@ -314,12 +330,12 @@ One `MaintenanceJob` row type serves the sync, the four migrations and AI plan g
 |---|---|---|
 | `exercise_templates` | Hevy | Global. Any user's key reads the same non-custom catalogue. |
 | `ai_generate_plan` | OpenRouter | Mesocycle generation. `reuseRunning: false`; not in the admin `KINDS` allowlist, since it needs request parameters. |
-| `rebuild_exercises` | none | `raw_data` → `WorkoutExercise`/`ExerciseSet` + template links. |
+| `rebuild_exercises` | none | `raw_data` → `WorkoutExercise`/`ExerciseSet` + template links. Then relearns exercise names from those links and relabels stored plans — the one write here outside the derived tables, and the offline way to fix a database whose plans are in catalogue English. |
 | `recalc_metrics` | none | Applies the corrected rules to stored workouts. Reports `volume_delta_kg` — almost always negative, the warm-up tonnage that used to count. |
 | `recalc_records` | none | Must run **after** `recalc_metrics`, or it enshrines the inflated volumes. |
 | `fanout_diet_weekdays` | none | One-off companion to the `diet_weekdays` migration. **The one job that mutates source data, not derived data** — its idempotency is an explicit guard (legacy `totals_json` shape *and* meals on a single day), not purity. |
 
-The offline three derive everything from `raw_data`, which the sync never mutates, so re-running produces the same database — that is what makes them safe to try on real data. `/admin` enforces the dependency order in the UI and confirms before each.
+The offline three derive everything from `raw_data`, which the sync never mutates, so re-running produces the same database — that is what makes them safe to try on real data. `rebuild_exercises` is the one that also writes display names onto plan rows; it stays idempotent because it only touches names that still disagree, and the prose it re-renders goes through `savePlan`'s own function. `/admin` enforces the dependency order in the UI and confirms before each.
 
 ### Smoke tests
 

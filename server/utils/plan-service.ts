@@ -1,4 +1,5 @@
 import { prisma } from './prisma'
+import { weekNumberFor } from './dates'
 import { calcE1RMWithRPE } from './volume-calculator'
 import { loadTemplateTitles, normalizeExerciseName, resolveTitle } from './exercise-aliases'
 
@@ -291,11 +292,13 @@ export async function relabelPlannedExercises(
   return { exercises: renamed, mesocycles: touched.size }
 }
 
-/** 1-based week of the block on a given date. */
-export function weekNumberFor(startDate: Date, on = new Date()): number {
-  const ms = on.getTime() - new Date(startDate).getTime()
-  return Math.max(1, Math.floor(ms / (7 * 86_400_000)) + 1)
-}
+/**
+ * 1-based week of the block on a given date. Defined in `dates.ts` and
+ * re-exported here: the chat prompt and the weekly evaluation each had their own
+ * formula (one `ceil`, one `floor + 1`), so on day 7, 14, 21… of a block the
+ * coach and the evaluation named different weeks.
+ */
+export { weekNumberFor } from './dates'
 
 export interface SuggestedLoad {
   weight_kg: number | null

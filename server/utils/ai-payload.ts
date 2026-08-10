@@ -1,4 +1,5 @@
 import { prisma } from './prisma'
+import { localWeekKey } from './dates'
 import { resolveVersion, serializeDietForAi } from './diet-service'
 import { WEEKDAY_LABELS_ES, isWeekday } from './nutrition-calculator'
 
@@ -142,8 +143,9 @@ export interface NutritionSnapshot {
    */
   micronutrients_partial?: Record<string, string>
   /**
-   * One line per distinct day pattern, identical weekdays grouped. Always
-   * complete — it is `meals` below that is abridged.
+   * One line per distinct day pattern, identical weekdays grouped. **Always
+   * complete** — it is the menu that gets abridged or dropped, never the
+   * numbers, so every task can still judge energy and macros day by day.
    */
   days?: Array<{
     weekdays: string[]
@@ -156,8 +158,11 @@ export interface NutritionSnapshot {
   meals_apply_to?: string[]
   /** True when other days have a different menu that is not in this payload. */
   meals_other_days_omitted?: boolean
+  /** True when no menu at all travelled — `detail: 'macros'`. */
+  meals_omitted?: boolean
   note?: string
-  meals: Array<{
+  /** Absent under `detail: 'macros'`: the numbers above stand on their own. */
+  meals?: Array<{
     name: string
     time_of_day?: string
     foods: Array<{ name: string; quantity_g: number }>
@@ -214,6 +219,12 @@ export interface WeekEvaluationPayload {
     workouts: Omit<Workout, 'exercises'>[]
     total_volume_kg: number
   }>
+  /**
+   * Diary notes from the weeks *before* the one being evaluated. They used to be
+   * merged into `current_week.athlete_notes`, which had the model attributing a
+   * month-old "dormí fatal" to the week it was judging.
+   */
+  earlier_notes?: Array<{ date: string; content: string }>
   previous_evaluations: WeeklyEvaluation[]
   nutrition?: NutritionSnapshot
 }
@@ -309,14 +320,6 @@ export interface NutritionTargetsPayload {
 
 // ── Internal Helpers ───────────────────────────────────────────────────────────
 
-function getWeekStartKey(date: Date): string {
-  const d = new Date(date)
-  const day = d.getDay()
-  d.setDate(d.getDate() - (day === 0 ? 6 : day - 1))
-  d.setHours(0, 0, 0, 0)
-  return d.toISOString().substring(0, 10)
-}
-
 function computeWeeklyWeights(
   metrics: Array<{ date: Date | string; weight: any }>,
   maxWeeks = 5
@@ -324,7 +327,7 @@ function computeWeeklyWeights(
   const byWeek = new Map<string, number[]>()
   for (const m of metrics) {
     if (m.weight == null) continue
-    const key = getWeekStartKey(new Date(m.date))
+    const key = localWeekKey(new Date(m.date))
     if (!byWeek.has(key)) byWeek.set(key, [])
     byWeek.get(key)!.push(Number(m.weight))
   }
@@ -578,7 +581,10 @@ export async function buildLastMesocycleSummaryData(userId: string): Promise<Mes
  * the UI already show, so the AI can never be told a different number than the
  * user is looking at.
  */
-export async function buildNutritionSnapshot(userId: string): Promise<NutritionSnapshot | undefined> {
+export async function buildNutritionSnapshot(
+  userId: string,
+  options: { detail?: 'macros' | 'representative' } = {}
+): Promise<NutritionSnapshot | undefined> {
   const version = await resolveVersion(userId, {})
   if (!version) return undefined
 
@@ -608,14 +614,13 @@ export async function buildNutritionSnapshot(userId: string): Promise<NutritionS
     .sort((a, b) => a - b)
     .map(d => WEEKDAY_LABELS_ES[d].toLowerCase())
 
-  // 'representative' rather than 'full': this snapshot rides in every context
-  // payload, so it carries the macro line of every distinct day but the meals of
-  // only the most common one. The prompts say the per-day detail is a get_diet
-  // call away — without that instruction the model answers about Saturday using
-  // the weekday menu.
+  // Defaults to 'macros': this snapshot rides in every context payload, and the
+  // training-side tasks judge the diet by whether its energy and macros fuel the
+  // week — the food list is a few hundred tokens they never cite. Only the diet
+  // analysis, whose output is "sube este alimento 30 g", asks for the menu.
   const diet = serializeDietForAi(version, {
     weightKg: latestWeight?.weight ?? null,
-    detail: 'representative'
+    detail: options.detail ?? 'macros'
   })
 
   // The tool payload carries a few fields only a tool result needs (its own id,
@@ -705,7 +710,7 @@ export async function buildTrainingLoad(
 
   const byWeek = new Map<string, { volume: number; sessions: number; rpes: number[] }>()
   for (const w of workouts) {
-    const key = getWeekStartKey(new Date(w.date))
+    const key = localWeekKey(new Date(w.date))
     if (!byWeek.has(key)) byWeek.set(key, { volume: 0, sessions: 0, rpes: [] })
     const bucket = byWeek.get(key)!
     bucket.volume += w.total_volume ?? 0

@@ -1,4 +1,5 @@
 import { prisma } from './prisma'
+import { localWeekKey } from './dates'
 import type { ToolDefinition } from './ai-provider'
 import { resolveVersion, serializeDietForAi, getActivePlan, toDateKey } from './diet-service'
 import { NUTRIENT_KEYS, WEEKDAY_LABELS_ES, isWeekday } from './nutrition-calculator'
@@ -351,11 +352,7 @@ const getWeeklyAggregates: ToolFn = async (userId, args) => {
   })
   const byWeek = new Map<string, { volumes: number[]; rpes: number[]; count: number; exercises: Map<string, { sets: number; volume: number }> }>()
   for (const w of workouts) {
-    const d = new Date(w.date)
-    const day = d.getDay()
-    d.setDate(d.getDate() - (day === 0 ? 6 : day - 1))
-    d.setHours(0, 0, 0, 0)
-    const key = d.toISOString().substring(0, 10)
+    const key = localWeekKey(new Date(w.date))
     if (!byWeek.has(key)) byWeek.set(key, { volumes: [], rpes: [], count: 0, exercises: new Map() })
     const bucket = byWeek.get(key)!
     bucket.count++

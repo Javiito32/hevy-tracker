@@ -590,12 +590,18 @@ const macrosOf = (n: any) =>
 export interface DietAiOptions {
   weightKg?: number | null
   /**
-   * 'full' sends every distinct day's meals — for `get_diet`, which the model
-   * called on purpose. 'representative' sends the macro line of every day but
-   * the meals of only the most common one, for the snapshot that rides in every
-   * context payload.
+   * How much of the menu travels with the numbers.
+   *
+   * - `'full'` — every distinct day's meals. For `get_diet`, which the model
+   *   called on purpose, and for the diet analysis, whose whole output is "raise
+   *   this food by 30 g".
+   * - `'representative'` — the macro line of every day plus the meals of the
+   *   most common one.
+   * - `'macros'` — energy and macros only. What a training-side task needs: the
+   *   week evaluation judges whether the intake fuels the load, and the food
+   *   list is several hundred tokens it never reads.
    */
-  detail: 'full' | 'representative'
+  detail: 'full' | 'representative' | 'macros'
 }
 
 /**
@@ -690,7 +696,15 @@ export const serializeDietForAi = (version: any, options: DietAiOptions) => {
       ...macrosOf(s.days.find(d => d.weekday === g.weekdays[0])?.totals)
     })),
 
-    ...(options.detail === 'full'
+    ...(options.detail === 'macros'
+      ? {
+          // No food list at all. Every day's energy and macros are above, in
+          // `days`; the menu behind them is a `get_diet` call away and is not
+          // what a training-side task is judging.
+          meals_omitted: true,
+          note: 'Este payload trae solo energía y macros por día. Para el detalle de comidas y alimentos, consulta la dieta con get_diet.'
+        }
+      : options.detail === 'full'
       ? {
           meals_by_day: groups.map(g => ({
             weekdays: g.weekdays.map(weekdayName),

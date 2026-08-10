@@ -17,7 +17,9 @@ export default defineEventHandler(async (event) => {
 
   const [athlete, nutrition, nutritionHistory, trainingLoad, activeMesocycle] = await Promise.all([
     buildAthleteProfile(userId),
-    buildNutritionSnapshot(userId),
+    // The one task that needs the menu: its recommendations name the meal and
+    // the food to change. Everywhere else the snapshot is macros only.
+    buildNutritionSnapshot(userId, { detail: 'representative' }),
     buildNutritionHistory(userId),
     buildTrainingLoad(userId),
     prisma.mesocycle.findFirst({

@@ -45,7 +45,7 @@ server/
                    Training:  volume-calculator, workout-metrics, exercise-store,
                               exercise-search, exercise-aliases, muscle-groups, muscle-volume,
                               plateau-detector, personal-records, plan-service
-                   Infra:     prisma, hevy-client, sync-user, maintenance
+                   Infra:     prisma, dates, hevy-client, sync-user, maintenance
                    Nutrition: openfoodfacts-client, nutrition-calculator, diet-service, food-input
   plugins/      ← Nitro plugins (cron job)
 prisma/
@@ -60,6 +60,18 @@ The project uses **Nuxt 4** with the `/app` subdirectory convention (`future.com
 Nitro file-based routing: `server/api/workouts/[id].get.ts` → `GET /api/workouts/:id`. The HTTP method is the file suffix (`.get.ts`, `.post.ts`, `.patch.ts`). Dynamic segments use `getRouterParam(event, 'id')`.
 
 All server handlers use `defineEventHandler`. Prisma is accessed via the singleton in `server/utils/prisma.ts` — import from there, not `new PrismaClient()` directly (avoids connection exhaustion in dev).
+
+### Weeks and days — `server/utils/dates.ts`
+
+**Every week in this app runs Monday to Sunday, in local time.** `localDayKey` / `localWeekKey` / `isoWeekday` / `daysLeftInWeek` / `weekNumberFor` live here and nowhere else. Import them; don't rewrite the arithmetic.
+
+There were four copies before, and they disagreed in two ways that reached the model as false data:
+
+- Two keyed a week by moving a `Date` to local midnight and then calling `toISOString()`, which in any positive-offset timezone hands back the **previous** day — a Monday in Madrid labelled itself as the Sunday before it. The bucketing stayed self-consistent, so nothing looked broken; only the label was wrong, and the label is the whole of what a model reads.
+- The chat prompt computed "días que quedan de semana" as `6 - getDay()`, Sunday-first: off by one every day, and Saturday announced itself as the last day of the week.
+- "Current week of the block" existed as `ceil` in the chat prompt and `floor + 1` in the weekly evaluation, so on day 7, 14, 21… of a mesocycle the coach and the evaluation named different weeks.
+
+`ai-usage.ts` re-exports the two bucketing helpers (cost reporting is where they started) and `plan-service.ts` re-exports `weekNumberFor`; both are the same function.
 
 ### Data sync flow
 
@@ -122,7 +134,7 @@ The AI subsystem is **provider-agnostic**. No endpoint imports a vendor SDK dire
 - `server/utils/ai-provider.ts` — neutral `AiProvider` interface (`generate(messages, options)` plus `generateStream(...)` yielding `StreamEvent`s) with neutral `ChatMessage` / `ToolDefinition` / `ToolCall` / `TokenUsage` types, plus an OpenAI-compatible adapter that serves two providers: **`openrouter`** (default — routes to any vendor's model via OpenRouter slugs like `anthropic/claude-sonnet-5`; key: `OPENROUTER_API_KEY`) and **`openai`** (direct; key: `OPENAI_API_KEY`). Swapping vendors/models = changing `AI_PROVIDER`/`AI_MODEL` in `ai-config.ts`.
 - `server/utils/ai-config.ts` — all tunables: `AI_PROVIDER`, `AI_MODEL` (OpenRouter slug when provider is openrouter), `AI_REASONING_EFFORT` (null for models without it), `MAX_TOOL_ITERATIONS`, `CHAT_HISTORY_WINDOW`, `MAX_OUTPUT_TOKENS` per task type.
 - `server/utils/ai-service.ts` — `runAiTask()` shared runner for the stateless endpoints (builds messages, calls the provider, persists usage to `AiConversation`/`AiMessage`) + `aiKeysFromConfig()` helper.
-- `server/utils/ai-prompts.ts` — all stateless system prompts, built from a shared persona + grounding rules + task instructions.
+- `server/utils/ai-prompts.ts` — all stateless system prompts, built from a shared persona + grounding rules + task instructions. Two grounding blocks are opt-in per task: `TRAINING_DATA_GROUNDING` (`buildPrompt(…, { training: true })`) and `NUTRITION_GROUNDING`. **A prompt must carry the block for the data it receives** — the warm-up rule, the "don't recompute `total_volume_kg`" rule and the 12-rep e1RM cap lived only in the chat's tool descriptions, so the stateless endpoints got the same `sets_detail` array with none of the rules for reading it.
 
 `createAiProvider()` throws a 503 when the active provider's API key is missing or unconfigured — endpoints no longer gate individually.
 
@@ -143,7 +155,8 @@ Every provider call reports a `TokenUsage` (`{ inputTokens, outputTokens, totalT
 - Both delegate to `runChatTurn()` in `server/utils/ai-chat.ts`, which owns the tool-call loop, persistence and `updated_at`. Don't duplicate turn logic in an endpoint — the two would drift.
 - Takes `{ message, conversationId }`. Conversation history is loaded **server-side from the DB** (last `CHAT_HISTORY_WINDOW = 8` messages); the client never sends history.
 - `conversationId: null` always **creates a new conversation**. It must never fall back to an existing one — resolving null to the user's oldest conversation is the bug this design replaced.
-- System prompt built by `buildLeanSystemPrompt` in `server/utils/ai-context.ts`: athlete profile + active mesocycle + last 3 workout summaries embedded as formatted text.
+- System prompt built by `buildLeanSystemPrompt` in `server/utils/ai-context.ts`: athlete profile + active mesocycle + last 3 workout summaries + the active diet, embedded as formatted text.
+- **The diet block carries energy and macros only** — the mean of a planned day, today's own figures by name, and one line per distinct day pattern. No food list: the menu is a `get_diet` call, and the prompt says so. It used to inline the meals of the most *frequent* day pattern while announcing them as "las comidas de hoy", so on any day outside that pattern the coach described a menu the athlete wasn't following — and the same instruction forbade the tool call that would have corrected it.
 - Uses tool calling (`server/utils/ai-tools.ts`) so the model fetches additional data on demand. Tool-call loop capped at `MAX_TOOL_ITERATIONS = 5`; on the final iteration `toolChoice: 'none'` forces the model to answer with the data gathered so far.
 - Chat turns persisted to `AiConversation` / `AiMessage`.
 
@@ -192,6 +205,7 @@ Shared builders used by the stateless endpoints:
 - `buildWorkoutData(w, includeExercises)` — maps a DB workout row to a typed `Workout` object. Pass `false` for summary-only (no sets detail).
 - `extractCompoundLiftsData(workouts)` — returns best estimated 1RM per compound exercise across a list of workouts.
 - `buildLastMesocycleSummaryData(userId)` — returns the last completed mesocycle as a structured object for use in plan feedback.
+- `buildNutritionSnapshot(userId, { detail? })` — the active diet. **Defaults to `'macros'`: energy and macros per day, no food list.** The training-side tasks judge a diet by whether it fuels the week, and the menu is a few hundred tokens they never cite; `serializeDietForAi` sets `meals_omitted: true` so the model states the limit instead of inventing a menu. `'representative'` (the meals of the most common day) is passed only by `nutrition/ai-analyze`, whose whole output is "sube este alimento 30 g".
 
 `includeInjuries: true` is only passed in `ai-generate` (injuries are a hard design constraint when building a new block).
 
@@ -275,7 +289,7 @@ Read-only browsing of every table, in place of running `prisma studio` beside th
 
 - Buckets switch from daily to **weekly** past `DAILY_BUCKET_LIMIT = 92` days — a year of daily columns is unreadable.
 - `bucketKeys()` emits **every** bucket in the span including empty ones. A chart that skips quiet days compresses them away and overstates how steady the spend was.
-- Bucketing uses `localDayKey` / `localWeekKey` (**local** components, not `toISOString()`): "which day did this cost land on" is a question about the admin's calendar, and UTC slicing would push evening usage into the next day.
+- Bucketing uses `localDayKey` / `localWeekKey` (**local** components, not `toISOString()`): "which day did this cost land on" is a question about the admin's calendar, and UTC slicing would push evening usage into the next day. Both now live in `server/utils/dates.ts` — see below — and are re-exported here.
 - `series[].color_index` is the model's position in the **all-time alphabetical** model list, not its rank in range. Ranking by cost would repaint every band whenever the date filter changes, and a reader who learned "sonnet is blue" would be misled by the next range they pick.
 - Models past `SERIES_LIMIT = 4` fold into one `Otros` series (colour outside the palette — it isn't an identity). Never generate more hues.
 - Series colours come from the shared palette in `app/utils/series.ts` (`seriesColor(i)` / `SERIES_OTHER`), never from a local hex. Both themes are **selected**, not flipped, and both are validated — run `npm run palette`.

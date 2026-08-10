@@ -271,24 +271,13 @@ export function toUsageRow(
 // ── Time bucketing ────────────────────────────────────────────────────────────
 
 /**
- * `YYYY-MM-DD` in **local** time. Timestamps are stored in UTC, but "which day
- * did this cost land on" is a question about the admin's calendar, so bucketing
- * uses local components — `toISOString().slice(0,10)` would shift evening usage
- * into the next day for any positive-offset timezone.
+ * Bucketing keys are local and Monday-first — "which day did this cost land on"
+ * is a question about the admin's calendar. They now live in `dates.ts` with the
+ * rest of the calendar arithmetic; re-exported here so the admin endpoints keep
+ * importing them from the module that owns cost reporting.
  */
-export function localDayKey(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
-}
-
-/** Monday of the week `date` falls in, as a local day key. */
-export function localWeekKey(date: Date): string {
-  const monday = new Date(date.getFullYear(), date.getMonth(), date.getDate())
-  // getDay(): 0 = Sunday. Shift so Monday starts the week.
-  const offset = (monday.getDay() + 6) % 7
-  monday.setDate(monday.getDate() - offset)
-  return localDayKey(monday)
-}
+import { localDayKey } from './dates'
+export { localDayKey, localWeekKey } from './dates'
 
 /** Beyond this many days a daily series is unreadable, so buckets become weeks. */
 export const DAILY_BUCKET_LIMIT = 92

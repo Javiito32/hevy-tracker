@@ -1,6 +1,7 @@
 import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
 import { buildAthleteProfile, buildWorkoutData, buildNutritionSnapshot, type WeekEvaluationPayload } from '../../../utils/ai-payload'
+import { weekNumberFor } from '../../../utils/dates'
 import { runAiTask, aiKeysFromConfig } from '../../../utils/ai-service'
 import { WEEK_EVALUATION_PROMPT } from '../../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../../utils/ai-config'
@@ -17,8 +18,9 @@ export default defineEventHandler(async (event) => {
 
   const now = new Date()
   const msPerDay = 1000 * 60 * 60 * 24
-  const daysSinceStart = Math.floor((now.getTime() - new Date(mesocycle.start_date).getTime()) / msPerDay)
-  const weekNumber = Math.max(1, Math.floor(daysSinceStart / 7) + 1)
+  // Shared with the chat prompt and the adherence report, which each had their
+  // own formula and disagreed on the boundary days.
+  const weekNumber = weekNumberFor(mesocycle.start_date, now)
 
   const weekStart = new Date(new Date(mesocycle.start_date).getTime() + (weekNumber - 1) * 7 * msPerDay)
   const weekEnd = new Date(weekStart.getTime() + 7 * msPerDay)
@@ -42,6 +44,9 @@ export default defineEventHandler(async (event) => {
       orderBy: { date: 'asc' },
       select: { name: true, date: true, total_volume: true, rpe_avg: true, exercises_summary: true, notes: true }
     }),
+    // Newest four, then re-sorted ascending below: `previous_weeks` reads
+    // oldest-first, and two adjacent lists running in opposite directions is how
+    // a model ends up reporting a trend backwards.
     prisma.mesocycleEvaluation.findMany({
       where: { mesocycle_id: id },
       orderBy: { week_number: 'desc' },
@@ -95,10 +100,15 @@ export default defineEventHandler(async (event) => {
       ...(mesocycle.target_sessions_weekly != null && { sessions_target: mesocycle.target_sessions_weekly }),
       volume_trend: volumeTrend,
       volume_vs_previous_kg: Math.round(thisVol - prevVol),
-      athlete_notes: weekNotes.map((n: any) => ({
-        date: new Date(n.date).toISOString().substring(0, 10),
-        content: n.content
-      }))
+      // Only notes written inside the week being evaluated. The query reaches
+      // four weeks back for context, and all of it used to land here — so a note
+      // from a month ago read as evidence about this week.
+      athlete_notes: weekNotes
+        .filter((n: any) => new Date(n.date) >= weekStart)
+        .map((n: any) => ({
+          date: new Date(n.date).toISOString().substring(0, 10),
+          content: n.content
+        }))
     },
     previous_weeks: prevWindows.map((w, i) => {
       const ww = prevWeeksWorkouts[i] ?? []
@@ -111,11 +121,22 @@ export default defineEventHandler(async (event) => {
         total_volume_kg: Math.round(vol)
       }
     }),
-    previous_evaluations: prevEvaluations.map(e => ({
-      week: e.week_number,
-      ...(e.summary && { summary: e.summary }),
-      ...(e.volume_trend && { volume_trend: e.volume_trend })
-    })),
+    ...(() => {
+      const earlier = weekNotes
+        .filter((n: any) => new Date(n.date) < weekStart)
+        .map((n: any) => ({
+          date: new Date(n.date).toISOString().substring(0, 10),
+          content: n.content
+        }))
+      return earlier.length ? { earlier_notes: earlier } : {}
+    })(),
+    previous_evaluations: [...prevEvaluations]
+      .sort((a, b) => a.week_number - b.week_number)
+      .map(e => ({
+        week: e.week_number,
+        ...(e.summary && { summary: e.summary }),
+        ...(e.volume_trend && { volume_trend: e.volume_trend })
+      })),
     ...(nutrition && { nutrition })
   }
 

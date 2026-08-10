@@ -1,19 +1,12 @@
 import { prisma } from './prisma'
+import { daysLeftInWeek, isoWeekday, localWeekKey, weekNumberFor } from './dates'
 import { resolveVersion, serializeVersion } from './diet-service'
-import { WEEKDAY_SHORT_ES, type Weekday } from './nutrition-calculator'
+import { WEEKDAY_LABELS_ES, WEEKDAY_SHORT_ES, type Weekday } from './nutrition-calculator'
 
 /**
  * Context builders for the chat endpoint (text-formatted, Spanish).
  * Structured JSON payloads for the stateless endpoints live in ai-payload.ts.
  */
-
-function getWeekStartKey(date: Date): string {
-  const d = new Date(date)
-  const day = d.getDay()
-  d.setDate(d.getDate() - (day === 0 ? 6 : day - 1))
-  d.setHours(0, 0, 0, 0)
-  return d.toISOString().split('T')[0]
-}
 
 function computeWeeklyWeights(
   metrics: Array<{ date: Date | string; weight: any }>,
@@ -22,7 +15,7 @@ function computeWeeklyWeights(
   const byWeek = new Map<string, number[]>()
   for (const m of metrics) {
     if (m.weight == null) continue
-    const key = getWeekStartKey(new Date(m.date))
+    const key = localWeekKey(new Date(m.date))
     if (!byWeek.has(key)) byWeek.set(key, [])
     byWeek.get(key)!.push(Number(m.weight))
   }
@@ -158,9 +151,16 @@ const DAY_NAMES_ES = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'vie
 /**
  * Compact text summary of the diet in force, for the chat prompt.
  *
- * Deliberately shallow — meal names, their foods and the daily totals — so the
- * everyday question is answered without a tool call, while anything historical
- * or detailed goes through `get_diet` / `get_diet_history`.
+ * **Energy and macros only — no food list.** The permanent context answers "how
+ * much am I eating", which is the question that comes up in a training
+ * conversation; "what exactly do I eat on Thursday" is a `get_diet` call, and
+ * the model is told so.
+ *
+ * The meals used to be inlined, and they were the meals of the most *frequent*
+ * day pattern while the prompt announced them as "las comidas de hoy". On any
+ * day outside that pattern the coach confidently described a menu the athlete
+ * wasn't following, and the same instruction forbade the tool call that would
+ * have corrected it. Today's own figures are named below instead.
  */
 const buildActiveDietSummary = async (userId: string): Promise<string> => {
   const version = await resolveVersion(userId, {})
@@ -177,8 +177,10 @@ const buildActiveDietSummary = async (userId: string): Promise<string> => {
 
   const s = serializeVersion(version, { weightKg: latestWeight?.weight ?? null })
   const t = s.totals.average
-  const num = (v: number | null, unit = '') => (v == null ? 'sin datos' : `${Math.round(v)}${unit}`)
+  const num = (v: number | null | undefined, unit = '') => (v == null ? 'sin datos' : `${Math.round(v)}${unit}`)
   const dayList = (days: number[]) => days.map(d => WEEKDAY_SHORT_ES[d as Weekday]).join(', ')
+  const macroLine = (n: any) =>
+    `${num(n?.kcal)} kcal · P ${num(n?.protein_g, ' g')} · C ${num(n?.carbs_g, ' g')} · G ${num(n?.fat_g, ' g')}`
 
   const lines = [
     `- Plan: ${plan?.name ?? 'Sin nombre'}${plan?.goal ? ` (objetivo: ${plan.goal})` : ''}`,
@@ -186,10 +188,22 @@ const buildActiveDietSummary = async (userId: string): Promise<string> => {
     // Stated as a mean with its denominator, never as "the daily totals": the
     // plan varies by weekday, and an unqualified figure invites the model to
     // quote it back as what the athlete eats on the day being discussed.
-    `- Media de un día planificado (${s.planned_days.length} de 7: ${dayList(s.planned_days) || 'ninguno'}): ${num(t.kcal)} kcal · P ${num(t.protein_g, ' g')} · C ${num(t.carbs_g, ' g')} · G ${num(t.fat_g, ' g')}${s.protein_g_per_kg != null ? ` (${s.protein_g_per_kg} g proteína/kg)` : ''}`
+    `- Media de un día planificado (${s.planned_days.length} de 7: ${dayList(s.planned_days) || 'ninguno'}): ${macroLine(t)}${s.protein_g_per_kg != null ? ` (${s.protein_g_per_kg} g proteína/kg)` : ''}`
   ]
 
   if (s.targets.kcal != null) lines.push(`- Objetivo marcado: ${Math.round(s.targets.kcal)} kcal/día`)
+
+  // Today by name, with its own figures. The mean above is not what the athlete
+  // eats today unless every day is identical, and "hoy" is the day almost every
+  // question is about.
+  const todayEntry = s.days.find(d => d.weekday === isoWeekday())
+  if (todayEntry) {
+    lines.push(
+      todayEntry.planned
+        ? `- HOY (${WEEKDAY_LABELS_ES[todayEntry.weekday as Weekday].toLowerCase()}): ${macroLine(todayEntry.totals)}`
+        : `- HOY (${WEEKDAY_LABELS_ES[todayEntry.weekday as Weekday].toLowerCase()}): este día no tiene comidas planificadas (no son 0 kcal: está sin planificar).`
+    )
+  }
 
   // Only the distinct patterns, so a diet that is the same all week costs one
   // line and one that varies costs as many as it really has.
@@ -200,26 +214,15 @@ const buildActiveDietSummary = async (userId: string): Promise<string> => {
         groups
           .map(g => {
             const day = s.days.find(d => d.weekday === g.weekdays[0])
-            return `  ${dayList(g.weekdays)}: ${num(day?.totals?.kcal ?? null)} kcal`
+            return `  ${dayList(g.weekdays)}: ${macroLine(day?.totals)}`
           })
           .join('\n')
     )
   }
 
-  const detailed = groups[0]
-  lines.push(
-    detailed
-      ? `Comidas (${dayList(detailed.weekdays)}${groups.length > 1 ? '; los demás días varían, consúltalos con get_diet' : ''}):\n` +
-          detailed.meals
-            .map((meal: any) => {
-              const foods = meal.items.length
-                ? meal.items.map((item: any) => `${item.food_name} ${Math.round(item.quantity_g)} g`).join(', ')
-                : 'sin alimentos'
-              return `  ${meal.name}${meal.time_of_day ? ` (${meal.time_of_day})` : ''}: ${foods}`
-            })
-            .join('\n')
-      : '- La dieta no tiene comidas definidas.'
-  )
+  // Said explicitly, because absence of a food list is otherwise read as a diet
+  // with no foods in it.
+  lines.push('- Detalle de comidas y alimentos: no está aquí. Si hace falta, consúltalo con get_diet.')
 
   return lines.join('\n')
 }
@@ -273,7 +276,10 @@ export const buildLeanSystemPrompt = async (userId: string): Promise<string> => 
 
   const mesoBlock = activeMesocycle
     ? (() => {
-        const weekNumber = Math.max(1, Math.ceil((now.getTime() - new Date(activeMesocycle.start_date).getTime()) / (7 * 24 * 60 * 60 * 1000)))
+        // Same formula as the weekly evaluation and the adherence report — they
+        // used to be `ceil` here and `floor + 1` there, so on day 7, 14, 21… of
+        // a block the coach and the evaluation named different weeks.
+        const weekNumber = weekNumberFor(activeMesocycle.start_date, now)
         const evalSummary = activeMesocycle.evaluations.length
           ? activeMesocycle.evaluations.map(e => `  Semana ${e.week_number}: ${e.summary ?? 'Sin resumen'} (volumen: ${e.volume_trend ?? 'N/A'})`).join('\n')
           : '  Sin evaluaciones previas.'
@@ -302,12 +308,15 @@ ${notesSummary}`
     : '- Sin notas guardadas.'
 
   const todayStr = `${DAY_NAMES_ES[now.getDay()]}, ${now.toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })}`
-  const daysLeftInWeek = 6 - now.getDay()
+  // Monday-first, like every other week boundary in the app. The Sunday-first
+  // arithmetic this replaces was off by one every day of the week and told the
+  // model that Saturday was the last day of it.
+  const daysLeft = daysLeftInWeek(now)
 
   return `Eres "HevyTracker AI", un entrenador personal experto en hipertrofia y powerbuilding integrado en una app que sincroniza datos de Hevy.
 Analiza los entrenamientos del usuario, compara con sus objetivos y da feedback constructivo basado en evidencia científica.
 
-HOY: ${todayStr}${daysLeftInWeek > 0 ? ` (quedan ${daysLeftInWeek} días de semana)` : ' (último día de la semana)'}
+HOY: ${todayStr}${daysLeft > 0 ? ` (la semana de entrenamiento va de lunes a domingo; quedan ${daysLeft} día${daysLeft === 1 ? '' : 's'} después de hoy)` : ' (domingo: último día de la semana de entrenamiento)'}
 
 ### PERFIL DEL DEPORTISTA
 ${profileBlock}
@@ -335,8 +344,9 @@ Tienes acceso a herramientas para consultar más datos bajo demanda. Úsalas sol
 - Si una herramienta devuelve un error o datos vacíos, dilo claramente en lugar de inventar cifras.
 - Usa \`save_user_note\` cuando el usuario mencione preferencias, contexto temporal (viajes, eventos, estrés), objetivos concretos, restricciones nuevas o contexto nutricional que no esté ya en su perfil. Hazlo en el mismo turno en que el usuario lo menciona.
 - Usa \`deactivate_user_note\` con el ID entre corchetes cuando el usuario confirme que la situación se resolvió, la fecha de la nota ya pasó, o el usuario la contradiga directamente. Si hay duda, no la desactives.
-- Para la dieta: el bloque DIETA ACTIVA ya trae las comidas y los totales de hoy, así que no invoques nada para responder sobre ellos. Usa \`get_diet_history\` para ver cómo ha cambiado la dieta en el tiempo, \`get_diet\` con \`date\` o \`version_id\` para recuperar una dieta pasada, y \`search_foods\` para consultar los valores de un alimento del catálogo.
-- La dieta es un PLAN, no un registro de lo comido: habla de lo que el usuario tiene planificado, nunca de lo que ha ingerido. Un micronutriente ausente es un dato que falta, no una ingesta de cero.
+- Para la dieta: el bloque DIETA ACTIVA trae SOLO energía y macros (la media de un día planificado, los de hoy y los de cada patrón de día distinto). Respóndelas directamente desde ahí. **No trae qué come en cada comida**: en cuanto la pregunta sea sobre comidas, alimentos o gramos, invoca \`get_diet\` — no deduzcas el menú a partir de los macros ni lo des por sabido.
+- \`get_diet\` con \`date\` o \`version_id\` recupera una dieta pasada, \`get_diet_history\` muestra cómo ha cambiado en el tiempo, y \`search_foods\` consulta los valores de un alimento del catálogo.
+- La dieta es un PLAN, no un registro de lo comido: habla de lo que el usuario tiene planificado, nunca de lo que ha ingerido. Un micronutriente ausente es un dato que falta, no una ingesta de cero. Un día sin comidas planificadas está sin planificar, no es un día de 0 kcal.
 
 ### REGLAS DE ESTILO
 1. Sé directo y conciso. Markdown con negritas para valores clave y listas para recomendaciones.

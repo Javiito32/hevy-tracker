@@ -14,6 +14,9 @@
         <p class="font-data text-xs text-ink-3 mt-1">
           Semana {{ data.week }}<span v-if="data.is_deload" class="text-warn font-medium"> · descarga</span>
         </p>
+        <!-- Which session is due is a reading of the athlete's week, and they
+             are the only one who can tell whether it read it right. -->
+        <p v-if="basis" class="text-xs text-ink-3 mt-1">{{ basis }}</p>
       </div>
     </template>
 
@@ -55,10 +58,45 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
-defineProps<{ data: any }>()
+const props = defineProps<{ data: any }>()
 defineEmits<{ push: [] }>()
+
+const DAY_NAMES = ['', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo']
+
+/**
+ * One line saying why this session and not another.
+ *
+ * The case worth naming out loud is "you already trained today": the card used
+ * to keep prescribing the session just finished, and without a reason line
+ * there was no way to tell a correct reading from a stuck one.
+ */
+const basis = computed(() => {
+  const d = props.data
+  if (!d?.has_plan) return null
+  const done = d.last_trained && d.trained_today
+    ? `Hoy ya registraste «${d.last_trained.session_name}».`
+    : null
+
+  switch (d.reason) {
+    case 'weekday':
+      return done ?? 'Es la sesión que el plan asigna a hoy.'
+    case 'next_weekday': {
+      const day = d.session.day_of_week ? DAY_NAMES[d.session.day_of_week] : null
+      const next = day ? `Toca el ${day}.` : 'Es el siguiente día que asigna el plan.'
+      return done ? `${done} ${next}` : next
+    }
+    case 'rotation':
+      return done
+        ? `${done} Sigue en la rotación del plan.`
+        : `Sigue a «${d.last_trained?.session_name}», tu última sesión.`
+    case 'start':
+      return 'Primera sesión del bloque: aún no hay nada registrado que la continúe.'
+    default:
+      return null
+  }
+})
 
 const expanded = ref(new Set<string>())
 const toggle = (id: string) => {

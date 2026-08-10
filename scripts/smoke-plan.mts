@@ -136,6 +136,67 @@ async function main() {
     check('adjunta sugerencia a cada ejercicio',
       next.has_plan && next.exercises.every((e: any) => 'suggestion' in e))
 
+    console.log('\n── Qué toca después de entrenar ──')
+    // The athlete follows a coach's routines, so the workout is titled whatever
+    // the coach called it — never the plan's session name. Identifying the
+    // session by its title left "lo siguiente" stuck on sessions[0] forever.
+    const rotationPlan = [
+      { name: 'Empuje', day_of_week: null,
+        exercises: [{ exercise_template_id: 'SP_BENCH', name: 'Bench Press (Barbell)', target_sets: 4, rep_min: 6, rep_max: 8 }] },
+      { name: 'Tirón', day_of_week: null,
+        exercises: [{ exercise_template_id: 'SP_ROW', name: 'Barbell Row', target_sets: 4, rep_min: 8, rep_max: 10 }] }
+    ]
+    await savePlan(meso.id, user.id, rotationPlan, [{ week_number: 3, target_rir: 2, volume_multiplier: 1 }])
+
+    // The only workout so far is the bench session, logged as "Empuje".
+    const afterBench = await getNextSession(user.id, meso.id)
+    check('reconoce la sesión entrenada por sus ejercicios',
+      afterBench.has_plan && afterBench.last_trained?.session_name === 'Empuje',
+      JSON.stringify(afterBench.has_plan ? afterBench.last_trained : null))
+    check('y propone la siguiente, no la que ya hiciste',
+      afterBench.has_plan && afterBench.session.name === 'Tirón', `→ ${afterBench.has_plan ? afterBench.session.name : '-'}`)
+
+    // Retitle it the way a coach's routine would be, leaving the exercises
+    // untouched: the answer must not change.
+    await prisma.workout.updateMany({
+      where: { user_id: user.id, hevy_id: 'sp-1' }, data: { name: 'Semana 3 · Día A (entrenador)' }
+    })
+    const coachTitled = await getNextSession(user.id, meso.id)
+    check('el título de la rutina del entrenador no la despista',
+      coachTitled.has_plan && coachTitled.session.name === 'Tirón', `→ ${coachTitled.has_plan ? coachTitled.session.name : '-'}`)
+
+    // Same session, now assigned to today's weekday and already trained today.
+    const todayIso = new Date().getDay() === 0 ? 7 : new Date().getDay()
+    const tomorrowIso = (todayIso % 7) + 1
+    await prisma.workout.updateMany({
+      where: { user_id: user.id, hevy_id: 'sp-1' }, data: { date: new Date() }
+    })
+    await savePlan(meso.id, user.id, [
+      { ...rotationPlan[0], day_of_week: todayIso },
+      { ...rotationPlan[1], day_of_week: tomorrowIso }
+    ], [{ week_number: 3, target_rir: 2, volume_multiplier: 1 }])
+
+    const already = await getNextSession(user.id, meso.id)
+    check('sabe que hoy ya entrenaste', already.has_plan && already.trained_today === true)
+    check('no repite la sesión de hoy ya registrada',
+      already.has_plan && already.session.name === 'Tirón', `→ ${already.has_plan ? already.session.name : '-'}`)
+    check('y lo justifica como el siguiente día del plan',
+      already.has_plan && already.reason === 'next_weekday', `→ ${already.has_plan ? already.reason : '-'}`)
+
+    // Move that workout back a week: today's session is due again.
+    await prisma.workout.updateMany({
+      where: { user_id: user.id, hevy_id: 'sp-1' }, data: { date: new Date(Date.now() - 7 * 86400000) }
+    })
+    const dueAgain = await getNextSession(user.id, meso.id)
+    check('si hoy no has entrenado, toca la sesión de hoy',
+      dueAgain.has_plan && dueAgain.session.name === 'Empuje' && dueAgain.reason === 'weekday',
+      `→ ${dueAgain.has_plan ? `${dueAgain.session.name}/${dueAgain.reason}` : '-'}`)
+
+    await prisma.workout.updateMany({
+      where: { user_id: user.id, hevy_id: 'sp-1' },
+      data: { name: 'Empuje', date: new Date(Date.now() - 3 * 86400000) }
+    })
+
     console.log('\n── Semana de descarga ──')
     await savePlan(meso.id, user.id, [
       { name: 'Empuje', day_of_week: null,

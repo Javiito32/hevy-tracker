@@ -400,11 +400,79 @@ export async function suggestLoad(
 }
 
 /**
+ * Fraction of a planned session's exercises that must appear in a workout
+ * before it counts as *that* session having been trained.
+ *
+ * Half, because a session survives substitutions — a busy rack, a niggle, a
+ * trainer swapping one movement — and still plainly be the same session. Below
+ * that it is a different day's work that happens to share a lift.
+ */
+const SESSION_MATCH_MIN = 0.5
+
+/**
+ * Which planned session the athlete's last workout corresponds to.
+ *
+ * Matched on the exercises performed, not on the workout's title. The title is
+ * whatever the routine was called in Hevy, and an athlete following a coach's
+ * routines has titles that were never going to equal the plan's session names —
+ * the same class of failure as pairing exercises by name, and with the same
+ * consequence: `findIndex` returned -1, so "lo siguiente" was `sessions[0]`
+ * forever no matter what had just been trained.
+ */
+async function findLastTrainedSession(
+  userId: string,
+  mesocycleId: string,
+  sessions: Array<{ name: string; exercises: Array<{ exercise_template_id: string | null; name: string }> }>
+): Promise<{ index: number; date: Date; workout_name: string } | null> {
+  const lastWorkout = await prisma.workout.findFirst({
+    where: { user_id: userId, mesocycle_id: mesocycleId },
+    orderBy: { date: 'desc' },
+    select: {
+      name: true, date: true,
+      exercises: { select: { exercise_template_id: true, name: true } }
+    }
+  })
+  if (!lastWorkout) return null
+
+  const performedIds = new Set(
+    lastWorkout.exercises.map(e => e.exercise_template_id).filter(Boolean) as string[]
+  )
+  const performedNames = new Set(lastWorkout.exercises.map(e => normalizeExerciseName(e.name)))
+
+  let bestIndex = -1
+  let bestScore = 0
+  sessions.forEach((s, index) => {
+    if (!s.exercises.length) return
+    const hits = s.exercises.filter(e =>
+      (e.exercise_template_id && performedIds.has(e.exercise_template_id)) ||
+      performedNames.has(normalizeExerciseName(e.name))
+    ).length
+    const score = hits / s.exercises.length
+    if (score > bestScore) { bestScore = score; bestIndex = index }
+  })
+
+  if (bestIndex === -1 || bestScore < SESSION_MATCH_MIN) return null
+  return { index: bestIndex, date: lastWorkout.date, workout_name: lastWorkout.name }
+}
+
+/** Same calendar day in local time — "did I already train today" is a local question. */
+function isSameLocalDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear()
+    && a.getMonth() === b.getMonth()
+    && a.getDate() === b.getDate()
+}
+
+/**
  * The session due next, with a suggested load per exercise.
  *
- * Picks by weekday when the plan assigns one, otherwise rotates: the session
- * after the last one trained. A plan with no weekday assignment is a rotation
- * by definition, so honouring the order is the only correct reading.
+ * Weekday assignment decides it when the plan has one, but *only until that
+ * session has been trained*: a card headed "lo siguiente" that still prescribes
+ * the session finished an hour ago is answering "what was today", and it kept
+ * saying so for the rest of the day. Once today's work is logged the card moves
+ * on to the next assigned day.
+ *
+ * A plan with no weekday assignment is a rotation by definition, so it advances
+ * from whichever session was last trained.
  */
 export async function getNextSession(userId: string, mesocycleId: string) {
   const plan = await loadPlan(mesocycleId, userId)
@@ -413,18 +481,32 @@ export async function getNextSession(userId: string, mesocycleId: string) {
   const today = new Date()
   const isoDay = today.getDay() === 0 ? 7 : today.getDay()
 
-  let session = plan.sessions.find(s => s.day_of_week === isoDay)
+  const last = await findLastTrainedSession(userId, mesocycleId, plan.sessions)
+  const trainedToday = last ? isSameLocalDay(last.date, today) : false
 
-  if (!session) {
-    const lastWorkout = await prisma.workout.findFirst({
-      where: { user_id: userId, mesocycle_id: mesocycleId },
-      orderBy: { date: 'desc' },
-      select: { name: true }
-    })
-    const lastIndex = lastWorkout
-      ? plan.sessions.findIndex(s => s.name.toLowerCase() === lastWorkout.name.toLowerCase())
-      : -1
-    session = plan.sessions[(lastIndex + 1) % plan.sessions.length]
+  const withWeekday = plan.sessions.filter(s => s.day_of_week != null)
+  const byWeekday = [...withWeekday].sort((a, b) => a.day_of_week! - b.day_of_week!)
+  const dueToday = withWeekday.find(s => s.day_of_week === isoDay)
+  const doneToday = trainedToday && last !== null && plan.sessions[last.index] === dueToday
+
+  let session: typeof plan.sessions[number]
+  let reason: 'weekday' | 'next_weekday' | 'rotation' | 'start'
+
+  if (dueToday && !doneToday) {
+    session = dueToday
+    reason = 'weekday'
+  } else if (byWeekday.length) {
+    // The next day the plan actually assigns, wrapping into next week. Falling
+    // through to the rotation here used to hand back an unrelated session on
+    // any day the plan left free.
+    session = byWeekday.find(s => s.day_of_week! > isoDay) ?? byWeekday[0]
+    reason = 'next_weekday'
+  } else if (last) {
+    session = plan.sessions[(last.index + 1) % plan.sessions.length]
+    reason = 'rotation'
+  } else {
+    session = plan.sessions[0]
+    reason = 'start'
   }
 
   const week = weekNumberFor(plan.start_date, today)
@@ -454,6 +536,14 @@ export async function getNextSession(userId: string, mesocycleId: string) {
     is_deload: weekPlan?.is_deload ?? false,
     week_notes: weekPlan?.notes ?? null,
     session: { id: session.id, name: session.name, notes: session.notes, day_of_week: session.day_of_week },
+    // Why this session and not another. The athlete is the one who knows
+    // whether the app read their week correctly, and they can only tell if it
+    // says what it based the choice on.
+    reason,
+    trained_today: trainedToday,
+    last_trained: last
+      ? { session_name: plan.sessions[last.index].name, workout_name: last.workout_name, date: last.date }
+      : null,
     exercises
   }
 }

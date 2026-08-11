@@ -13,6 +13,9 @@ import { runChatTurn } from '../../utils/ai-chat'
  * Event payloads (all JSON on a single `data:` line):
  *   { type: 'tool',  name }
  *   { type: 'delta', text }
+ *   { type: 'reset' }            — discard the deltas so far: they were a
+ *                                  preamble to a tool call, not the answer
+ *   { type: 'done',  … }
  *   { type: 'done',  conversationId, model, title, tokens, inputTokens, outputTokens, toolsInvoked }
  *   { type: 'error', message }
  */
@@ -52,6 +55,7 @@ export default defineEventHandler(async (event) => {
         onEvent: async (e) => {
           if (e.type === 'tool') await send({ type: 'tool', name: e.name })
           else if (e.type === 'delta') await send({ type: 'delta', text: e.text })
+          else if (e.type === 'reset') await send({ type: 'reset' })
         }
       })
 

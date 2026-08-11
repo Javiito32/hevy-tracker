@@ -15,6 +15,8 @@ import {
 import { runAiTask, parseAiJson } from './ai-service'
 import type { AiKeys, AiProvider } from './ai-provider'
 import { MESOCYCLE_GENERATE_PROMPT } from './ai-prompts'
+import { weekNumberFor } from './dates'
+import { WEEKDAY_LABELS_ES, isWeekday } from './nutrition-calculator'
 import { MAX_OUTPUT_TOKENS } from './ai-config'
 import { SEARCH_TEMPLATES_TOOL, searchExerciseTemplates } from './exercise-search'
 import { buildMuscleVolumeReport } from './muscle-volume'
@@ -59,7 +61,7 @@ export async function generateMesocyclePlan(
 ): Promise<PlanResult> {
   await progress?.('Reuniendo tu historial de entrenamiento…')
 
-  const [athlete, recentWorkoutRows, previousMesocycles, nutrition] = await Promise.all([
+  const [athlete, recentWorkoutRows, previousMesocycles, nutrition, currentBlock] = await Promise.all([
     // Injuries are the reason this task exists in its current shape: a block
     // designed around a shoulder that can't press is a different block.
     buildAthleteProfile(userId, { includeInjuries: true }),
@@ -75,7 +77,14 @@ export async function generateMesocyclePlan(
       take: 2,
       select: { name: true, goal: true, split_description: true, target_sessions_weekly: true }
     }),
-    buildNutritionSnapshot(userId)
+    buildNutritionSnapshot(userId),
+    // The block this one replaces. `previousMesocycles` above only covers
+    // completed and paused ones, so the block the athlete is training RIGHT NOW
+    // was the single thing missing: the generator was asked for continuity
+    // ("mantén lo que le funciona") while being shown every block except the
+    // current one. A compact summary, not the whole prescription — session
+    // names, days and set counts are what a successor block has to build on.
+    buildCurrentBlockSummary(userId)
   ])
 
   const recentWorkouts: Workout[] = recentWorkoutRows.map(w => buildWorkoutData(w, true))
@@ -92,7 +101,8 @@ export async function generateMesocyclePlan(
     compoundLifts,
     previousMesocycles,
     nutrition,
-    muscleVolume: muscleVolume.averages
+    muscleVolume: muscleVolume.averages,
+    currentBlock
   })
 
   await progress?.('Diseñando el bloque y buscando ejercicios en el catálogo…')
@@ -165,6 +175,52 @@ export async function generateMesocyclePlan(
   }
 }
 
+/**
+ * The block currently in force, in a few lines.
+ *
+ * Deliberately not the full prescription: one line per session with its day,
+ * its exercises and their set counts is what tells the model what it is
+ * succeeding, and the per-exercise rep ranges and rest times of a block that is
+ * about to be replaced are not. Returns null when there is no active block,
+ * and the section then simply doesn't appear.
+ */
+async function buildCurrentBlockSummary(userId: string): Promise<string | null> {
+  const meso = await prisma.mesocycle.findFirst({
+    where: { user_id: userId, status: 'active' },
+    select: {
+      name: true, goal: true, start_date: true, target_sessions_weekly: true,
+      planned_sessions: {
+        orderBy: { day_of_week: 'asc' },
+        select: {
+          name: true,
+          day_of_week: true,
+          exercises: { select: { name: true, target_sets: true } }
+        }
+      }
+    }
+  })
+  if (!meso) return null
+
+  const weeksIn = weekNumberFor(meso.start_date)
+  const head = [
+    `bloque en curso: ${meso.name}${meso.goal ? ` · objetivo: ${meso.goal}` : ''}`,
+    `va por la semana ${weeksIn}${meso.target_sessions_weekly != null ? ` · ${meso.target_sessions_weekly} sesiones/semana objetivo` : ''}`
+  ].join('\n')
+
+  if (!meso.planned_sessions.length) {
+    return `${head}\nSin plan estructurado: solo hay descripción en texto.`
+  }
+
+  return `${head}\n` + table(
+    ['sesión', 'día', 'ejercicios (series)'],
+    meso.planned_sessions.map(s => [
+      s.name,
+      isWeekday(s.day_of_week) ? WEEKDAY_LABELS_ES[s.day_of_week] : 'sin día',
+      s.exercises.map(e => `${e.name} ${e.target_sets}x`).join(' · ')
+    ])
+  )
+}
+
 /** The task document. Sections are named as the prompt refers to them. */
 function buildGenerationDocument(input: {
   request: PlanRequest
@@ -174,6 +230,7 @@ function buildGenerationDocument(input: {
   previousMesocycles: Array<{ name: string; goal: string | null; split_description: string | null; target_sessions_weekly: number | null }>
   nutrition?: NutritionSnapshot
   muscleVolume: Array<{ muscle: string; label: string; avg_sets: number; verdict: string; landmarks?: { mev: number; mav: number; mrv: number } | null }>
+  currentBlock: string | null
 }): string {
   const { request } = input
   return renderTaskDocument('generar mesociclo', new Date().toISOString().substring(0, 10), [
@@ -186,6 +243,7 @@ function buildGenerationDocument(input: {
     ['PERFIL', input.athlete],
     ['FUERZA ACTUAL (1RM ESTIMADOS)', input.compoundLifts.length ? serializeCompoundLifts(input.compoundLifts) : null],
     ['ENTRENOS RECIENTES', input.recentWorkouts.length ? serializeWorkouts(input.recentWorkouts, { detail: 'sets' }) : null],
+    ['BLOQUE ACTUAL (EL QUE SE SUSTITUYE)', input.currentBlock],
     ['MESOCICLOS ANTERIORES', input.previousMesocycles.length
       ? table(
           ['nombre', 'objetivo', 'sesiones/sem', 'split'],

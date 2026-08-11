@@ -1,12 +1,12 @@
 import { prisma } from './prisma'
-import { localWeekKey } from './dates'
+import { localDayKey, localWeekKey } from './dates'
 import type { ToolDefinition } from './ai-provider'
 import { buildWorkoutData, type NutritionSnapshot } from './ai-payload'
 import {
   int, num, NONE, serializeMuscleVolume, serializeNutrition, serializeWorkout,
   serializeWorkouts, table
 } from './ai-serialize'
-import { resolveVersion, serializeDietForAi, getActivePlan, toDateKey } from './diet-service'
+import { dayAnchor, resolveVersion, serializeDietForAi, getActivePlan, toDateKey } from './diet-service'
 import { normalizeExerciseName } from './exercise-aliases'
 import { NUTRIENT_KEYS, WEEKDAY_LABELS_ES, isWeekday } from './nutrition-calculator'
 import { buildMuscleVolumeReport } from './muscle-volume'
@@ -48,10 +48,30 @@ const MAX_FOOD_RESULTS = 25
 /** Exercises reported per week in the weekly breakdown, by volume. */
 const MAX_EXERCISES_PER_WEEK = 10
 
-const parseDate = (s: string | undefined, fallback?: Date): Date | undefined => {
+const DATE_ONLY = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * A `YYYY-MM-DD` argument as a **local** instant, at the start or the end of
+ * that day.
+ *
+ * `new Date('2026-06-30')` is midnight UTC, and a workout is stored at the
+ * instant it started. So a range ending on the 30th excluded everything trained
+ * after 02:00 local on the 30th — which is to say the entire last day of every
+ * range the model ever asked for, silently, with the answer still looking
+ * plausible. Days are the athlete's calendar days, not UTC's.
+ */
+const parseDate = (s: string | undefined, fallback?: Date, bound: 'start' | 'end' = 'start'): Date | undefined => {
   if (!s) return fallback
-  const d = new Date(s)
-  return isNaN(d.getTime()) ? fallback : d
+  const raw = String(s).trim()
+  if (DATE_ONLY.test(raw)) {
+    const [year, month, day] = raw.split('-').map(Number)
+    return bound === 'end'
+      ? new Date(year, month - 1, day, 23, 59, 59, 999)
+      : new Date(year, month - 1, day, 0, 0, 0, 0)
+  }
+  // A full timestamp is taken as given: it already names an instant.
+  const parsed = new Date(raw)
+  return isNaN(parsed.getTime()) ? fallback : parsed
 }
 
 const daysAgo = (n: number): Date => {
@@ -60,7 +80,20 @@ const daysAgo = (n: number): Date => {
   return d
 }
 
-const fmtDate = (d: Date | string): string => new Date(d).toISOString().substring(0, 10)
+/**
+ * Day label of an **instant** (a workout, a record, an evaluation): local
+ * components, per `dates.ts`. `toISOString()` on a session started at 00:30 in
+ * Madrid reports the previous day, so the model and the athlete's screen would
+ * name different days for the same session.
+ */
+const fmtDate = (d: Date | string): string => localDayKey(new Date(d))
+
+/**
+ * Day label of a column that stores a **calendar day**, anchored at UTC
+ * (body metrics at noon, mesocycle bounds at midnight). Those already are the
+ * day they mean; reading local components off them is what would shift them.
+ */
+const fmtDayColumn = (d: Date | string): string => new Date(d).toISOString().substring(0, 10)
 
 /** Tools answer with a message rather than throwing: the model can retry. */
 const fail = (message: string): string => `ERROR: ${message}`
@@ -82,7 +115,7 @@ const WORKOUT_SELECT = {
 
 const getWorkoutsInRange: ToolFn = async (userId, args) => {
   const start = parseDate(args.start_date, daysAgo(14))!
-  const end = parseDate(args.end_date, new Date())!
+  const end = parseDate(args.end_date, new Date(), 'end')!
   const detail = args.detail === 'full' ? 'full' : 'summary'
   const cap = detail === 'full' ? MAX_WORKOUTS_FULL : MAX_WORKOUTS_SUMMARY
 
@@ -116,9 +149,10 @@ const getWorkoutDetail: ToolFn = async (userId, args) => {
   const where: any = { user_id: userId }
   if (args.workout_id) where.id = args.workout_id
   if (args.date) {
-    const day = parseDate(args.date)!
-    const next = new Date(day); next.setDate(next.getDate() + 1)
-    where.date = { gte: day, lt: next }
+    // The athlete's calendar day, start to end. A UTC window missed a session
+    // logged before 02:00 local and reported "no encontrado" for a workout the
+    // app was showing on that very date.
+    where.date = { gte: parseDate(args.date)!, lte: parseDate(args.date, undefined, 'end')! }
   }
 
   const w = await prisma.workout.findFirst({ where, orderBy: { date: 'desc' }, select: WORKOUT_SELECT })
@@ -395,7 +429,7 @@ const getActivePlanTool: ToolFn = async (userId, args) => {
   }
 
   const parts = [
-    `PLAN · ${meso.name}${meso.goal ? ` · objetivo: ${meso.goal}` : ''} · empezó ${fmtDate(meso.start_date)}`,
+    `PLAN · ${meso.name}${meso.goal ? ` · objetivo: ${meso.goal}` : ''} · empezó ${fmtDayColumn(meso.start_date)}`,
     plan.weeks.length
       ? 'semanas del bloque:\n' + table(
           ['semana', 'descarga', 'RIR objetivo', 'x volumen', 'notas'],
@@ -483,7 +517,7 @@ const getMesocycleEvaluations: ToolFn = async (userId, args) => {
     orderBy: { week_number: 'asc' },
     select: { week_number: true, evaluation_date: true, summary: true, volume_trend: true, progress_score: true, recommendations: true }
   })
-  const head = `EVALUACIONES · ${meso.name} (${meso.status}) · ${fmtDate(meso.start_date)} → ${meso.end_date ? fmtDate(meso.end_date) : 'en curso'}`
+  const head = `EVALUACIONES · ${meso.name} (${meso.status}) · ${fmtDayColumn(meso.start_date)} → ${meso.end_date ? fmtDayColumn(meso.end_date) : 'en curso'}`
   if (!evaluations.length) return `${head}\nSin evaluaciones semanales registradas.`
 
   return `${head}\n` + evaluations.map(e => [
@@ -507,7 +541,7 @@ const getPreviousMesocycles: ToolFn = async (userId, args) => {
   if (!mesos.length) return 'Sin mesociclos completados ni pausados.'
 
   return `MESOCICLOS ANTERIORES (${mesos.length})\n` + mesos.map(m => [
-    `### ${m.name} · ${m.status} · ${fmtDate(m.start_date)} → ${m.end_date ? fmtDate(m.end_date) : NONE} · id ${m.id}`,
+    `### ${m.name} · ${m.status} · ${fmtDayColumn(m.start_date)} → ${m.end_date ? fmtDayColumn(m.end_date) : NONE} · id ${m.id}`,
     m.goal ? `objetivo: ${m.goal}` : null,
     m.target_sessions_weekly != null ? `sesiones/semana: ${m.target_sessions_weekly}` : null,
     m.split_description ? `split:\n${m.split_description}` : null,
@@ -531,7 +565,7 @@ const BODY_COLUMNS: Array<[string, string]> = [
 
 const getBodyMetricsRange: ToolFn = async (userId, args) => {
   const start = parseDate(args.start_date, daysAgo(90))!
-  const end = parseDate(args.end_date, new Date())!
+  const end = parseDate(args.end_date, new Date(), 'end')!
   const metrics = await prisma.bodyMetric.findMany({
     where: { user_id: userId, date: { gte: start, lte: end } },
     orderBy: { date: 'asc' }
@@ -543,7 +577,7 @@ const getBodyMetricsRange: ToolFn = async (userId, args) => {
   return `MÉTRICAS CORPORALES ${fmtDate(start)} → ${fmtDate(end)} · ${metrics.length} registros\n` + table(
     ['fecha', ...BODY_COLUMNS.map(([, label]) => label)],
     metrics.map(m => [
-      fmtDate(m.date),
+      fmtDayColumn(m.date),
       ...BODY_COLUMNS.map(([key]) => {
         const value = (m as any)[key]
         return value == null ? null : num(Number(value))
@@ -590,17 +624,33 @@ const getDiet: ToolFn = async (userId, args) => {
       : 'El usuario no tiene ninguna dieta publicada.'
   }
 
-  const [plan, latestWeight] = await Promise.all([
+  // The body weight that belongs with THIS version, not today's.
+  //
+  // `protein_g_per_kg` is a ratio, and the denominator has to come from the
+  // same moment as the numerator: dividing a diet from last March by a weight
+  // recorded this August reports a g/kg figure the athlete never ate at, and it
+  // is one of the two numbers the whole diet is judged on.
+  //
+  // The reference is the last day the version asked about was in force: the
+  // date given, the day a superseded version was replaced, or — for the diet
+  // in force right now — nothing at all, because "now" is exactly when the
+  // latest weight belongs. Anchoring the live diet to the day it was published
+  // would divide today's food by the weight the athlete had before it.
+  const asOf = args.date
+    ? dayAnchor(String(args.date))
+    : version.end_date ?? null
+
+  const [plan, weightAtTheTime] = await Promise.all([
     prisma.dietPlan.findUnique({ where: { id: version.diet_plan_id } }),
     prisma.bodyMetric.findFirst({
-      where: { user_id: userId, weight: { not: null } },
+      where: { user_id: userId, weight: { not: null }, ...(asOf && { date: { lte: asOf } }) },
       orderBy: { date: 'desc' },
-      select: { weight: true }
+      select: { weight: true, date: true }
     })
   ])
 
   const diet = serializeDietForAi(version, {
-    weightKg: latestWeight?.weight ?? null,
+    weightKg: weightAtTheTime?.weight ?? null,
     // The model asked for the diet, so it gets every distinct day in full.
     detail: 'full'
   })
@@ -608,8 +658,13 @@ const getDiet: ToolFn = async (userId, args) => {
   const header = args.date
     ? `DIETA vigente el ${args.date}${weekdayNameOf(args.date) ? ` (${weekdayNameOf(args.date)})` : ''}`
     : 'DIETA VIGENTE'
+  // Named, because g/kg computed from a weight three months either side of the
+  // diet is a different claim from one computed the same week.
+  const weightNote = weightAtTheTime
+    ? `\n(g proteína/kg calculado con el peso de ${fmtDate(weightAtTheTime.date)}: ${num(Number(weightAtTheTime.weight))} kg)`
+    : ''
 
-  return `${header}\n${serializeNutrition(toNutritionSnapshot(diet, plan?.name ?? 'Sin nombre', plan?.goal))}`
+  return `${header}${weightNote}\n${serializeNutrition(toNutritionSnapshot(diet, plan?.name ?? 'Sin nombre', plan?.goal))}`
 }
 
 const getDietHistory: ToolFn = async (userId, args) => {
@@ -994,28 +1049,55 @@ const DOMAIN_KEYWORDS: Record<Exclude<ToolDomain, 'memory'>, string[]> = {
   training: [
     'entren', 'serie', 'repetic', 'reps', 'rpe', 'rir', 'volumen', 'carga', 'peso levant',
     'press', 'sentadilla', 'dominad', 'curl', 'remo', 'banca', 'ejercicio', '1rm', 'rm',
-    'fallo', 'descarga', 'deload', 'estanc', 'progres', 'fatiga', 'record', 'récord', 'pr ',
-    'pecho', 'espalda', 'pierna', 'biceps', 'bíceps', 'triceps', 'tríceps', 'hombro', 'gluteo', 'glúteo'
+    'fallo', 'descarga', 'deload', 'estanc', 'progres', 'fatiga', 'record', 'pr ',
+    'pecho', 'espalda', 'pierna', 'biceps', 'triceps', 'hombro', 'gluteo'
   ],
   plan: [
-    'plan', 'planific', 'rutina', 'mesociclo', 'bloque', 'me toca', 'toca hoy', 'toca mañana',
-    'siguiente sesion', 'siguiente sesión', 'próxima sesión', 'proxima sesion', 'split',
+    'plan', 'planific', 'rutina', 'mesociclo', 'bloque', 'me toca', 'toca hoy', 'toca manana',
+    'siguiente sesion', 'proxima sesion', 'split',
     'adherencia', 'prescrit', 'programad', 'semana del bloque'
   ],
   body: [
-    'peso corporal', 'kilos', 'báscula', 'bascula', 'grasa', 'masa magra', 'medida', 'cintura',
-    'perímetro', 'perimetro', 'hrv', 'pulsaciones', 'frecuencia cardiaca', 'frecuencia cardíaca', 'composición corporal'
+    // Every one of these has to be about the BODY and not about food. Bare
+    // 'grasa' was here, and it matched "¿cuánta grasa tiene mi cena?" — pushing
+    // a purely nutritional question into two domains and therefore onto the
+    // full 18-tool set, which is the opposite of what this filter is for.
+    'peso corporal', 'kilos', 'bascula', 'grasa corporal', '% de grasa', 'porcentaje de grasa',
+    'masa magra', 'medidas', 'circunferencia', 'cintura',
+    'perimetro', 'hrv', 'pulsaciones', 'frecuencia cardiaca', 'composicion corporal'
   ],
   nutrition: [
-    'dieta', 'comida', 'comer', 'aliment', 'kcal', 'caloria', 'caloría', 'macro', 'proteina',
-    'proteína', 'carbohidrat', 'hidrato', 'grasa saturada', 'desayun', 'almuerz', 'cena', 'merienda',
-    'suplement', 'creatina', 'nutricion', 'nutrición', 'déficit', 'deficit', 'superávit', 'superavit'
+    'dieta', 'comida', 'comer', 'aliment', 'kcal', 'caloria', 'macro', 'proteina',
+    'carbohidrat', 'hidrato', 'grasa saturada', 'desayun', 'almuerz', 'cena', 'merienda',
+    'suplement', 'creatina', 'nutricion', 'deficit', 'superavit', 'gramos de'
   ]
 }
 
+/**
+ * Domains that cannot answer their own questions alone.
+ *
+ * A diet is judged against what the body did with it — "¿me está funcionando la
+ * dieta?" is answered by the weight trend, and refusing the model
+ * `get_body_metrics_range` on a nutrition-only question leaves it reasoning from
+ * the five weeks of weights in the prompt and nothing else. One extra definition
+ * is cheaper than the answer it prevents.
+ */
+const DOMAIN_DEPENDENCIES: Partial<Record<ToolDomain, ToolDomain[]>> = {
+  nutrition: ['body']
+}
+
+/**
+ * Lowercase, accent-stripped. Matching accented text with unaccented keywords
+ * (and vice versa) is how "proteína", "récord" and "composición" used to need
+ * two entries each — and how the ones that only had one silently never matched,
+ * sending the whole catalogue for a question the filter should have narrowed.
+ */
+const normalize = (text: string): string =>
+  text.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+
 /** Domains a message clearly belongs to. Empty = unclear, which is not an error. */
 export function matchToolDomains(message: string): ToolDomain[] {
-  const text = message.toLowerCase()
+  const text = normalize(message)
   return (Object.keys(DOMAIN_KEYWORDS) as Array<Exclude<ToolDomain, 'memory'>>)
     .filter(domain => DOMAIN_KEYWORDS[domain].some(keyword => text.includes(keyword)))
 }
@@ -1037,6 +1119,13 @@ const toolsOf = (names: readonly string[]): ToolDefinition[] =>
  * legitimately span training, plan and diet — so they keep the full set. The
  * saving comes from the narrow, frequent questions, which are the majority.
  *
+ * Two things narrow it honestly rather than by guessing harder. Keywords are
+ * matched accent-insensitively, so "proteína" and "composición" hit the domain
+ * they belong to instead of falling through to "everything"; and a domain that
+ * cannot answer its own questions pulls in what it needs
+ * (`DOMAIN_DEPENDENCIES`: a diet is judged against the weight trend). Neither
+ * removes a tool the model would otherwise have had.
+ *
  * Selected once per turn from the incoming message and held constant across the
  * turn's tool rounds: a set that changed mid-turn would invalidate the cached
  * prefix on every round, which costs more than the definitions it removes.
@@ -1044,7 +1133,11 @@ const toolsOf = (names: readonly string[]): ToolDefinition[] =>
 export function selectChatTools(message: string): ToolDefinition[] {
   const domains = matchToolDomains(message)
   if (domains.length !== 1) return AI_TOOLS
-  return toolsOf([...TOOL_GROUPS[domains[0]], ...TOOL_GROUPS.memory])
+
+  const selected = new Set<ToolDomain>([domains[0], 'memory'])
+  for (const dependency of DOMAIN_DEPENDENCIES[domains[0]] ?? []) selected.add(dependency)
+
+  return toolsOf([...selected].flatMap(domain => [...TOOL_GROUPS[domain]]))
 }
 
 export async function executeTool(name: string, userId: string, args: any): Promise<string> {

@@ -18,9 +18,17 @@ export default defineEventHandler(async (event) => {
 
   const [athlete, nutrition, nutritionHistory, trainingLoad, activeMesocycle] = await Promise.all([
     buildAthleteProfile(userId),
-    // The one task that needs the menu: its recommendations name the meal and
-    // the food to change. Everywhere else the snapshot is macros only.
-    buildNutritionSnapshot(userId, { detail: 'representative' }),
+    // The one task that needs the menu, and it needs ALL of it.
+    //
+    // `'representative'` sent the meals of the most common day pattern only,
+    // while the prompt asks this task to "contrasta día a día: qué días entrena
+    // frente a qué días come más" and to answer with "qué comida tocar, qué
+    // alimento subir o bajar y en cuántos gramos". On any diet with a weekday
+    // and a weekend pattern that is a request to name a food on a day whose
+    // foods were withheld — so the model either declined or named one from
+    // Monday. `'full'` collapses identical days, so the cost is per distinct
+    // pattern (typically two or three), not per weekday.
+    buildNutritionSnapshot(userId, { detail: 'full' }),
     buildNutritionHistory(userId),
     buildTrainingLoad(userId),
     prisma.mesocycle.findFirst({

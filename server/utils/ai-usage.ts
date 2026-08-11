@@ -97,15 +97,28 @@ export interface UsageTokens {
    * Null = the provider reported nothing, which is not a cache miss.
    */
   cachedInputTokens?: number | null
+  /**
+   * Input tokens written to the cache — also a subset of `inputTokens`, and
+   * disjoint from the ones read. Billed above the standard input rate where a
+   * rate is configured.
+   */
+  cacheWriteTokens?: number | null
 }
 
 /**
  * Cost in the price's currency, or null when it can't be computed exactly:
  * the model has no configured price, or the row predates the in/out breakdown.
  *
+ * Input is split three ways because the provider bills it three ways: tokens
+ * read from the cache (Anthropic: 0.1x), tokens written to it (1.25x) and the
+ * rest at the standard rate. Charging a write as ordinary input understates a
+ * turn that caches a large prefix, which is exactly the turn worth watching.
+ *
  * Deliberately no estimation. Splitting a legacy total by an assumed ratio would
  * produce a number that looks authoritative and isn't; a hole the UI can render
- * as "—" is the honest answer.
+ * as "—" is the honest answer. The same applies to an unconfigured cache rate:
+ * it falls back to the plain input rate rather than to a multiplier this code
+ * invented.
  */
 export function rowCost(
   row: { model: string | null } & UsageTokens,
@@ -116,17 +129,17 @@ export function rowCost(
   if (!price) return null
   if (row.inputTokens === null || row.outputTokens === null) return null
 
-  // Cached input is a subset of input, charged at its own (much lower) rate
-  // where one is configured. Clamped because the two counters come from
-  // different fields of the provider's response and a malformed one must not
-  // produce a negative cost.
+  // Clamped, and the write bounded by what the read left: the two counters come
+  // from different fields of the provider's response, and a malformed pair must
+  // not bill more tokens than the call reported or produce a negative cost.
   const cached = Math.min(Math.max(row.cachedInputTokens ?? 0, 0), row.inputTokens)
-  const fresh = row.inputTokens - cached
-  const cachedRate = price.cached_input_per_1m ?? price.input_per_1m
+  const written = Math.min(Math.max(row.cacheWriteTokens ?? 0, 0), row.inputTokens - cached)
+  const fresh = row.inputTokens - cached - written
 
   return (
     (fresh / TOKENS_PER_PRICE_UNIT) * price.input_per_1m +
-    (cached / TOKENS_PER_PRICE_UNIT) * cachedRate +
+    (cached / TOKENS_PER_PRICE_UNIT) * (price.cached_input_per_1m ?? price.input_per_1m) +
+    (written / TOKENS_PER_PRICE_UNIT) * (price.cache_write_per_1m ?? price.input_per_1m) +
     (row.outputTokens / TOKENS_PER_PRICE_UNIT) * price.output_per_1m
   )
 }
@@ -153,6 +166,8 @@ export interface UsageRow {
   totalTokens: number
   /** Subset of `inputTokens`; null on rows whose provider reported nothing. */
   cachedInputTokens: number | null
+  /** Subset of `inputTokens` too, disjoint from the reads. Billed higher. */
+  cacheWriteTokens: number | null
   /** Subset of `outputTokens`. Not billed apart — reported to explain a cost. */
   reasoningTokens: number | null
   latencyMs: number | null
@@ -176,6 +191,8 @@ export interface UsageTotals {
   totalTokens: number
   /** Of `inputTokens`, how many were cache reads. Discounted in `cost`. */
   cachedInputTokens: number
+  /** Of `inputTokens`, how many were cache writes. Surcharged in `cost`. */
+  cacheWriteTokens: number
   /** Of `outputTokens`, how many were reasoning. Already inside the cost. */
   reasoningTokens: number
   cost: number
@@ -193,6 +210,7 @@ export function emptyTotals(): UsageTotals {
     outputTokens: 0,
     totalTokens: 0,
     cachedInputTokens: 0,
+    cacheWriteTokens: 0,
     reasoningTokens: 0,
     cost: 0,
     unpricedCount: 0,
@@ -207,6 +225,7 @@ export function accumulate(totals: UsageTotals, row: UsageRow, prices: PriceMap)
   totals.outputTokens += row.outputTokens ?? 0
   totals.totalTokens += row.totalTokens
   totals.cachedInputTokens += row.cachedInputTokens ?? 0
+  totals.cacheWriteTokens += row.cacheWriteTokens ?? 0
   totals.reasoningTokens += row.reasoningTokens ?? 0
 
   if (row.cost !== null) {
@@ -272,6 +291,7 @@ export function toUsageRow(
     input_tokens: number | null
     output_tokens: number | null
     cached_input_tokens?: number | null
+    cache_write_tokens?: number | null
     reasoning_tokens?: number | null
     latency_ms?: number | null
     tool_rounds?: number | null
@@ -300,6 +320,7 @@ export function toUsageRow(
     outputTokens: message.output_tokens,
     totalTokens: message.tokens_used ?? 0,
     cachedInputTokens: message.cached_input_tokens ?? null,
+    cacheWriteTokens: message.cache_write_tokens ?? null,
     reasoningTokens: message.reasoning_tokens ?? null,
     latencyMs: message.latency_ms ?? null,
     toolRounds: message.tool_rounds ?? null,

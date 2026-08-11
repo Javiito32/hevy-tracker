@@ -29,7 +29,8 @@
             <th class="px-4 py-2.5 text-left font-semibold">Modelo</th>
             <th class="px-4 py-2.5 text-left font-semibold">Tarea</th>
             <th class="px-4 py-2.5 text-right font-semibold">Entrada</th>
-            <th class="px-4 py-2.5 text-right font-semibold" title="Parte de la entrada servida desde la caché del proveedor, facturada más barata">Caché</th>
+            <th class="px-4 py-2.5 text-right font-semibold" title="Parte de la entrada servida desde la caché del proveedor, facturada más barata">Caché lec.</th>
+            <th class="px-4 py-2.5 text-right font-semibold" title="Parte de la entrada escrita en la caché del proveedor, facturada por encima de la entrada normal">Caché esc.</th>
             <th class="px-4 py-2.5 text-right font-semibold">Salida</th>
             <th class="px-4 py-2.5 text-right font-semibold" title="Parte de la salida gastada razonando">Razona.</th>
             <th class="px-4 py-2.5 text-right font-semibold" title="Rondas de herramientas · tiempo de la llamada">Herr./ms</th>
@@ -48,6 +49,7 @@
             <!-- null = el proveedor no informó de caché; 0 = informó y no hubo acierto.
                  Se distinguen: uno es desconocimiento y el otro un fallo de caché. -->
             <td class="px-4 py-2.5 text-right text-ink-3">{{ i.cached_input_tokens === null ? NO_VALUE : formatTokens(i.cached_input_tokens) }}</td>
+            <td class="px-4 py-2.5 text-right text-ink-3">{{ i.cache_write_tokens === null ? NO_VALUE : formatTokens(i.cache_write_tokens) }}</td>
             <td class="px-4 py-2.5 text-right text-positive">{{ formatTokens(i.output_tokens) }}</td>
             <td class="px-4 py-2.5 text-right text-ink-3">{{ i.reasoning_tokens === null ? NO_VALUE : formatTokens(i.reasoning_tokens) }}</td>
             <td class="px-4 py-2.5 text-right text-ink-3 text-xs whitespace-nowrap">
@@ -91,6 +93,8 @@ interface LogItem {
   input_tokens: number | null
   /** Subconjunto de la entrada; null cuando el proveedor no lo informa. */
   cached_input_tokens: number | null
+  /** Subconjunto de la entrada también, disjunto de las lecturas. */
+  cache_write_tokens: number | null
   /** Subconjunto de la salida. */
   reasoning_tokens: number | null
   latency_ms: number | null

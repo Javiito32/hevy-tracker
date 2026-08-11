@@ -45,8 +45,17 @@
         <div>
           <!-- Optional: left empty, the cached tokens are costed at the full
                input rate rather than at an invented discount. -->
-          <label class="block text-xs text-ink-3 mb-1">Entrada cacheada / 1M</label>
+          <label class="block text-xs text-ink-3 mb-1">Caché lectura / 1M</label>
           <input v-model="form.cached_input_per_1m" type="number" step="0.01" min="0" placeholder="opcional"
+            class="w-full bg-surface-2 border border-line-strong hover:border-ink-3 rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:border-ink" />
+        </div>
+        <div>
+          <!-- Optional too, but it errs the other way: a vendor that charges a
+               premium for cache writes (Anthropic, 1.25x) is UNDER-billed while
+               this is empty. Left blank rather than hardcoding the multiplier —
+               it is the vendor's to change. -->
+          <label class="block text-xs text-ink-3 mb-1">Caché escritura / 1M</label>
+          <input v-model="form.cache_write_per_1m" type="number" step="0.01" min="0" placeholder="opcional"
             class="w-full bg-surface-2 border border-line-strong hover:border-ink-3 rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:border-ink" />
         </div>
       </div>
@@ -71,7 +80,8 @@
           <th class="px-4 py-2.5 text-left font-semibold">Modelo</th>
           <th class="px-4 py-2.5 text-right font-semibold">Entrada / 1M</th>
           <th class="px-4 py-2.5 text-right font-semibold">Salida / 1M</th>
-          <th class="px-4 py-2.5 text-right font-semibold">Cacheada / 1M</th>
+          <th class="px-4 py-2.5 text-right font-semibold">Caché lec. / 1M</th>
+          <th class="px-4 py-2.5 text-right font-semibold">Caché esc. / 1M</th>
           <th class="px-4 py-2.5 text-center font-semibold">Moneda</th>
           <th class="px-4 py-2.5 text-right font-semibold"></th>
         </tr>
@@ -89,6 +99,10 @@
           </td>
           <td class="px-4 py-2.5 text-right">
             <input v-model="edits[p.id]!.cached_input_per_1m" type="number" step="0.01" min="0" placeholder="—"
+              class="w-24 bg-surface-2 border border-line-strong hover:border-ink-3 rounded px-2 py-1 text-right text-ink focus:outline-none focus:border-ink" />
+          </td>
+          <td class="px-4 py-2.5 text-right">
+            <input v-model="edits[p.id]!.cache_write_per_1m" type="number" step="0.01" min="0" placeholder="—"
               class="w-24 bg-surface-2 border border-line-strong hover:border-ink-3 rounded px-2 py-1 text-right text-ink focus:outline-none focus:border-ink" />
           </td>
           <td class="px-4 py-2.5 text-center text-ink-3">{{ p.currency }}</td>
@@ -115,6 +129,8 @@ interface Price {
   output_per_1m: number
   /** null = not configured; cached input is then billed at the input rate. */
   cached_input_per_1m: number | null
+  /** null = not configured; cache writes are then billed at the input rate. */
+  cache_write_per_1m: number | null
   currency: string
 }
 
@@ -134,13 +150,14 @@ const unpricedModels = computed(() => data.value?.unpriced_models ?? [])
 const showForm = ref(false)
 const saving = ref(false)
 const formError = ref('')
-const form = ref({ model: '', input_per_1m: '', output_per_1m: '', cached_input_per_1m: '' })
+const form = ref({ model: '', input_per_1m: '', output_per_1m: '', cached_input_per_1m: '', cache_write_per_1m: '' })
 
 /** Local copy per row so an in-place edit only saves when actually changed. */
 const edits = ref<Record<string, {
   input_per_1m: number | string
   output_per_1m: number | string
   cached_input_per_1m: number | string
+  cache_write_per_1m: number | string
 }>>({})
 
 watch(prices, (list) => {
@@ -148,7 +165,8 @@ watch(prices, (list) => {
     list.map(p => [p.id, {
       input_per_1m: p.input_per_1m,
       output_per_1m: p.output_per_1m,
-      cached_input_per_1m: p.cached_input_per_1m ?? ''
+      cached_input_per_1m: p.cached_input_per_1m ?? '',
+      cache_write_per_1m: p.cache_write_per_1m ?? ''
     }])
   )
 }, { immediate: true })
@@ -159,14 +177,21 @@ const isDirty = (p: Price) => {
   return Number(e.input_per_1m) !== p.input_per_1m
     || Number(e.output_per_1m) !== p.output_per_1m
     || cachedOf(e) !== p.cached_input_per_1m
+    || writeOf(e) !== p.cache_write_per_1m
 }
 
-/** '' means "no cached rate", which is a null in the DB and not a 0. */
+/** '' means "no rate configured", which is a null in the DB and not a 0. */
+const optionalRate = (value: number | string | null | undefined): number | null =>
+  value === '' || value == null ? null : Number(value)
+
 const cachedOf = (e: { cached_input_per_1m: number | string }): number | null =>
-  e.cached_input_per_1m === '' || e.cached_input_per_1m == null ? null : Number(e.cached_input_per_1m)
+  optionalRate(e.cached_input_per_1m)
+
+const writeOf = (e: { cache_write_per_1m: number | string }): number | null =>
+  optionalRate(e.cache_write_per_1m)
 
 const prefill = (model: string) => {
-  form.value = { model, input_per_1m: '', output_per_1m: '', cached_input_per_1m: '' }
+  form.value = { model, input_per_1m: '', output_per_1m: '', cached_input_per_1m: '', cache_write_per_1m: '' }
   showForm.value = true
 }
 
@@ -176,6 +201,7 @@ const post = async (body: {
   input_per_1m: number
   output_per_1m: number
   cached_input_per_1m: number | null
+  cache_write_per_1m: number | null
 }) => {
   await $fetch('/api/admin/ai-prices', { method: 'POST', body })
   await refresh()
@@ -191,9 +217,10 @@ const save = async () => {
       model: form.value.model.trim(),
       input_per_1m: Number(form.value.input_per_1m),
       output_per_1m: Number(form.value.output_per_1m),
-      cached_input_per_1m: cachedOf(form.value)
+      cached_input_per_1m: cachedOf(form.value),
+      cache_write_per_1m: writeOf(form.value)
     })
-    form.value = { model: '', input_per_1m: '', output_per_1m: '', cached_input_per_1m: '' }
+    form.value = { model: '', input_per_1m: '', output_per_1m: '', cached_input_per_1m: '', cache_write_per_1m: '' }
     showForm.value = false
   } catch (e: any) {
     formError.value = e?.statusMessage ?? 'No se pudo guardar el precio'
@@ -211,7 +238,8 @@ const update = async (p: Price) => {
       model: p.model,
       input_per_1m: Number(e.input_per_1m),
       output_per_1m: Number(e.output_per_1m),
-      cached_input_per_1m: cachedOf(e)
+      cached_input_per_1m: cachedOf(e),
+      cache_write_per_1m: writeOf(e)
     })
   } finally {
     saving.value = false

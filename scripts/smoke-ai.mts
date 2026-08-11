@@ -20,17 +20,21 @@ import { PrismaClient } from '@prisma/client'
   return error
 }
 
-const { buildAthleteProfile, buildHistoricalReference, buildNutritionSnapshot, buildWorkoutData } =
-  await import('../server/utils/ai-payload')
 const {
-  formatSet, renderWorkoutAnalysis, serializeAthlete, serializeNutrition, serializeWorkout, table
+  buildAthleteProfile, buildFinalSummaryPayload, buildHistoricalReference,
+  buildNutritionHistory, buildNutritionSnapshot, buildWorkoutData
+} = await import('../server/utils/ai-payload')
+const {
+  formatSet, renderFinalSummary, renderWorkoutAnalysis, serializeAthlete, serializeNutrition,
+  serializeWorkout, table
 } = await import('../server/utils/ai-serialize')
-const { buildLeanSystemPrompt } = await import('../server/utils/ai-context')
+const { buildLeanSystemPrompt, joinSystemPrompt } = await import('../server/utils/ai-context')
 const { executeTool, matchToolDomains, selectChatTools, AI_TOOLS } = await import('../server/utils/ai-tools')
 const { validateGeneratedMesocycle } = await import('../server/utils/ai-plan-validator')
 const { runChatTurn } = await import('../server/utils/ai-chat')
 const { generateMesocyclePlan } = await import('../server/utils/ai-plan-generator')
 const { rowCost } = await import('../server/utils/ai-usage')
+const { toOpenAiMessages, reassembleStreamedReasoning } = await import('../server/utils/ai-provider')
 const { savePlan } = await import('../server/utils/plan-service')
 const { buildWorkoutMetrics } = await import('../server/utils/workout-metrics')
 const { writeWorkoutExercises } = await import('../server/utils/exercise-store')
@@ -62,23 +66,34 @@ class FakeProvider {
       toolCalls: next.toolCalls ?? [],
       usage: next.usage ?? {
         inputTokens: 100, outputTokens: 20, totalTokens: 120,
-        cachedInputTokens: 40, reasoningTokens: 5
+        cachedInputTokens: 40, cacheWriteTokens: 10, reasoningTokens: 5
       },
-      latencyMs: 12
+      latencyMs: 12,
+      ...(next.reasoningDetails && { reasoningDetails: next.reasoningDetails })
     }
   }
 
   async *generateStream(messages: ChatMessage[], options: GenerateOptions = {}): AsyncGenerator<StreamEvent> {
     const result = await this.generate(messages, options)
     if (result.text) yield { type: 'text', delta: result.text }
+    // Reasoning is reassembled from fragments by the real adapter and emitted
+    // whole; the fake emits it whole too, in the same position.
+    if (result.reasoningDetails?.length) {
+      yield { type: 'reasoningDetails', reasoningDetails: result.reasoningDetails }
+    }
     if (result.toolCalls.length) yield { type: 'toolCalls', toolCalls: result.toolCalls }
     yield { type: 'usage', usage: result.usage, latencyMs: result.latencyMs }
   }
 
-  /** The system prompt of the last call — what the model actually knew. */
+  /** The system message of the last call, both halves joined. */
   get lastSystemPrompt(): string {
+    return systemTextOf(this.calls[this.calls.length - 1]?.messages ?? [])
+  }
+
+  /** Only the half that carries the cache breakpoint. */
+  get lastStablePrompt(): string {
     const last = this.calls[this.calls.length - 1]
-    return last?.messages.find(m => m.role === 'system')?.content ?? ''
+    return last?.messages.find(m => m.role === 'system')?.stableContent ?? ''
   }
 
   get lastToolNames(): string[] {
@@ -86,7 +101,19 @@ class FakeProvider {
   }
 }
 
+const systemTextOf = (messages: ChatMessage[]): string => {
+  const system = messages.find(m => m.role === 'system')
+  if (!system) return ''
+  return `${system.stableContent ?? ''}\n\n${system.content}`
+}
+
+const { localDayKey: localDayKeyOf } = await import('../server/utils/dates')
+
 const daysAgo = (n: number) => { const d = new Date(); d.setDate(d.getDate() - n); return d }
+
+/** The `g proteína/kg` figure out of a rendered diet, for comparing two of them. */
+const proteinPerKgOf = (text: string): string | null =>
+  text.match(/([\d.,]+) g prote/)?.[1] ?? null
 
 /** A workout row with real metrics, from a minimal Hevy-shaped payload. */
 async function createWorkout(userId: string, opts: {
@@ -330,6 +357,33 @@ async function main() {
     check('una pregunta de dos dominios conserva todas', mixedTools.length === AI_TOOLS.length)
     check('detecta el dominio de plan', matchToolDomains('¿qué me toca mañana según el plan?').includes('plan'))
 
+    // Accents must not decide the domain: the same question written either way
+    // has to land in the same place, or it silently falls through to "todas".
+    check('los acentos no cambian el dominio detectado',
+      JSON.stringify(matchToolDomains('¿cuánta proteína como?')) ===
+      JSON.stringify(matchToolDomains('¿cuanta proteina como?')),
+      JSON.stringify(matchToolDomains('¿cuánta proteína como?')))
+    check('"proteína" acentuada se reconoce como dieta',
+      matchToolDomains('¿cuánta proteína como?').includes('nutrition'))
+    check('"récord" acentuado se reconoce como entreno',
+      matchToolDomains('¿cuál es mi récord de banca?').includes('training'))
+
+    // 'grasa' used to belong to `body`, so a purely nutritional question matched
+    // two domains and got the whole catalogue — the opposite of the point.
+    check('la grasa de una comida es dieta, no composición corporal',
+      JSON.stringify(matchToolDomains('¿cuánta grasa tiene mi cena?')) === JSON.stringify(['nutrition']),
+      JSON.stringify(matchToolDomains('¿cuánta grasa tiene mi cena?')))
+    check('la grasa corporal sí es composición corporal',
+      matchToolDomains('¿cómo va mi grasa corporal?').includes('body'))
+
+    // A diet is judged against the weight trend, so the body tool travels with it.
+    check('una pregunta de dieta arrastra la herramienta de peso corporal',
+      nutritionTools.includes('get_body_metrics_range'), nutritionTools.join(','))
+    const trainingTools = selectChatTools('¿cómo va mi press de banca?').map(t => t.name)
+    check('una pregunta de entreno no arrastra las de dieta',
+      trainingTools.includes('get_exercise_progression') && !trainingTools.includes('get_diet'),
+      trainingTools.join(','))
+
     // ── Plan validator ───────────────────────────────────────────────────────
     console.log('\n── Validación del plan generado ──')
 
@@ -377,7 +431,85 @@ async function main() {
       repaired.warnings.some(w => w.includes('sesiones por semana')), JSON.stringify(repaired.warnings))
     check('avisa de que la última semana no es descarga',
       repaired.warnings.some(w => w.includes('descarga')), JSON.stringify(repaired.warnings))
-    check('el día de la semana fuera de rango se acota', repaired.sessions[0].day_of_week === 7)
+    // A weekday is an identifier, not a quantity: 9 clamped to 7 put the session
+    // on a Sunday nobody chose, which `getNextSession` then prescribes as today.
+    check('un día de la semana inválido se descarta, no se acota',
+      repaired.sessions[0].day_of_week === null &&
+      repaired.warnings.some(w => w.includes('sin día asignado')),
+      `${repaired.sessions[0].day_of_week} · ${JSON.stringify(repaired.warnings)}`)
+
+    // ── Week numbering: discarded, never clamped ────────────────────────────
+    const weekOptions = { durationWeeks: 4, daysPerWeek: 1, allowedTemplateIds: allowed, knownTemplateIds: known }
+    const oneSession = [{ name: 'Empuje', day_of_week: 1, exercises: [{ exercise_template_id: 'AI_BENCH', name: 'Bench Press (Barbell)', target_sets: 4, rep_min: 6, rep_max: 8 }] }]
+
+    // week_number 0 must not become week 1 and overwrite the real one.
+    const zeroWeek = validateGeneratedMesocycle({
+      name: 'B', sessions: oneSession,
+      weeks: [
+        { week_number: 0, is_deload: true, volume_multiplier: 0.4, notes: 'semana cero inventada' },
+        { week_number: 1, target_rir: 3, volume_multiplier: 1, notes: 'la de verdad' }
+      ]
+    }, weekOptions)
+    check('week_number = 0 se descarta y no pisa la semana 1',
+      zeroWeek.weeks[0].notes === 'la de verdad' && zeroWeek.weeks[0].is_deload === false,
+      JSON.stringify(zeroWeek.weeks[0]))
+    check('y el descarte se reporta como reparación',
+      zeroWeek.repairs.some(r => r.includes('número inválido')), JSON.stringify(zeroWeek.repairs))
+
+    // week_number beyond the block must not become the last week.
+    const hugeWeek = validateGeneratedMesocycle({
+      name: 'B', sessions: oneSession,
+      weeks: [
+        { week_number: 999, is_deload: false, volume_multiplier: 1.4, notes: 'semana fuera del bloque' },
+        { week_number: 4, is_deload: true, volume_multiplier: 0.5, notes: 'descarga real' }
+      ]
+    }, weekOptions)
+    check('week_number > duración se descarta y no pisa la última semana',
+      hugeWeek.weeks[3].notes === 'descarga real' && hugeWeek.weeks[3].is_deload === true,
+      JSON.stringify(hugeWeek.weeks[3]))
+
+    // Non-integers name no position at all.
+    const fractionalWeek = validateGeneratedMesocycle({
+      name: 'B', sessions: oneSession,
+      weeks: [{ week_number: 2.5, notes: 'ni una cosa ni otra' }, { week_number: 1, notes: 'primera' }]
+    }, weekOptions)
+    check('un week_number no entero se descarta',
+      !fractionalWeek.weeks.some(w => w.notes === 'ni una cosa ni otra'),
+      JSON.stringify(fractionalWeek.weeks.map(w => w.notes)))
+
+    // Duplicates: deterministic, first wins, and counted as duplicates.
+    const duplicateWeeks = validateGeneratedMesocycle({
+      name: 'B', sessions: oneSession,
+      weeks: [
+        { week_number: 2, notes: 'la primera que llegó' },
+        { week_number: 2, notes: 'la repetida' },
+        { week_number: 2, notes: 'y otra más' }
+      ]
+    }, weekOptions)
+    check('ante semanas repetidas gana la primera, de forma determinista',
+      duplicateWeeks.weeks[1].notes === 'la primera que llegó', JSON.stringify(duplicateWeeks.weeks[1]))
+    check('y se informa de cuántas se descartaron por repetidas',
+      duplicateWeeks.repairs.some(r => r.includes('2 semana(s) repetidas')), JSON.stringify(duplicateWeeks.repairs))
+    check('las semanas que faltan se rellenan neutras, sin inventar programación',
+      duplicateWeeks.weeks.length === 4 &&
+      duplicateWeeks.weeks[0].volume_multiplier === 1 && duplicateWeeks.weeks[0].target_rir === null,
+      JSON.stringify(duplicateWeeks.weeks[0]))
+
+    // Every repair reported must correspond to a change actually made.
+    const reportedRepairs = validateGeneratedMesocycle({
+      name: 'B',
+      weeks: [{ week_number: 1 }, { week_number: 2 }, { week_number: 3 }, { week_number: 4, is_deload: true, volume_multiplier: 0.5 }],
+      sessions: [{
+        name: 'Empuje', day_of_week: 1,
+        exercises: [{ exercise_template_id: 'AI_BENCH', name: 'Bench Press (Barbell)', target_sets: 3.7, rep_min: 6, rep_max: 8, rest_seconds: 5000 }]
+      }]
+    }, weekOptions)
+    check('un target_sets fraccionario se redondea Y se reporta',
+      reportedRepairs.sessions[0].exercises[0].target_sets === 4 &&
+      reportedRepairs.repairs.some(r => r.includes('3.7 series')), JSON.stringify(reportedRepairs.repairs))
+    check('un descanso fuera de rango se acota Y se reporta',
+      reportedRepairs.sessions[0].exercises[0].rest_seconds === 900 &&
+      reportedRepairs.repairs.some(r => r.includes('descanso')), JSON.stringify(reportedRepairs.repairs))
 
     const rejects = (raw: any) => {
       try { validateGeneratedMesocycle(raw, validOptions); return false } catch { return true }
@@ -402,6 +534,43 @@ async function main() {
     check('un modelo sin precio no se estima',
       rowCost({ model: 'otro/modelo', inputTokens: 100, outputTokens: 100, totalTokens: 200 }, prices) === null)
 
+    // Cache WRITES: billed above plain input, and never double-counted against
+    // the reads — both are subsets of the same `inputTokens`.
+    const writePrices = new Map([['fake/model-1', {
+      id: 'p2', model: 'fake/model-1', input_per_1m: 3, output_per_1m: 15,
+      cached_input_per_1m: 0.3, cache_write_per_1m: 3.75, currency: 'USD', created_at: new Date(), updated_at: new Date()
+    } as any]])
+    const writeCost = rowCost({
+      model: 'fake/model-1', inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000,
+      cachedInputTokens: 0, cacheWriteTokens: 1_000_000
+    }, writePrices)
+    check('la escritura de caché se cobra a su propia tarifa', writeCost === 3.75, String(writeCost))
+
+    const mixedCost = rowCost({
+      model: 'fake/model-1', inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000,
+      cachedInputTokens: 600_000, cacheWriteTokens: 200_000
+    }, writePrices)
+    // 200k fresh @3 + 600k read @0.3 + 200k write @3.75 — the three shares add
+    // up to `inputTokens` exactly, which is the property being checked.
+    const expectedMixed = 0.2 * 3 + 0.6 * 0.3 + 0.2 * 3.75
+    check('lectura, escritura y entrada fresca se reparten sin solaparse',
+      Math.abs((mixedCost ?? 0) - expectedMixed) < 1e-9, `${mixedCost} vs ${expectedMixed}`)
+
+    const unconfiguredWrite = rowCost({
+      model: 'fake/model-1', inputTokens: 1_000_000, outputTokens: 0, totalTokens: 1_000_000,
+      cachedInputTokens: 0, cacheWriteTokens: 1_000_000
+    }, prices)
+    check('sin tarifa de escritura configurada se cobra a entrada normal, sin inventar multiplicador',
+      unconfiguredWrite === 3, String(unconfiguredWrite))
+
+    const overReported = rowCost({
+      model: 'fake/model-1', inputTokens: 1000, outputTokens: 0, totalTokens: 1000,
+      cachedInputTokens: 900, cacheWriteTokens: 900
+    }, writePrices)
+    check('contadores incoherentes no facturan más tokens de los que hubo',
+      (overReported ?? 0) > 0 && (overReported ?? 0) <= (1000 / 1_000_000) * 3.75,
+      String(overReported))
+
     // ── Chat, with a scripted provider ───────────────────────────────────────
     console.log('\n── Chat (proveedor simulado) ──')
 
@@ -424,13 +593,34 @@ async function main() {
     check('turno simple responde sin herramientas', turn1.reply === 'Vas bien.' && turn1.toolsInvoked.length === 0)
     check('el prompt de sistema lleva las lesiones del deportista',
       simple.lastSystemPrompt.includes('LESIONES'), simple.lastSystemPrompt.slice(0, 200))
-    check('el prompt empieza por las reglas (prefijo cacheable)',
-      simple.lastSystemPrompt.startsWith('Eres "HevyTracker AI"'))
-    check('las reglas van antes que los datos del atleta',
-      simple.lastSystemPrompt.indexOf('SEGURIDAD') < simple.lastSystemPrompt.indexOf('CONTEXTO DEL DEPORTISTA'))
     check('pide caché de prefijo', simple.calls[0].options.cachePrefix === true)
     check('el chat razona en bajo', simple.calls[0].options.reasoningEffort === 'low')
+    check('la conversación viaja como session_id para el enrutado pegajoso',
+      simple.calls[0].options.sessionId === turn1.conversationId, String(simple.calls[0].options.sessionId))
     check('registra métricas de la llamada', turn1.metrics.latencyMs > 0 && turn1.metrics.toolRounds === 0)
+
+    // ── Cache: the stable half really is stable ─────────────────────────────
+    // The breakpoint sits at the end of `stableContent`. If any athlete datum
+    // leaks into it, the cached prefix changes whenever the athlete does and is
+    // written on every turn without ever being read.
+    check('el prefijo estable va separado del contexto dinámico',
+      simple.lastStablePrompt.length > 0 &&
+      simple.calls[0].messages[0].content !== simple.lastStablePrompt,
+      simple.lastStablePrompt.slice(0, 80))
+    check('el prefijo estable empieza por las reglas',
+      simple.lastStablePrompt.startsWith('Eres "HevyTracker AI"'))
+    // The athlete's DATA, not the words the rules use to refer to it: the
+    // grounding block legitimately names the "## LESIONES" section, which is a
+    // rule and identical for everyone.
+    check('el prefijo estable NO contiene datos del deportista',
+      !simple.lastStablePrompt.includes('CONTEXTO DEL DEPORTISTA') &&
+      !simple.lastStablePrompt.includes('Hombro derecho') &&
+      !simple.lastStablePrompt.includes('SmokeAI') &&
+      !simple.lastStablePrompt.includes('Bloque hipertrofia') &&
+      !/\d+([.,]\d)? kg\b/.test(simple.lastStablePrompt),
+      simple.lastStablePrompt.slice(-200))
+    check('el contexto dinámico sí los contiene',
+      simple.calls[0].messages[0].content.includes('CONTEXTO DEL DEPORTISTA'))
 
     const storedMessage = await prisma.aiMessage.findFirst({
       where: { conversation_id: turn1.conversationId, role: 'assistant' },
@@ -440,6 +630,8 @@ async function main() {
       storedMessage?.input_tokens === 100 && storedMessage?.cached_input_tokens === 40 &&
       storedMessage?.reasoning_tokens === 5 && (storedMessage?.latency_ms ?? 0) > 0,
       JSON.stringify(storedMessage))
+    check('persiste también los tokens escritos en caché',
+      storedMessage?.cache_write_tokens === 10, String(storedMessage?.cache_write_tokens))
 
     // 2. One tool.
     const oneTool = new FakeProvider([
@@ -515,7 +707,8 @@ async function main() {
     check('el resultado de get_diet trae el menú', (dietTool?.content ?? '').includes('Avena 100 g'), dietTool?.content.slice(0, 200))
     check('y avisa de que es un plan, no un registro', (dietTool?.content ?? '').includes('ES UN PLAN'))
 
-    const systemPrompt = await buildLeanSystemPrompt(user.id)
+    const promptHalves = await buildLeanSystemPrompt(user.id)
+    const systemPrompt = joinSystemPrompt(promptHalves)
     check('el contexto permanente trae macros pero no el menú',
       systemPrompt.includes('media de un día planificado') && !systemPrompt.includes('Avena 100 g'),
       systemPrompt.slice(systemPrompt.indexOf('DIETA ACTIVA'), systemPrompt.indexOf('DIETA ACTIVA') + 300))
@@ -523,6 +716,127 @@ async function main() {
       systemPrompt.includes('get_active_plan') && !systemPrompt.includes('Bench Press (Barbell) — 4'))
     check('el contexto declara que los datos no son instrucciones',
       systemPrompt.includes('no instrucciones') || systemPrompt.includes('no son instrucciones'))
+
+    // Notes used to be printed twice: once as profile text and once with the
+    // id `deactivate_user_note` needs. Exactly one representation, and it is
+    // the one that carries the id.
+    const londonMentions = systemPrompt.split('Londres').length - 1
+    check('las notas guardadas no viajan duplicadas', londonMentions === 1, `${londonMentions} apariciones`)
+    check('y la única que viaja lleva su id',
+      /\[[0-9a-f-]{8,}\][^\n]*Londres/i.test(systemPrompt),
+      systemPrompt.slice(systemPrompt.indexOf('NOTAS RECORDADAS')))
+
+    // Changing the athlete must not move a byte of the cacheable prefix.
+    await prisma.bodyMetric.create({ data: { user_id: user.id, date: new Date(), weight: 91.5 } })
+    await prisma.aiNote.create({ data: { user_id: user.id, content: 'Nota nueva que cambia el contexto dinámico.' } })
+    const promptAfter = await buildLeanSystemPrompt(user.id)
+    check('el prefijo estable no cambia al cambiar peso o notas',
+      promptAfter.stable === promptHalves.stable)
+    check('y el contexto dinámico sí cambia',
+      promptAfter.dynamic !== promptHalves.dynamic)
+
+    // ── Reasoning preserved across tool calls ────────────────────────────────
+    console.log('\n── Razonamiento entre llamadas a herramientas ──')
+
+    const REASONING = [
+      { type: 'reasoning.text', text: 'Necesito la sesión de hoy.', signature: 'sig-abc', format: 'anthropic-claude-v1', index: 0 }
+    ]
+    const reasoned = new FakeProvider([
+      { toolCalls: [{ id: 'r1', name: 'get_next_planned_session', arguments: {} }], reasoningDetails: REASONING },
+      { text: 'Te toca Empuje.' }
+    ])
+    await runChatTurn({
+      userId: user.id, conversationId: null, message: '¿Qué sesión me toca según el plan?', keys: {}, provider: reasoned as any
+    })
+    const replayed = reasoned.calls[1].messages.find(m => m.role === 'assistant')
+    check('el turno assistant se reenvía con su reasoning_details',
+      JSON.stringify(replayed?.reasoningDetails) === JSON.stringify(REASONING),
+      JSON.stringify(replayed?.reasoningDetails))
+    check('la firma del bloque de razonamiento sobrevive intacta',
+      replayed?.reasoningDetails?.[0]?.signature === 'sig-abc')
+    check('el orden es reasoning → tool_call → tool_result',
+      !!replayed?.reasoningDetails?.length && !!replayed?.toolCalls?.length &&
+      reasoned.calls[1].messages.findIndex(m => m.role === 'assistant') <
+      reasoned.calls[1].messages.findIndex(m => m.role === 'tool'))
+
+    // A model that reasons about nothing must not gain an empty array: the
+    // field has to be absent, not present-and-empty.
+    const unreasoned = new FakeProvider([
+      { toolCalls: [{ id: 'u1', name: 'get_next_planned_session', arguments: {} }] },
+      { text: 'Listo.' }
+    ])
+    await runChatTurn({
+      userId: user.id, conversationId: null, message: '¿Qué sesión me toca según el plan?', keys: {}, provider: unreasoned as any
+    })
+    const noReasoning = unreasoned.calls[1].messages.find(m => m.role === 'assistant')
+    check('un modelo sin razonamiento no envía el campo',
+      noReasoning !== undefined && !('reasoningDetails' in noReasoning),
+      JSON.stringify(noReasoning))
+
+    // The adapter's own serialisation: reasoning_details only appears when
+    // there is reasoning, and never as an empty key.
+    const withReasoning = toOpenAiMessages([
+      { role: 'assistant', content: '', toolCalls: [{ id: 't1', name: 'x', arguments: {} }], reasoningDetails: REASONING as any }
+    ])
+    const withoutReasoning = toOpenAiMessages([
+      { role: 'assistant', content: '', toolCalls: [{ id: 't1', name: 'x', arguments: {} }] }
+    ])
+    check('el cuerpo de la petición lleva reasoning_details cuando existe',
+      JSON.stringify(withReasoning[0].reasoning_details) === JSON.stringify(REASONING))
+    check('y no incluye la clave cuando no existe',
+      !('reasoning_details' in withoutReasoning[0]), JSON.stringify(withoutReasoning[0]))
+
+    // Streaming: same guarantee, from fragments.
+    const streamedReasoning = new FakeProvider([
+      { toolCalls: [{ id: 's1', name: 'get_next_planned_session', arguments: {} }], reasoningDetails: REASONING },
+      { text: 'Respuesta final.' }
+    ])
+    const streamEvents: string[] = []
+    await runChatTurn({
+      userId: user.id, conversationId: null, message: '¿Qué sesión me toca según el plan?', keys: {},
+      stream: true, provider: streamedReasoning as any,
+      onEvent: async (e) => { streamEvents.push(e.type) }
+    })
+    const streamReplayed = streamedReasoning.calls[1].messages.find(m => m.role === 'assistant')
+    check('en streaming el reasoning también se conserva',
+      JSON.stringify(streamReplayed?.reasoningDetails) === JSON.stringify(REASONING),
+      JSON.stringify(streamReplayed?.reasoningDetails))
+
+    // The adapter's fragment reassembly, exercised directly.
+    const merged = reassembleStreamedReasoning([
+      [{ type: 'reasoning.text', text: 'Primero ', index: 0, format: 'anthropic-claude-v1' }],
+      [{ type: 'reasoning.text', text: 'y después.', index: 0 }],
+      [{ type: 'reasoning.text', signature: 'sig-z', index: 0 }]
+    ])
+    check('los fragmentos de razonamiento se recomponen en orden',
+      merged.length === 1 && merged[0].text === 'Primero y después.' &&
+      merged[0].signature === 'sig-z' && merged[0].format === 'anthropic-claude-v1',
+      JSON.stringify(merged))
+
+    // ── Streaming: text emitted before a tool call is not the answer ─────────
+    console.log('\n── Streaming con texto previo a la herramienta ──')
+
+    const preamble = new FakeProvider([
+      { text: 'Déjame mirar tu plan…', toolCalls: [{ id: 'p1', name: 'get_next_planned_session', arguments: {} }] },
+      { text: 'Te toca Empuje.' }
+    ])
+    const frames: Array<{ type: string; text?: string }> = []
+    const streamedTurn = await runChatTurn({
+      userId: user.id, conversationId: null, message: '¿Qué sesión me toca según el plan?', keys: {},
+      stream: true, provider: preamble as any,
+      onEvent: async (e) => { frames.push(e.type === 'delta' ? { type: e.type, text: e.text } : { type: e.type }) }
+    })
+    const resetAt = frames.findIndex(f => f.type === 'reset')
+    check('el texto previo a la herramienta se emite y luego se descarta',
+      resetAt > 0 && frames[resetAt - 1].text === 'Déjame mirar tu plan…', JSON.stringify(frames))
+    check('el reset llega antes del aviso de herramienta',
+      resetAt < frames.findIndex(f => f.type === 'tool'), JSON.stringify(frames.map(f => f.type)))
+    check('lo que se persiste es solo la respuesta final',
+      streamedTurn.reply === 'Te toca Empuje.', streamedTurn.reply)
+    check('el modelo sí recibe el texto intermedio en la ronda siguiente',
+      preamble.calls[1].messages.find(m => m.role === 'assistant')?.content === 'Déjame mirar tu plan…')
+    const noResetTurn = streamEvents.filter(t => t === 'reset').length
+    check('un turno sin texto previo no emite reset', noResetTurn === 0, String(noResetTurn))
 
     // 5. A tool answering about another user's data can't be reached from chat.
     const crossUser = new FakeProvider([
@@ -535,6 +849,142 @@ async function main() {
     const crossResult = crossUser.calls[1].messages.find(m => m.role === 'tool')
     check('desde el chat tampoco se alcanza el dato de otro usuario',
       !(crossResult?.content ?? '').includes('Sentadilla secreta'), crossResult?.content)
+
+    // ── Historical fidelity: nothing from after the reference date ───────────
+    console.log('\n── Fidelidad temporal (dieta, notas, peso, plan) ──')
+
+    // A finished block, and a diet + a body + a plan that all changed AFTER it.
+    const oldBlockStart = daysAgo(120)
+    const oldBlockEnd = daysAgo(90)
+    const oldBlock = await prisma.mesocycle.create({
+      data: {
+        user_id: user.id, name: 'Bloque terminado', goal: 'Fuerza',
+        start_date: oldBlockStart, end_date: oldBlockEnd, status: 'completed'
+      }
+    })
+    await savePlan(oldBlock.id, user.id, [
+      { name: 'Fuerza A', day_of_week: 2, exercises: [{ exercise_template_id: 'AI_BENCH', name: 'Bench Press (Barbell)', target_sets: 5, rep_min: 3, rep_max: 5 }] }
+    ], [{ week_number: 1, target_rir: 2, volume_multiplier: 1 }])
+
+    // Inside the block.
+    const inBlockWorkout = await createWorkout(user.id, {
+      name: 'Sesión dentro del bloque', date: daysAgo(100), mesocycleId: oldBlock.id,
+      exercises: [{ title: 'Press de banca (Barra)', templateId: 'AI_BENCH', sets: [{ weight: 90, reps: 5, rpe: 8 }] }]
+    })
+    await prisma.mesocycleNote.create({
+      data: { mesocycle_id: oldBlock.id, date: daysAgo(100), content: 'NOTA_DENTRO del bloque.' }
+    })
+    // Attached to the same block but dated after it ended — the hindsight case.
+    await createWorkout(user.id, {
+      name: 'Sesión posterior mal asignada', date: daysAgo(5), mesocycleId: oldBlock.id,
+      exercises: [{ title: 'Press de banca (Barra)', templateId: 'AI_BENCH', sets: [{ weight: 120, reps: 5, rpe: 8 }] }]
+    })
+    await prisma.mesocycleNote.create({
+      data: { mesocycle_id: oldBlock.id, date: daysAgo(3), content: 'NOTA_POSTERIOR escrita mucho después.' }
+    })
+    await prisma.mesocycleEvaluation.create({
+      data: { mesocycle_id: oldBlock.id, week_number: 1, evaluation_date: daysAgo(95), summary: 'EVAL_DENTRO' }
+    })
+    await prisma.mesocycleEvaluation.create({
+      data: { mesocycle_id: oldBlock.id, week_number: 2, evaluation_date: daysAgo(2), summary: 'EVAL_POSTERIOR' }
+    })
+
+    const summaryPayload = (await buildFinalSummaryPayload(user.id, oldBlock.id))!
+    check('el resumen final NO incluye entrenos posteriores al bloque',
+      summaryPayload.stats.total_sessions === 1 &&
+      summaryPayload.first_workout?.name === 'Sesión dentro del bloque',
+      JSON.stringify({ n: summaryPayload.stats.total_sessions, first: summaryPayload.first_workout?.name }))
+    check('el resumen final NO incluye notas escritas después del bloque',
+      summaryPayload.diary_notes.some(n => n.content.includes('NOTA_DENTRO')) &&
+      !summaryPayload.diary_notes.some(n => n.content.includes('NOTA_POSTERIOR')),
+      JSON.stringify(summaryPayload.diary_notes))
+    check('el resumen final NO incluye evaluaciones posteriores al bloque',
+      !summaryPayload.weekly_evaluations.some(e => e.summary === 'EVAL_POSTERIOR'),
+      JSON.stringify(summaryPayload.weekly_evaluations.map(e => e.summary)))
+    check('el resumen final NO cita el peso actual',
+      !summaryPayload.athlete.weight_history.some(w => w.avg_kg === 91.5),
+      JSON.stringify(summaryPayload.athlete.weight_history))
+    check('el resumen final declara su fecha de corte',
+      summaryPayload.as_of === localDayKeyOf(oldBlockEnd), `${summaryPayload.as_of}`)
+    check('y el documento renderizado la nombra en el encabezado del perfil',
+      renderFinalSummary(summaryPayload).includes(`## PERFIL (a fecha de ${summaryPayload.as_of})`),
+      renderFinalSummary(summaryPayload).slice(0, 200))
+    check('un mesociclo de otro usuario no produce payload',
+      (await buildFinalSummaryPayload(user.id, otherMeso.id)) === null)
+
+    // The diet published today must not appear in a history closed months ago.
+    const historyNow = await buildNutritionHistory(user.id)
+    const historyThen = await buildNutritionHistory(user.id, 12, oldBlockEnd)
+    check('el historial de dieta actual ve la versión vigente',
+      historyNow.some(h => h.version_number === 1), JSON.stringify(historyNow))
+    check('el historial de dieta histórico NO ve versiones posteriores',
+      historyThen.length === 0, JSON.stringify(historyThen))
+
+    // A version that was still in force at the reference date renders as
+    // "vigente" then, not with the end date it later got.
+    const supersededVersion = await prisma.dietVersion.create({
+      data: {
+        diet_plan_id: dietPlan.id, version_number: 0, status: 'superseded',
+        start_date: daysAgo(150), end_date: daysAgo(5),
+        total_kcal: 2400, total_protein_g: 160, total_carbs_g: 260, total_fat_g: 70, planned_days: 7
+      }
+    })
+    const historyOld = await buildNutritionHistory(user.id, 12, oldBlockEnd)
+    check('una versión aún vigente en esa fecha no muestra su fecha de fin futura',
+      historyOld.length === 1 && historyOld[0].to === undefined, JSON.stringify(historyOld))
+
+    // Training weekdays must come from the block in force then, not the active one.
+    const snapshotThen = await buildNutritionSnapshot(user.id, { asOf: daysAgo(100) })
+    const snapshotNow = await buildNutritionSnapshot(user.id)
+    check('los días de entrenamiento del snapshot histórico salen del bloque de entonces',
+      JSON.stringify(snapshotThen?.training_weekdays) === JSON.stringify(['martes']),
+      JSON.stringify(snapshotThen?.training_weekdays))
+    check('y los del snapshot actual salen del bloque activo',
+      JSON.stringify(snapshotNow?.training_weekdays) === JSON.stringify(['lunes', 'jueves']),
+      JSON.stringify(snapshotNow?.training_weekdays))
+
+    // Protein per kg of a past diet must divide by the body of that time.
+    await prisma.bodyMetric.create({ data: { user_id: user.id, date: daysAgo(151), weight: 70 } })
+    const dietThen = await executeTool('get_diet', user.id, { date: localDayKeyOf(daysAgo(140)) })
+    const dietNow = await executeTool('get_diet', user.id, {})
+    check('get_diet(date) calcula proteína/kg con el peso de entonces',
+      dietThen.includes('peso de ') && dietThen.includes('70 kg') && !dietThen.includes('91.5 kg'),
+      dietThen.split('\n').slice(0, 3).join(' | '))
+    check('get_diet sin fecha usa el peso más reciente',
+      dietNow.includes('91.5 kg'), dietNow.split('\n').slice(0, 3).join(' | '))
+    check('y las dos cifras de proteína/kg difieren',
+      proteinPerKgOf(dietThen) !== proteinPerKgOf(dietNow),
+      `${proteinPerKgOf(dietThen)} vs ${proteinPerKgOf(dietNow)}`)
+
+    await prisma.dietVersion.delete({ where: { id: supersededVersion.id } })
+
+    // ── Nutrition analysis needs a menu it can act on ────────────────────────
+    console.log('\n── Detalle del análisis de dieta ──')
+
+    // Make Saturday differ from the rest, so a representative day is provably
+    // not enough to answer "which food, on which day, by how many grams".
+    const saturdayMeal = await prisma.dietMeal.findFirst({
+      where: { diet_version_id: version.id, weekday: 6 }, select: { id: true }
+    })
+    const salmon = await prisma.food.create({
+      data: { user_id: user.id, name: 'Salmón', kcal: 208, protein_g: 20, carbs_g: 0, fat_g: 13, source: 'manual' }
+    })
+    await prisma.dietItem.create({
+      data: {
+        diet_meal_id: saturdayMeal!.id, food_id: salmon.id, food_name: 'Salmón', quantity_g: 150,
+        nutrients_snapshot: JSON.stringify({ kcal: 208, protein_g: 20, carbs_g: 0, fat_g: 13 })
+      }
+    })
+
+    const analysisDiet = await buildNutritionSnapshot(user.id, { detail: 'full' })
+    const analysisText = serializeNutrition(analysisDiet!)
+    check('el análisis de dieta recibe el menú de TODOS los días distintos',
+      analysisText.includes('Avena') && analysisText.includes('Salmón'), analysisText.slice(-400))
+    check('y no declara el menú como omitido', !analysisText.includes('MENÚ NO INCLUIDO'))
+
+    const macrosOnly = serializeNutrition((await buildNutritionSnapshot(user.id, { detail: 'macros' }))!)
+    check('el contexto de las tareas de entreno sigue sin menú',
+      !macrosOnly.includes('Salmón') && macrosOnly.includes('MENÚ NO INCLUIDO'), macrosOnly.slice(-200))
 
     // ── Plan generation, with a scripted provider ────────────────────────────
     console.log('\n── Generación de plan (proveedor simulado) ──')

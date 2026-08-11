@@ -492,6 +492,12 @@ model AiMessage {
   /// input_tokens, billed at a fraction of the rate. Null means the provider
   /// said nothing about caching, which is not the same as a cache miss (0).
   cached_input_tokens Int?
+  /// Input tokens WRITTEN to the provider's cache by this call — also a subset
+  /// of input_tokens, and disjoint from cached_input_tokens. Billed above the
+  /// standard input rate (Anthropic: 1.25x write, 0.1x read), so a prefix that
+  /// is written every turn and never read costs more than no cache at all.
+  /// Null means the provider reported nothing, not zero.
+  cache_write_tokens Int?
   /// Output tokens spent thinking — a subset of output_tokens. Not billed
   /// separately; stored because it is the usual answer to "why did that cost
   /// so much for three sentences".
@@ -528,6 +534,13 @@ model AiModelPrice {
   /// an overestimate, which is the safe direction for a cost figure and never
   /// invents a discount the vendor may not give.
   cached_input_per_1m Float?
+  /// USD per 1M input tokens WRITTEN to the prompt cache, when the vendor
+  /// charges a premium for them (Anthropic writes at ~1.25x input). Null = not
+  /// configured, and cache writes are then billed at the plain input rate —
+  /// which UNDERSTATES the bill on those vendors. Left as an explicit setting
+  /// rather than a hardcoded multiplier: the multiplier is the vendor's to
+  /// change, and a guessed price is still a guess.
+  cache_write_per_1m Float?
   currency      String   @default("USD")
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt

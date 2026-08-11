@@ -1,5 +1,5 @@
 import { prisma } from './prisma'
-import { localWeekKey } from './dates'
+import { localDayKey, localWeekKey } from './dates'
 import { resolveVersion, serializeDietForAi } from './diet-service'
 import { normalizeExerciseName } from './exercise-aliases'
 import { WEEKDAY_LABELS_ES, isWeekday } from './nutrition-calculator'
@@ -246,6 +246,12 @@ export interface WeekEvaluationPayload {
 export interface FinalSummaryPayload {
   task: 'final_summary'
   today: string
+  /**
+   * The date every window in this payload is closed at: the block's end, or
+   * today while it is still open. Printed in the profile heading so the model
+   * cannot read a finished block's profile as the athlete's current one.
+   */
+  as_of?: string
   athlete: AthleteProfile
   mesocycle: { name: string; goal?: string; split?: string }
   stats: {
@@ -409,7 +415,7 @@ export function extractCompoundLiftsData(workouts: any[]): CompoundLift[] {
       if (isNaN(rm)) continue
       const existing = best.get(ex.name)
       if (!existing || rm > existing.rm) {
-        best.set(ex.name, { rm, date: new Date(w.date).toISOString().substring(0, 10) })
+        best.set(ex.name, { rm, date: localDayKey(new Date(w.date)) })
       }
     }
   }
@@ -421,7 +427,11 @@ export function extractCompoundLiftsData(workouts: any[]): CompoundLift[] {
 export function buildWorkoutData(w: any, includeExercises = true): Workout {
   const workout: Workout = {
     name: w.name,
-    date: new Date(w.date).toISOString().substring(0, 10),
+    // Local components: `Workout.date` is the instant the session started, and
+    // `toISOString()` on a 00:30 session in Madrid dates it to the day before —
+    // so the analysis and the athlete's calendar disagreed about when they
+    // trained. Same rule as `localWeekKey` below and everywhere else in the app.
+    date: localDayKey(new Date(w.date)),
     total_volume_kg: Math.round(Number(w.total_volume ?? 0)),
   }
   if (w.rpe_avg) workout.rpe_avg = Number(w.rpe_avg)
@@ -486,7 +496,7 @@ export function buildWorkoutData(w: any, includeExercises = true): Workout {
  */
 export async function buildAthleteProfile(
   userId: string,
-  options: { includeInjuries?: boolean; asOf?: Date } = {}
+  options: { includeInjuries?: boolean; includeNotes?: boolean; asOf?: Date } = {}
 ): Promise<AthleteProfile> {
   const now = options.asOf ?? new Date()
   const daysAgo = (n: number) => { const d = new Date(now); d.setDate(d.getDate() - n); return d }
@@ -548,7 +558,10 @@ export async function buildAthleteProfile(
   if (options.includeInjuries !== false && user?.injuries_notes) {
     profile.injuries_limitations = user.injuries_notes
   }
-  if (notes.length > 0) {
+  // `includeNotes: false` is for the chat, and only for the chat: it renders the
+  // same notes itself, WITH the ids `deactivate_user_note` needs. Printing them
+  // in both places sent every note twice on every turn of every conversation.
+  if (options.includeNotes !== false && notes.length > 0) {
     profile.active_notes = notes.map(n => n.content)
   }
 
@@ -705,6 +718,23 @@ export async function buildLastMesocycleSummaryData(userId: string): Promise<Mes
 // ── Nutrition ──────────────────────────────────────────────────────────────────
 
 /**
+ * Prisma filter for "the athlete's block, as of a date".
+ *
+ * With no date that is simply the active one. With a date it is the block whose
+ * range contains it, whatever its status today — a block that has since been
+ * completed was the block in force back then, and the one that is active now
+ * had not started.
+ */
+function mesocycleAtFilter(userId: string, asOf?: Date) {
+  if (!asOf) return { user_id: userId, status: 'active' }
+  return {
+    user_id: userId,
+    start_date: { lte: asOf },
+    OR: [{ end_date: null }, { end_date: { gte: asOf } }]
+  }
+}
+
+/**
  * The active diet, shaped for a JSON payload.
  *
  * Returns undefined when there is no published diet — callers spread it
@@ -718,13 +748,18 @@ export async function buildLastMesocycleSummaryData(userId: string): Promise<Mes
  */
 export async function buildNutritionSnapshot(
   userId: string,
-  options: { detail?: 'macros' | 'representative'; asOf?: Date } = {}
+  options: { detail?: 'macros' | 'representative' | 'full'; asOf?: Date } = {}
 ): Promise<NutritionSnapshot | undefined> {
   // With `asOf`, the version that was in force on that date — the diet the
   // athlete was actually following while the block being judged was trained,
   // not the one they switched to afterwards.
+  //
+  // The key is built from LOCAL components. `toISOString()` on a Date at local
+  // midnight hands back the previous day in any positive-offset timezone, which
+  // is how a snapshot dated to a Monday resolved the version in force on the
+  // Sunday — and on a publish-and-replace boundary those are different diets.
   const version = await resolveVersion(userId, {
-    ...(options.asOf && { date: options.asOf.toISOString().substring(0, 10) })
+    ...(options.asOf && { date: localDayKey(options.asOf) })
   })
   if (!version) return undefined
 
@@ -739,12 +774,18 @@ export async function buildNutritionSnapshot(
       orderBy: { date: 'desc' },
       select: { weight: true }
     }),
-    // Which weekdays the athlete actually trains, straight off the active
-    // mesocycle. This is what the old training/rest day_type buckets were
-    // reaching for, now grounded in the plan instead of a manual flag: it turns
-    // "your carbs are 320 g" into "your carbs are highest on your rest days".
+    // Which weekdays the athlete actually trains, straight off the mesocycle
+    // that was running AT THE REFERENCE DATE. This is what the old training/rest
+    // day_type buckets were reaching for, now grounded in the plan instead of a
+    // manual flag: it turns "your carbs are 320 g" into "your carbs are highest
+    // on your rest days".
+    //
+    // Reading `status: 'active'` regardless of `asOf` was the leak: judging a
+    // diet from March against the block that started in July labels the wrong
+    // days as training days, and the whole point of the field is which days
+    // those were.
     prisma.plannedSession.findMany({
-      where: { mesocycle: { user_id: userId, status: 'active' }, day_of_week: { not: null } },
+      where: { mesocycle: mesocycleAtFilter(userId, options.asOf), day_of_week: { not: null } },
       select: { day_of_week: true },
       distinct: ['day_of_week']
     })
@@ -793,10 +834,16 @@ export async function buildNutritionSnapshot(
 /**
  * Published diet versions over time, newest first. Drafts are excluded: they
  * were never followed, so they are not part of what the athlete ate.
+ *
+ * **`asOf` cuts off the future.** A block that ended in June is summarised with
+ * the diets that existed by June; a version published in August is not part of
+ * its story, and listing it invites the model to explain the block's outcome
+ * with a change made after it finished. The default (now) is unchanged.
  */
 export async function buildNutritionHistory(
   userId: string,
-  limit = 12
+  limit = 12,
+  asOf?: Date
 ): Promise<NutritionHistoryEntry[]> {
   const plan = await prisma.dietPlan.findFirst({
     where: { user_id: userId, status: 'active' },
@@ -806,7 +853,13 @@ export async function buildNutritionHistory(
   if (!plan) return []
 
   const versions = await prisma.dietVersion.findMany({
-    where: { diet_plan_id: plan.id, status: { in: ['active', 'superseded'] }, start_date: { not: null } },
+    where: {
+      diet_plan_id: plan.id,
+      status: { in: ['active', 'superseded'] },
+      // A version that had not started yet is not history, it is a plan the
+      // athlete had not begun following.
+      start_date: asOf ? { not: null, lte: asOf } : { not: null }
+    },
     orderBy: { start_date: 'desc' },
     take: limit,
     select: {
@@ -824,13 +877,109 @@ export async function buildNutritionHistory(
   return versions.map(v => ({
     version_number: v.version_number,
     from: v.start_date!.toISOString().substring(0, 10),
-    ...(v.end_date && { to: v.end_date.toISOString().substring(0, 10) }),
+    // An end date later than the reference is a fact from the future: at `asOf`
+    // this version had not been replaced yet, and it renders as "vigente".
+    ...(v.end_date && !(asOf && v.end_date > asOf) && { to: v.end_date.toISOString().substring(0, 10) }),
     ...(v.change_note && { change_note: v.change_note }),
     kcal: v.total_kcal,
     protein_g: v.total_protein_g,
     carbs_g: v.total_carbs_g,
     fat_g: v.total_fat_g
   }))
+}
+
+// ── Final summary ──────────────────────────────────────────────────────────────
+
+/**
+ * Everything the final-summary task is told about a completed block.
+ *
+ * **`asOf` is the block's end, and it closes every window here — not just the
+ * profile's.** A block owns its rows through a foreign key, and a foreign key
+ * carries no date: a workout attached to a finished block weeks afterwards, a
+ * diary note written in hindsight, an evaluation run later, a diet published
+ * since — each one is dated past the end of the block and each one lets the
+ * summary explain how the block went using something that had not happened
+ * while it ran. Only the profile was bounded before.
+ *
+ * Returns null when the mesocycle isn't the caller's; ownership is part of the
+ * lookup, as everywhere else.
+ */
+export async function buildFinalSummaryPayload(
+  userId: string,
+  mesocycleId: string
+): Promise<FinalSummaryPayload | null> {
+  const mesocycle = await prisma.mesocycle.findFirst({ where: { id: mesocycleId, user_id: userId } })
+  if (!mesocycle) return null
+
+  const now = new Date()
+  const asOf = mesocycle.end_date && mesocycle.end_date < now ? mesocycle.end_date : now
+
+  const [athlete, allWorkouts, allEvaluations, allNotes, nutrition, nutritionHistory] = await Promise.all([
+    buildAthleteProfile(userId, { asOf }),
+    prisma.workout.findMany({
+      where: { user_id: userId, mesocycle_id: mesocycleId, date: { lte: asOf } },
+      orderBy: { date: 'asc' },
+      select: { name: true, date: true, total_volume: true, rpe_avg: true, exercises_summary: true, notes: true, duration: true }
+    }),
+    prisma.mesocycleEvaluation.findMany({
+      where: { mesocycle_id: mesocycleId, evaluation_date: { lte: asOf } },
+      orderBy: { week_number: 'asc' },
+      select: { week_number: true, summary: true, volume_trend: true, recommendations: true }
+    }),
+    prisma.mesocycleNote.findMany({
+      where: { mesocycle_id: mesocycleId, date: { lte: asOf } },
+      orderBy: { date: 'asc' }
+    }),
+    buildNutritionSnapshot(userId, { asOf }),
+    buildNutritionHistory(userId, 12, asOf)
+  ])
+
+  const totalVolume = allWorkouts.reduce((s, w) => s + Number(w.total_volume ?? 0), 0)
+  const workoutsWithRpe = allWorkouts.filter(w => w.rpe_avg)
+  const avgRpe = workoutsWithRpe.length
+    ? workoutsWithRpe.reduce((s, w) => s + (w.rpe_avg ?? 0), 0) / workoutsWithRpe.length
+    : 0
+
+  const durationDays = Math.round(
+    ((mesocycle.end_date ? new Date(mesocycle.end_date).getTime() : now.getTime()) -
+      new Date(mesocycle.start_date).getTime()) / (24 * 60 * 60 * 1000)
+  )
+
+  const firstWorkout = allWorkouts[0]
+  const lastWorkout = allWorkouts[allWorkouts.length - 1]
+
+  return {
+    task: 'final_summary',
+    today: localDayKey(now),
+    as_of: localDayKey(asOf),
+    athlete,
+    mesocycle: {
+      name: mesocycle.name,
+      ...(mesocycle.goal && { goal: mesocycle.goal }),
+      ...(mesocycle.split_description && { split: mesocycle.split_description })
+    },
+    stats: {
+      duration_days: durationDays,
+      duration_weeks: Math.round(durationDays / 7),
+      total_sessions: allWorkouts.length,
+      total_volume_kg: Math.round(totalVolume),
+      avg_rpe: parseFloat(avgRpe.toFixed(1))
+    },
+    ...(firstWorkout && { first_workout: buildWorkoutData(firstWorkout, true) }),
+    ...(lastWorkout && lastWorkout !== firstWorkout && { last_workout: buildWorkoutData(lastWorkout, true) }),
+    weekly_evaluations: allEvaluations.map(e => ({
+      week: e.week_number,
+      ...(e.summary && { summary: e.summary }),
+      ...(e.volume_trend && { volume_trend: e.volume_trend }),
+      ...(e.recommendations && { recommendations: e.recommendations })
+    })),
+    diary_notes: allNotes.map(n => ({
+      date: localDayKey(new Date(n.date)),
+      content: n.content
+    })),
+    ...(nutrition && { nutrition }),
+    ...(nutritionHistory.length > 0 && { nutrition_history: nutritionHistory })
+  }
 }
 
 /**

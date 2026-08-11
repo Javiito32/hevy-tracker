@@ -150,7 +150,17 @@ export async function runAiTask(options: AiTaskOptions): Promise<AiTaskResult> {
 
     toolRounds++
     toolCalls += calls.length
-    messages.push({ role: 'assistant', content: result.text ?? '', toolCalls: calls })
+    // The assistant turn is replayed with its reasoning attached, in the order
+    // the model produced it: reasoning → tool calls → (below) tool results.
+    // Dropping the reasoning makes the next round re-think what this one was
+    // already billed for, and on models that sign their thinking the block
+    // cannot be reconstructed at all — the provider rejects the sequence.
+    messages.push({
+      role: 'assistant',
+      content: result.text ?? '',
+      toolCalls: calls,
+      ...(result.reasoningDetails?.length && { reasoningDetails: result.reasoningDetails })
+    })
     for (const call of calls) {
       const impl = options.toolImpls?.[call.name]
       let output: unknown
@@ -211,10 +221,10 @@ export async function runAiTask(options: AiTaskOptions): Promise<AiTaskResult> {
  * a file with different retention rules from the database.
  */
 export function logAiCall(task: string, model: string, usage: TokenUsage, metrics: AiCallMetrics): void {
-  const cached = usage.cachedInputTokens
   console.info(
     `[ai] task=${task} model=${model} in=${usage.inputTokens} out=${usage.outputTokens} ` +
-    `total=${usage.totalTokens} cached_in=${cached ?? 'n/d'} reasoning=${usage.reasoningTokens ?? 'n/d'} ` +
+    `total=${usage.totalTokens} cache_read=${usage.cachedInputTokens ?? 'n/d'} ` +
+    `cache_write=${usage.cacheWriteTokens ?? 'n/d'} reasoning=${usage.reasoningTokens ?? 'n/d'} ` +
     `latency_ms=${metrics.latencyMs} tool_rounds=${metrics.toolRounds} tool_calls=${metrics.toolCalls}`
   )
 }
@@ -308,6 +318,7 @@ export function usageColumns(usage: TokenUsage, metrics?: AiCallMetrics) {
     input_tokens: usage.inputTokens || null,
     output_tokens: usage.outputTokens || null,
     cached_input_tokens: usage.cachedInputTokens ?? null,
+    cache_write_tokens: usage.cacheWriteTokens ?? null,
     reasoning_tokens: usage.reasoningTokens ?? null,
     latency_ms: metrics?.latencyMs ?? null,
     tool_rounds: metrics?.toolRounds ?? null,

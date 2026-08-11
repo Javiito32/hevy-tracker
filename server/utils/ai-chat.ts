@@ -2,7 +2,7 @@ import { buildLeanSystemPrompt } from './ai-context'
 import { executeTool, selectChatTools } from './ai-tools'
 import { prisma } from './prisma'
 import { CHAT_HISTORY_WINDOW, MAX_OUTPUT_TOKENS, MAX_TOOL_ITERATIONS, REASONING_BY_TASK } from './ai-config'
-import { addUsage, createAiProvider, EMPTY_USAGE, type AiProvider, type AiKeys, type ChatMessage, type TokenUsage } from './ai-provider'
+import { addUsage, createAiProvider, EMPTY_USAGE, type AiProvider, type AiKeys, type ChatMessage, type ReasoningDetail, type TokenUsage } from './ai-provider'
 import { logAiCall, usageColumns, type AiCallMetrics } from './ai-service'
 import { CHAT_CONTEXT_TYPE, deriveConversationTitle } from './conversations'
 
@@ -17,6 +17,11 @@ export type ChatTurnEvent =
   | { type: 'tool'; name: string }
   /** A fragment of the final answer. Only emitted when `stream` is true. */
   | { type: 'delta'; text: string }
+  /**
+   * Discard every delta sent so far for this turn: what was streamed turned out
+   * to be a preamble to a tool call, not the answer. Streaming only.
+   */
+  | { type: 'reset' }
 
 export interface ChatTurnOptions {
   userId: string
@@ -100,8 +105,10 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
   // round, which costs more than the definitions it drops.
   const tools = selectChatTools(message)
 
+  // The stable half travels as its own block so the cache breakpoint can sit
+  // between it and the athlete's data — see ai-context.ts.
   const messages: ChatMessage[] = [
-    { role: 'system', content: systemPrompt },
+    { role: 'system', stableContent: systemPrompt.stable, content: systemPrompt.dynamic },
     ...history,
     { role: 'user', content: message }
   ]
@@ -124,14 +131,20 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
         toolChoice: isLastIteration ? 'none' as const : 'auto' as const,
         maxOutputTokens: MAX_OUTPUT_TOKENS.chat,
         reasoningEffort: REASONING_BY_TASK.chat,
-        // The prefix (tool definitions + system prompt) is re-sent verbatim on
-        // every round of this turn and on every turn of the conversation, which
-        // is the case prompt caching exists for.
-        cachePrefix: true
+        // The stable prefix (tool definitions + chat rules) is re-sent verbatim
+        // on every round of this turn and on every turn of the conversation,
+        // which is the case prompt caching exists for.
+        cachePrefix: true,
+        // Ties every round and every later turn of this thread to one routing
+        // key, so they reach the provider instance that holds the cached
+        // prefix. A cache written on turn 1 and missed on turn 2 because the
+        // router picked a different instance costs more than not caching.
+        sessionId: convoId
       }
 
       let text: string | null = null
       let toolCalls: Awaited<ReturnType<typeof provider.generate>>['toolCalls'] = []
+      let reasoningDetails: ReasoningDetail[] | undefined
 
       if (stream) {
         // Buffer text locally as it streams: it goes to the client immediately,
@@ -144,6 +157,8 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
             await emit({ type: 'delta', text: event.delta })
           } else if (event.type === 'toolCalls') {
             toolCalls = event.toolCalls
+          } else if (event.type === 'reasoningDetails') {
+            reasoningDetails = event.reasoningDetails
           } else if (event.type === 'usage') {
             usage = addUsage(usage, event.usage)
             latencyMs += event.latencyMs
@@ -154,6 +169,7 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
         const result = await provider.generate(messages, generateOptions)
         text = result.text
         toolCalls = result.toolCalls
+        reasoningDetails = result.reasoningDetails
         usage = addUsage(usage, result.usage)
         latencyMs += result.latencyMs
       }
@@ -166,7 +182,25 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
       }
 
       toolRounds++
-      messages.push({ role: 'assistant', content: text ?? '', toolCalls })
+
+      // Text produced in a round that ends in a tool call was the model
+      // thinking out loud on its way to the call — not the answer. It has
+      // already been streamed to the client, so the client is told to drop it;
+      // otherwise the reply reads as a false start followed by the real one.
+      // The model still receives it below, because it is part of the turn it
+      // has to continue from.
+      if (stream && text) await emit({ type: 'reset' })
+
+      // Reasoning → tool calls → tool results, in the order the model emitted
+      // them. See the note in ai-service.ts: a replayed assistant turn without
+      // its reasoning makes the next round re-derive it, and signed blocks
+      // cannot be reconstructed at all.
+      messages.push({
+        role: 'assistant',
+        content: text ?? '',
+        toolCalls,
+        ...(reasoningDetails?.length && { reasoningDetails })
+      })
       for (const call of toolCalls) {
         if (import.meta.dev) console.log(`[chat] tool_call: ${call.name}`, JSON.stringify(call.arguments))
         toolsInvoked.push(call.name)

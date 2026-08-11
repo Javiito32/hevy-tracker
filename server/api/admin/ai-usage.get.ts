@@ -63,12 +63,15 @@ export default defineEventHandler(async (event) => {
         input_tokens: true,
         output_tokens: true,
         cached_input_tokens: true,
+        cache_write_tokens: true,
         reasoning_tokens: true,
         latency_ms: true,
         tool_rounds: true,
         tool_calls: true,
         created_at: true,
-        conversation: { select: { id: true, title: true, ...USAGE_CONVERSATION_SELECT } }
+        // `id` and `title` are already in the shared select; naming them again
+        // here made TypeScript flag the spread as overwriting them.
+        conversation: { select: USAGE_CONVERSATION_SELECT }
       }
     })
   ])
@@ -90,6 +93,7 @@ export default defineEventHandler(async (event) => {
       output_tokens: row.outputTokens,
       total_tokens: row.totalTokens,
       cached_input_tokens: row.cachedInputTokens,
+      cache_write_tokens: row.cacheWriteTokens,
       reasoning_tokens: row.reasoningTokens,
       latency_ms: row.latencyMs,
       tool_rounds: row.toolRounds,

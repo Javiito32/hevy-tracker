@@ -456,7 +456,10 @@ export function renderWeekEvaluation(p: WeekEvaluationPayload): string {
   ].join('\n')
 
   return renderTaskDocument('evaluar semana', p.today, [
-    ['PERFIL', serializeAthlete(p.athlete)],
+    // Dated in the heading, like the workout analysis: the profile is the one
+    // the athlete had at the end of the week being judged, and a model reading
+    // a bare "PERFIL" narrates it as today's.
+    [`PERFIL (a ${w.in_progress ? 'día de hoy' : `fecha de ${w.to}, fin de la semana evaluada`})`, serializeAthlete(p.athlete)],
     ['MESOCICLO', mesocycleLine(p.mesocycle)],
     ['SEMANA ACTUAL', `${head}\n\n${serializeWorkouts(w.workouts, { detail: 'sets' })}`],
     ['NOTAS DE ESTA SEMANA', w.athlete_notes.length ? serializeNotes(w.athlete_notes) : null],
@@ -480,7 +483,7 @@ export function renderFinalSummary(p: FinalSummaryPayload): string {
   ].join('\n')
 
   return renderTaskDocument('resumen final de mesociclo', p.today, [
-    ['PERFIL', serializeAthlete(p.athlete)],
+    [`PERFIL (a fecha de ${p.as_of ?? 'hoy'})`, serializeAthlete(p.athlete)],
     ['MESOCICLO', mesocycleLine(p.mesocycle)],
     ['ESTADÍSTICAS DEL BLOQUE', stats],
     ['PRIMERA SESIÓN', p.first_workout ? serializeWorkout(p.first_workout, { detail: 'sets' }) : null],

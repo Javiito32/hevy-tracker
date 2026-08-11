@@ -18,10 +18,57 @@ import { AI_MODEL, AI_PROMPT_CACHE, AI_PROVIDER, type ReasoningEffort } from './
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  /**
+   * System messages only. When set, this is the **stable** half of the prompt
+   * and `content` is the dynamic half that follows it; the two travel as two
+   * text blocks and the cache breakpoint goes on this one. See `cachePrefix`.
+   */
+  stableContent?: string
   /** Present on assistant messages that requested tool calls. */
   toolCalls?: ToolCall[]
   /** Present on 'tool' messages: the id of the call this result answers. */
   toolCallId?: string
+  /**
+   * The model's own reasoning blocks, exactly as the provider returned them.
+   *
+   * Replayed verbatim on the next call of the same turn. Anthropic (and every
+   * other reasoning model routed through OpenRouter) requires that "the entire
+   * sequence of consecutive reasoning blocks must match the outputs generated
+   * by the model during the original request" — a tool round that drops them
+   * makes the model re-derive, from scratch, the thinking it already billed for,
+   * and on signature-carrying models the block cannot be reconstructed at all.
+   *
+   * Never synthesised, never reshaped: this is the provider's array, passed
+   * through. Absent (not empty) on models that don't emit reasoning, and the
+   * field is then omitted from the request entirely.
+   */
+  reasoningDetails?: ReasoningDetail[]
+}
+
+/**
+ * One reasoning block as OpenRouter returns it.
+ *
+ * The three documented variants are `reasoning.text` (raw thinking, optionally
+ * signed), `reasoning.summary` (a provider-written précis) and
+ * `reasoning.encrypted` (opaque, sometimes literally `[REDACTED]`). The fields
+ * are typed as optional rather than as a discriminated union on purpose: the
+ * value is stored and echoed back **as received**, so a variant or a field this
+ * app has never heard of survives the round trip instead of being stripped by a
+ * narrower type.
+ */
+export interface ReasoningDetail {
+  type: string
+  id?: string | null
+  format?: string
+  index?: number
+  /** `reasoning.text` */
+  text?: string
+  /** Verifies `text` with the upstream provider; must travel with it. */
+  signature?: string | null
+  /** `reasoning.summary` */
+  summary?: string
+  /** `reasoning.encrypted` */
+  data?: string
 }
 
 export interface ToolCall {
@@ -53,12 +100,23 @@ export interface GenerateOptions {
    */
   reasoningEffort?: ReasoningEffort | null
   /**
-   * Mark the system message as a cache breakpoint, so a provider that supports
-   * prompt caching can reuse the prefix (tool definitions + system prompt) on
-   * the next call. Only worth setting where that prefix is stable and re-sent —
-   * see AI_PROMPT_CACHE in ai-config.ts.
+   * Place a cache breakpoint at the end of the **stable** part of the prompt,
+   * so a provider that supports prompt caching can reuse it on the next call.
+   *
+   * The breakpoint lands after the tool definitions and `stableContent`, and
+   * **before** the system message's dynamic half — which is the whole point: a
+   * breakpoint that sits after the athlete's weight caches a prefix that
+   * changes whenever the athlete does, and is then written and never read. Only
+   * worth setting where the stable part really is re-sent — see AI_PROMPT_CACHE
+   * in ai-config.ts.
    */
   cachePrefix?: boolean
+  /**
+   * Groups related calls for the provider's sticky routing, so consecutive
+   * turns of one conversation land on the provider instance that already holds
+   * the cached prefix. OpenRouter-only (`session_id`); ignored elsewhere.
+   */
+  sessionId?: string
 }
 
 /**
@@ -84,6 +142,15 @@ export interface TokenUsage {
    * which is why cost has to subtract them out rather than add them on.
    */
   cachedInputTokens: number | null
+  /**
+   * Input tokens **written** to the provider's cache by this call. Also part of
+   * `inputTokens`, and disjoint from `cachedInputTokens` — a token is either
+   * read from the cache or written to it, never both. Anthropic bills a write
+   * at 1.25× the input rate and a read at 0.1×, so the two cannot share a
+   * counter and a cache that is written but never read is a cost *increase*,
+   * which is exactly the failure this field exists to make visible.
+   */
+  cacheWriteTokens: number | null
   /** Output tokens spent on the reasoning block. Part of `outputTokens`. */
   reasoningTokens: number | null
 }
@@ -95,6 +162,8 @@ export interface GenerateResult {
   usage: TokenUsage
   /** Wall-clock time of this single provider call. */
   latencyMs: number
+  /** The model's reasoning blocks, to be replayed on the next call. */
+  reasoningDetails?: ReasoningDetail[]
 }
 
 /** Incremental output from `generateStream`. */
@@ -102,6 +171,12 @@ export type StreamEvent =
   | { type: 'text'; delta: string }
   /** Emitted once at the end of the stream, if the model requested any tools. */
   | { type: 'toolCalls'; toolCalls: ToolCall[] }
+  /**
+   * Emitted once at the end, if the model reasoned. Reassembled from the
+   * fragments the deltas carry — a half-block is not replayable, so this is not
+   * streamed incrementally.
+   */
+  | { type: 'reasoningDetails'; reasoningDetails: ReasoningDetail[] }
   /** Emitted once the stream closes: usage plus how long the call took. */
   | { type: 'usage'; usage: TokenUsage; latencyMs: number }
 
@@ -124,34 +199,99 @@ export interface AiKeys {
 
 // ── OpenAI-compatible adapter (OpenAI direct + OpenRouter) ─────────────────────
 
-function toOpenAiMessages(messages: ChatMessage[], cachePrefix = false): any[] {
+/**
+ * Neutral messages → OpenAI-compatible request body.
+ *
+ * Exported because it is where three guarantees this app relies on actually
+ * happen — the cache breakpoint's position, the replay of `reasoning_details`,
+ * and the omission of both when they don't apply — and each of those is a
+ * property of the emitted JSON, not of anything observable further up.
+ */
+export function toOpenAiMessages(messages: ChatMessage[], cachePrefix = false): any[] {
   return messages.map((m, index) => {
     if (m.role === 'tool') {
       return { role: 'tool', tool_call_id: m.toolCallId, content: m.content }
     }
-    // Prompt-cache breakpoint on the system message. Anthropic (through
-    // OpenRouter) caches everything up to and including the marked block, which
-    // is tools + system — exactly the prefix every tool round re-sends
-    // unchanged. Providers that cache automatically ignore the field.
+
+    // The system message travels as two text blocks when the caller separated
+    // them: [stable][dynamic]. Anthropic (through OpenRouter) caches everything
+    // up to and including the marked block, so the breakpoint on block 0 covers
+    // tool definitions + the stable half and stops short of the athlete's data.
+    // Marking the whole message instead — which is what this did — declares a
+    // prefix that changes every time the athlete weighs themselves, so the
+    // cache is written on every turn and read on none of them.
+    if (m.role === 'system' && m.stableContent) {
+      const stable: Record<string, unknown> = { type: 'text', text: m.stableContent }
+      if (cachePrefix && index === 0) stable.cache_control = { type: 'ephemeral' }
+      const content: Array<Record<string, unknown>> = [stable]
+      if (m.content) content.push({ type: 'text', text: m.content })
+      return { role: 'system', content }
+    }
+    // No split: the whole system message is the stable part.
     if (m.role === 'system' && cachePrefix && index === 0) {
       return {
         role: 'system',
         content: [{ type: 'text', text: m.content, cache_control: { type: 'ephemeral' } }]
       }
     }
-    if (m.role === 'assistant' && m.toolCalls?.length) {
+
+    if (m.role === 'assistant' && (m.toolCalls?.length || m.reasoningDetails?.length)) {
       return {
         role: 'assistant',
         content: m.content || null,
-        tool_calls: m.toolCalls.map(tc => ({
-          id: tc.id,
-          type: 'function',
-          function: { name: tc.name, arguments: JSON.stringify(tc.arguments) }
-        }))
+        // Reasoning goes back before the tool calls it produced, which is the
+        // order the model emitted them in. Omitted entirely when absent: an
+        // empty array is a claim that the model reasoned about nothing, and
+        // providers that don't know the field reject it rather than ignore it.
+        ...(m.reasoningDetails?.length && { reasoning_details: m.reasoningDetails }),
+        ...(m.toolCalls?.length && {
+          tool_calls: m.toolCalls.map(tc => ({
+            id: tc.id,
+            type: 'function',
+            function: { name: tc.name, arguments: JSON.stringify(tc.arguments) }
+          }))
+        })
       }
     }
     return { role: m.role, content: m.content }
   })
+}
+
+/** The provider's reasoning array, or undefined when it sent none. */
+function toReasoningDetails(raw: unknown): ReasoningDetail[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined
+  const details = raw.filter((d): d is ReasoningDetail => !!d && typeof d === 'object' && typeof (d as any).type === 'string')
+  return details.length ? details : undefined
+}
+
+/**
+ * Reassembles the reasoning blocks a stream delivered in fragments.
+ *
+ * A block arrives split across chunks the same way `tool_calls.arguments` does:
+ * the type and index land first, then the payload accumulates. Fragments of one
+ * block are identified by (`index`, `type`) and their string payload is
+ * concatenated; anything without an index is appended in arrival order, which
+ * is the order the provider requires them to be replayed in.
+ */
+function mergeReasoningDelta(accumulated: ReasoningDetail[], incoming: unknown): void {
+  for (const detail of toReasoningDetails(incoming) ?? []) {
+    const existing = detail.index != null
+      ? accumulated.find(d => d.index === detail.index && d.type === detail.type)
+      : undefined
+
+    if (!existing) {
+      accumulated.push({ ...detail })
+      continue
+    }
+    if (detail.text) existing.text = (existing.text ?? '') + detail.text
+    if (detail.summary) existing.summary = (existing.summary ?? '') + detail.summary
+    if (detail.data) existing.data = (existing.data ?? '') + detail.data
+    // Identity and verification fields arrive whole, on whichever chunk carries
+    // them; the last non-empty one wins.
+    if (detail.signature) existing.signature = detail.signature
+    if (detail.id) existing.id = detail.id
+    if (detail.format) existing.format = detail.format
+  }
 }
 
 /** Model never returns valid JSON args for a call → fall back to {} (as generate does). */
@@ -167,6 +307,7 @@ export const EMPTY_USAGE: TokenUsage = {
   outputTokens: 0,
   totalTokens: 0,
   cachedInputTokens: null,
+  cacheWriteTokens: null,
   reasoningTokens: null
 }
 
@@ -179,14 +320,17 @@ export const EMPTY_USAGE: TokenUsage = {
  * make a provider that says nothing look like one whose cache never works.
  */
 function toTokenUsage(usage: any): TokenUsage {
-  const cached = usage?.prompt_tokens_details?.cached_tokens
-  const reasoning = usage?.completion_tokens_details?.reasoning_tokens
+  const number = (value: unknown): number | null => (typeof value === 'number' ? value : null)
   return {
     inputTokens: usage?.prompt_tokens ?? 0,
     outputTokens: usage?.completion_tokens ?? 0,
     totalTokens: usage?.total_tokens ?? 0,
-    cachedInputTokens: typeof cached === 'number' ? cached : null,
-    reasoningTokens: typeof reasoning === 'number' ? reasoning : null
+    cachedInputTokens: number(usage?.prompt_tokens_details?.cached_tokens),
+    // OpenRouter reports cache writes separately from reads; both are inside
+    // `prompt_tokens`. A provider that reports neither leaves both null, and
+    // pricing then charges the whole input at the standard rate.
+    cacheWriteTokens: number(usage?.prompt_tokens_details?.cache_write_tokens),
+    reasoningTokens: number(usage?.completion_tokens_details?.reasoning_tokens)
   }
 }
 
@@ -207,8 +351,22 @@ export function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
     outputTokens: a.outputTokens + b.outputTokens,
     totalTokens: a.totalTokens + b.totalTokens,
     cachedInputTokens: addOptional(a.cachedInputTokens, b.cachedInputTokens),
+    cacheWriteTokens: addOptional(a.cacheWriteTokens, b.cacheWriteTokens),
     reasoningTokens: addOptional(a.reasoningTokens, b.reasoningTokens)
   }
+}
+
+/**
+ * The streaming reassembly above, over a whole sequence of deltas.
+ *
+ * Same code path the adapter uses; exported so the fragment handling can be
+ * checked without a live stream, since a block reassembled wrongly is one the
+ * provider rejects on the next round.
+ */
+export function reassembleStreamedReasoning(deltas: unknown[]): ReasoningDetail[] {
+  const accumulated: ReasoningDetail[] = []
+  for (const delta of deltas) mergeReasoningDelta(accumulated, delta)
+  return accumulated
 }
 
 class OpenAiCompatibleProvider implements AiProvider {
@@ -233,6 +391,11 @@ class OpenAiCompatibleProvider implements AiProvider {
     return {
       model: this.model,
       messages: toOpenAiMessages(messages, AI_PROMPT_CACHE && options.cachePrefix === true),
+      // OpenRouter only. It is the sticky-routing key: without it the router is
+      // free to send the next turn of a conversation to a different provider
+      // instance, which holds none of the prefix this turn just paid to cache.
+      // Sent as a body field the direct OpenAI API would reject, hence the guard.
+      ...(options.sessionId && AI_PROVIDER === 'openrouter' && { session_id: options.sessionId.slice(0, 256) }),
       ...(options.maxOutputTokens && { max_completion_tokens: options.maxOutputTokens }),
       ...(options.jsonMode && { response_format: { type: 'json_object' as const } }),
       ...(options.reasoningEffort && { reasoning_effort: options.reasoningEffort }),
@@ -263,11 +426,14 @@ class OpenAiCompatibleProvider implements AiProvider {
         arguments: parseToolArguments(tc.function.arguments)
       }))
 
+    const reasoningDetails = toReasoningDetails((choice?.message as any)?.reasoning_details)
+
     return {
       text: choice?.message?.content ?? null,
       toolCalls,
       usage: toTokenUsage(completion.usage),
-      latencyMs
+      latencyMs,
+      ...(reasoningDetails && { reasoningDetails })
     }
   }
 
@@ -285,6 +451,9 @@ class OpenAiCompatibleProvider implements AiProvider {
     // a given `index`, then `arguments` accumulates character by character across
     // later chunks. Buffer per index and parse once the stream is done.
     const pending = new Map<number, { id: string; name: string; args: string }>()
+    // Reasoning arrives in fragments too, and is worth just as little in
+    // pieces: a partial block cannot be replayed on the next round.
+    const reasoning: ReasoningDetail[] = []
     let usage: TokenUsage | null = null
 
     for await (const chunk of stream) {
@@ -296,6 +465,8 @@ class OpenAiCompatibleProvider implements AiProvider {
 
       if (delta.content) yield { type: 'text', delta: delta.content }
 
+      mergeReasoningDelta(reasoning, (delta as any).reasoning_details)
+
       for (const tc of delta.tool_calls ?? []) {
         const slot = pending.get(tc.index) ?? { id: '', name: '', args: '' }
         if (tc.id) slot.id = tc.id
@@ -304,6 +475,10 @@ class OpenAiCompatibleProvider implements AiProvider {
         pending.set(tc.index, slot)
       }
     }
+
+    // Before the tool calls, so a consumer that stops at the first event it
+    // cares about still sees the reasoning that produced them.
+    if (reasoning.length) yield { type: 'reasoningDetails', reasoningDetails: reasoning }
 
     if (pending.size > 0) {
       const toolCalls: ToolCall[] = [...pending.entries()]

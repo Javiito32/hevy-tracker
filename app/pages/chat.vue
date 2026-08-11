@@ -411,10 +411,16 @@ const streamReply = async (text: string) => {
       isStreamingReply.value = true
       activeTool.value = null
       scrollToBottom()
+    } else if (payload.type === 'reset') {
+      // What was streamed turned out to be the model thinking out loud before
+      // calling a tool, not the reply. Kept on screen it reads as a first
+      // answer that a second one then contradicts — so it goes.
+      bubble.content = ''
+      isStreamingReply.value = false
     } else if (payload.type === 'tool') {
       activeTool.value = payload.name
-      // A tool call after partial text means the model is still working: keep
-      // the text but bring the activity indicator back.
+      // A tool call means the model is still working: back to the activity
+      // indicator (any preamble text was already cleared by 'reset').
       isStreamingReply.value = false
     } else if (payload.type === 'done') {
       bubble.streaming = false

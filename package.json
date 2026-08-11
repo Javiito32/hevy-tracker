@@ -16,6 +16,7 @@
     "smoke:plan": "npx tsx scripts/smoke-plan.mts",
     "smoke:nutrition": "npx tsx scripts/smoke-nutrition.mts",
     "smoke:ai": "npx tsx scripts/smoke-ai.mts",
+    "ai:budgets": "npx tsx scripts/ai-budgets.mts",
     "palette": "node scripts/validate_palette.js \"#3987e5,#d95926,#199e70,#c98500,#d55181\" --mode dark --surface \"#131316\" && node scripts/validate_palette.js \"#2a78d6,#c2521f,#12855c,#9a6a00,#c04b76\" --mode light --surface \"#F7F7F5\""
   },
   "prisma": {

@@ -22,6 +22,14 @@ import type { PlannedSessionInput, WeekInput } from './plan-service'
  *    every repair is reported. Discarding a whole generation over a typo in one
  *    field would cost minutes and money to fix by hand what one `Math.min` fixes
  *    here.
+ *
+ *    **Quantities are clamped; identifiers are discarded.** A week number and a
+ *    weekday name a position, and there is no such thing as the nearest legal
+ *    position: clamping `week_number: 0` to 1 does not repair the week, it
+ *    overwrites the real week 1 with it, and `week_number: 99` overwrites the
+ *    deload. Out-of-range identifiers are dropped and reported — see
+ *    `identifier()` — and a week left missing is filled neutral, which is the
+ *    one honest reading of "unspecified".
  *  - **Warning** — the plan is valid but departs from what was asked (a session
  *    fewer than the days requested, no deload in a 6-week block) or lost
  *    something on the way (an exercise id that never came from the catalogue).
@@ -84,11 +92,37 @@ function reject(reason: string): never {
 
 const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
 
+/** The value as a number, or null when it isn't one. No range applied. */
+function toNumber(value: unknown): number | null {
+  const n = typeof value === 'string' ? Number(value.trim()) : value
+  return isFiniteNumber(n) ? n : null
+}
+
 /** Number within [min,max], or null when it isn't a number at all. */
 function clamp(value: unknown, min: number, max: number): number | null {
-  const n = typeof value === 'string' ? Number(value) : value
-  if (!isFiniteNumber(n)) return null
+  const n = toNumber(value)
+  if (n === null) return null
   return Math.min(max, Math.max(min, n))
+}
+
+/**
+ * An **identifier** in [min,max], or null.
+ *
+ * The difference from `clamp` is the whole of this file's week handling. A
+ * quantity out of range has an unambiguous nearest legal value: 20 sets means
+ * "as many as possible", and 15 is a defensible reading of it. A week *number*
+ * has none — it names a position, and clamping renames it. `week_number: 0`
+ * became week 1 and overwrote the real week 1; `week_number: 99` became the
+ * last week and overwrote the deload. Both produced a plan that validated
+ * cleanly while silently carrying another week's programming.
+ *
+ * So an out-of-range or non-integer identifier is discarded and reported, never
+ * moved.
+ */
+function identifier(value: unknown, min: number, max: number): number | null {
+  const n = toNumber(value)
+  if (n === null || !Number.isInteger(n) || n < min || n > max) return null
+  return n
 }
 
 const text = (value: unknown): string | null => {
@@ -116,9 +150,16 @@ export function validateGeneratedMesocycle(raw: any, options: PlanValidationOpti
     const rawExercises = Array.isArray(s.exercises) ? s.exercises : []
     if (!rawExercises.length) reject(`la sesión "${name}" no tiene ejercicios`)
 
-    let dayOfWeek = clamp(s.day_of_week, 1, 7)
+    // A weekday is an identifier too, not a quantity: `day_of_week: 9` clamped
+    // to 7 put the session on Sunday — a day the model never chose and the
+    // athlete never asked for, which `getNextSession` then prescribes as "lo
+    // que toca hoy". Dropped instead, which leaves the session on the rotation
+    // exactly as an unassigned one, and said out loud.
+    const dayOfWeek = identifier(s.day_of_week, 1, 7)
+    if (dayOfWeek == null && s.day_of_week != null) {
+      warnings.push(`"${name}": día de la semana no válido (${JSON.stringify(s.day_of_week)}); la sesión queda sin día asignado.`)
+    }
     if (dayOfWeek != null) {
-      dayOfWeek = Math.round(dayOfWeek)
       const already = usedWeekdays.get(dayOfWeek)
       if (already) {
         // Kept rather than nulled: two sessions on one day is unusual but
@@ -149,17 +190,30 @@ export function validateGeneratedMesocycle(raw: any, options: PlanValidationOpti
         }
       }
 
+      // Rounded first, then compared: `target_sets: 3.7` clamps to itself, so
+      // the old order reported no change and stored 4 anyway.
       let sets = clamp(e.target_sets, LIMITS.sets.min, LIMITS.sets.max)
       if (sets == null) {
         sets = LIMITS.sets.fallback
         repairs.push(`"${exName}": sin series indicadas, se ponen ${sets}.`)
-      } else if (isFiniteNumber(e.target_sets) && e.target_sets !== sets) {
-        repairs.push(`"${exName}": ${e.target_sets} series ajustadas a ${sets}.`)
+      } else {
+        sets = Math.round(sets)
+        if (e.target_sets !== sets) {
+          repairs.push(`"${exName}": ${JSON.stringify(e.target_sets)} series ajustadas a ${sets}.`)
+        }
       }
-      sets = Math.round(sets)
 
       let repMin = clamp(e.rep_min, LIMITS.reps.min, LIMITS.reps.max)
       let repMax = clamp(e.rep_max, LIMITS.reps.min, LIMITS.reps.max)
+      // Reported like every other clamp: a plan that says 8-12 when the model
+      // wrote 8-120 has been changed, and the athlete reviewing it should not
+      // have to notice on their own.
+      if (repMin != null && isFiniteNumber(e.rep_min) && e.rep_min !== repMin) {
+        repairs.push(`"${exName}": repetición mínima ${e.rep_min} ajustada a ${repMin}.`)
+      }
+      if (repMax != null && isFiniteNumber(e.rep_max) && e.rep_max !== repMax) {
+        repairs.push(`"${exName}": repetición máxima ${e.rep_max} ajustada a ${repMax}.`)
+      }
       // One bound alone is a fixed rep target, not an error.
       if (repMin == null && repMax != null) repMin = repMax
       if (repMax == null && repMin != null) repMax = repMin
@@ -174,6 +228,9 @@ export function validateGeneratedMesocycle(raw: any, options: PlanValidationOpti
       }
 
       const rest = clamp(e.rest_seconds, LIMITS.rest.min, LIMITS.rest.max)
+      if (rest != null && isFiniteNumber(e.rest_seconds) && e.rest_seconds !== rest) {
+        repairs.push(`"${exName}": descanso de ${e.rest_seconds} s ajustado a ${rest} s.`)
+      }
 
       return {
         ...(templateId && { exercise_template_id: templateId }),
@@ -202,19 +259,38 @@ export function validateGeneratedMesocycle(raw: any, options: PlanValidationOpti
 
   // ── Weeks ───────────────────────────────────────────────────────────────────
   const duration = clamp(options.durationWeeks, LIMITS.weeks.min, LIMITS.weeks.max) ?? LIMITS.weeks.min
+  if (isFiniteNumber(options.durationWeeks) && options.durationWeeks !== duration) {
+    warnings.push(`Se pidieron ${options.durationWeeks} semanas y el bloque se ha limitado a ${duration}.`)
+  }
   const rawWeeks: any[] = Array.isArray(raw.weeks) ? raw.weeks : []
 
+  // Each cause is counted apart, because they are different problems and the
+  // athlete can only act on the one that happened. A single "se descartaron N
+  // semanas" line conflated "the model numbered a week 0" with "it wrote week 3
+  // twice", and it was computed as `rawWeeks.length - byNumber.size`, which
+  // also counted a week that had merely been clamped onto another one.
   const byNumber = new Map<number, any>()
+  let invalidWeeks = 0
+  let duplicateWeeks = 0
   for (const w of rawWeeks) {
-    const number = clamp(w?.week_number, 1, duration)
-    if (number == null) continue
-    const rounded = Math.round(number)
+    const number = identifier(w?.week_number, 1, duration)
+    if (number == null) {
+      invalidWeeks++
+      continue
+    }
     // First one wins: a duplicated week number is a repeat, and picking the
     // later one would silently discard the earlier week's programming.
-    if (!byNumber.has(rounded)) byNumber.set(rounded, w)
+    if (byNumber.has(number)) {
+      duplicateWeeks++
+      continue
+    }
+    byNumber.set(number, w)
   }
-  if (rawWeeks.length > byNumber.size) {
-    repairs.push(`Se descartaron ${rawWeeks.length - byNumber.size} semana(s) duplicadas o fuera del bloque.`)
+  if (invalidWeeks > 0) {
+    repairs.push(`Se descartaron ${invalidWeeks} semana(s) con número inválido o fuera del bloque de ${duration} semanas.`)
+  }
+  if (duplicateWeeks > 0) {
+    repairs.push(`Se descartaron ${duplicateWeeks} semana(s) repetidas; se conserva la primera de cada número.`)
   }
 
   const weeks: WeekInput[] = []
@@ -232,6 +308,9 @@ export function validateGeneratedMesocycle(raw: any, options: PlanValidationOpti
       repairs.push(`Semana ${number}: multiplicador de volumen ${w.volume_multiplier} ajustado a ${multiplier}.`)
     }
     const rir = clamp(w.target_rir, LIMITS.rir.min, LIMITS.rir.max)
+    if (rir != null && isFiniteNumber(w.target_rir) && Math.round(rir) !== w.target_rir) {
+      repairs.push(`Semana ${number}: RIR objetivo ${w.target_rir} ajustado a ${Math.round(rir)}.`)
+    }
     weeks.push({
       week_number: number,
       is_deload: w.is_deload === true,

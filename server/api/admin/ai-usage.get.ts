@@ -62,6 +62,11 @@ export default defineEventHandler(async (event) => {
         tokens_used: true,
         input_tokens: true,
         output_tokens: true,
+        cached_input_tokens: true,
+        reasoning_tokens: true,
+        latency_ms: true,
+        tool_rounds: true,
+        tool_calls: true,
         created_at: true,
         conversation: { select: { id: true, title: true, ...USAGE_CONVERSATION_SELECT } }
       }
@@ -84,6 +89,11 @@ export default defineEventHandler(async (event) => {
       input_tokens: row.inputTokens,
       output_tokens: row.outputTokens,
       total_tokens: row.totalTokens,
+      cached_input_tokens: row.cachedInputTokens,
+      reasoning_tokens: row.reasoningTokens,
+      latency_ms: row.latencyMs,
+      tool_rounds: row.toolRounds,
+      tool_calls: row.toolCalls,
       cost: row.cost,
       currency: currencyOf(row.model, prices)
     }

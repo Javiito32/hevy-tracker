@@ -1,6 +1,7 @@
 import { prisma } from './prisma'
 import { localWeekKey } from './dates'
 import { resolveVersion, serializeDietForAi } from './diet-service'
+import { normalizeExerciseName } from './exercise-aliases'
 import { WEEKDAY_LABELS_ES, isWeekday } from './nutrition-calculator'
 
 // ── Interfaces ─────────────────────────────────────────────────────────────────
@@ -166,6 +167,19 @@ export interface NutritionSnapshot {
     name: string
     time_of_day?: string
     foods: Array<{ name: string; quantity_g: number }>
+  }>
+  /**
+   * Every distinct day's menu, identical weekdays grouped. Only under
+   * `detail: 'full'` — what `get_diet` returns when the model asked for the
+   * diet on purpose.
+   */
+  meals_by_day?: Array<{
+    weekdays: string[]
+    meals: Array<{
+      name: string
+      time_of_day?: string
+      foods: Array<{ name: string; quantity_g: number }>
+    }>
   }>
   /** Which weekdays the athlete trains on, from the active mesocycle's plan. */
   training_weekdays?: string[]
@@ -454,11 +468,27 @@ export function buildWorkoutData(w: any, includeExercises = true): Workout {
   return workout
 }
 
+/**
+ * The athlete, as of a point in time.
+ *
+ * **`asOf` is what stops a March session being explained with August's body.**
+ * Every window below is measured backwards from the reference date and nothing
+ * later than it is loaded, so re-analysing an old workout produces the profile
+ * the athlete had when they trained it — the weight they were carrying, the
+ * measurements that were current, the notes that were live. With the default
+ * (now) the behaviour is exactly what it was.
+ *
+ * `includeInjuries` defaults to **true**. It used to default to false and only
+ * `ai-generate` opted in, which meant every other task that recommends
+ * exercises — the workout analysis, the weekly evaluation, the plan feedback —
+ * prescribed into a shoulder the database knew was injured. A limitation is
+ * cheap to carry and expensive to omit, so the opt-out is the exception now.
+ */
 export async function buildAthleteProfile(
   userId: string,
-  options: { includeInjuries?: boolean } = {}
+  options: { includeInjuries?: boolean; asOf?: Date } = {}
 ): Promise<AthleteProfile> {
-  const now = new Date()
+  const now = options.asOf ?? new Date()
   const daysAgo = (n: number) => { const d = new Date(now); d.setDate(d.getDate() - n); return d }
 
   const [user, recentWeights, currentMetric, metric1m, metric3m, notes] = await Promise.all([
@@ -467,11 +497,11 @@ export async function buildAthleteProfile(
       select: { name: true, sex: true, birth_date: true, height: true, injuries_notes: true }
     }),
     prisma.bodyMetric.findMany({
-      where: { user_id: userId, date: { gte: daysAgo(70) } },
+      where: { user_id: userId, date: { gte: daysAgo(70), lte: now } },
       orderBy: { date: 'asc' },
       select: { weight: true, date: true }
     }),
-    prisma.bodyMetric.findFirst({ where: { user_id: userId }, orderBy: { date: 'desc' } }),
+    prisma.bodyMetric.findFirst({ where: { user_id: userId, date: { lte: now } }, orderBy: { date: 'desc' } }),
     prisma.bodyMetric.findFirst({
       where: { user_id: userId, date: { gte: daysAgo(42), lte: daysAgo(21) } },
       orderBy: { date: 'desc' }
@@ -480,8 +510,16 @@ export async function buildAthleteProfile(
       where: { user_id: userId, date: { gte: daysAgo(105), lte: daysAgo(70) } },
       orderBy: { date: 'desc' }
     }),
+    // Notes that existed *and were still live* at the reference date. A note
+    // deactivated afterwards was true at the time, so `updated_at > asOf`
+    // readmits it; one created afterwards is information the athlete did not
+    // have yet and never explains what happened before it.
     prisma.aiNote.findMany({
-      where: { user_id: userId, is_active: true },
+      where: {
+        user_id: userId,
+        created_at: { lte: now },
+        OR: [{ is_active: true }, { updated_at: { gt: now } }]
+      },
       orderBy: { created_at: 'asc' },
       select: { content: true }
     })
@@ -500,12 +538,14 @@ export async function buildAthleteProfile(
   if (user?.name && user.name !== 'User') profile.name = user.name
   if (user?.sex) profile.sex = user.sex
   if (user?.birth_date) {
+    // Age at the reference date, not today's: a two-year-old block analysed now
+    // was not trained by a 33-year-old.
     profile.age_years = Math.floor(
-      (Date.now() - new Date(user.birth_date).getTime()) / (365.25 * 24 * 60 * 60 * 1000)
+      (now.getTime() - new Date(user.birth_date).getTime()) / (365.25 * 24 * 60 * 60 * 1000)
     )
   }
   if (user?.height) profile.height_cm = Number(user.height)
-  if (options.includeInjuries && user?.injuries_notes) {
+  if (options.includeInjuries !== false && user?.injuries_notes) {
     profile.injuries_limitations = user.injuries_notes
   }
   if (notes.length > 0) {
@@ -523,6 +563,101 @@ export async function buildAthleteProfile(
   }
 
   return profile
+}
+
+/**
+ * Earlier sessions that share exercises with the one being analysed.
+ *
+ * The order of operations is the whole point. This used to take the five most
+ * recent workouts in a fixed 21–35 day window and *then* filter them to the
+ * relevant exercises, so a session whose lifts were last trained 20 or 40 days
+ * ago produced an empty reference, and one trained in a week full of other work
+ * produced five sessions with nothing in common. Candidates are selected by the
+ * exercises first, over a window wide enough to contain them, and only then
+ * limited — which is the difference between "the last five workouts, some of
+ * which may be comparable" and "the last N comparable workouts".
+ *
+ * Matching goes through `exercise_template_id`, with the normalised name as the
+ * fallback for exercises the catalogue never resolved. Matching by name alone
+ * is the bug documented in `exercise-aliases.ts`: the catalogue answers in
+ * English and the workouts in the athlete's language.
+ *
+ * Nothing dated on or after the analysed session is ever a candidate — a
+ * comparison against a future session is not a trend, it is hindsight.
+ */
+export async function buildHistoricalReference(
+  userId: string,
+  workout: { id: string; date: Date; exercises_summary: string | null },
+  options: { limit?: number; windowDays?: number } = {}
+): Promise<Workout[]> {
+  const limit = options.limit ?? 4
+  const windowDays = options.windowDays ?? 120
+
+  let current: any[]
+  try { current = workout.exercises_summary ? JSON.parse(workout.exercises_summary) : [] } catch { return [] }
+  if (!current.length) return []
+
+  const templateIds = new Set(current.map(e => e.exercise_template_id).filter(Boolean) as string[])
+  const names = new Set<string>(current.map(e => String(e.name ?? '')).filter(Boolean))
+  const normalizedNames = new Set([...names].map(normalizeExerciseName))
+  if (!templateIds.size && !normalizedNames.size) return []
+
+  const from = new Date(workout.date)
+  from.setDate(from.getDate() - windowDays)
+
+  // Candidate ids off the normalised table, which is indexed by (user_id, date)
+  // and carries the template id — one query, no summaries parsed.
+  const hits = await prisma.workoutExercise.findMany({
+    where: {
+      user_id: userId,
+      date: { gte: from, lt: workout.date },
+      OR: [
+        ...(templateIds.size ? [{ exercise_template_id: { in: [...templateIds] } }] : []),
+        ...(names.size ? [{ name: { in: [...names] } }] : [])
+      ]
+    },
+    orderBy: { date: 'desc' },
+    select: { workout_id: true }
+  })
+
+  const candidateIds = [...new Set(hits.map(h => h.workout_id))]
+
+  const candidates = candidateIds.length
+    ? await prisma.workout.findMany({
+        where: { id: { in: candidateIds }, user_id: userId },
+        orderBy: { date: 'desc' },
+        // A few more than needed: a candidate can still drop out below if the
+        // overlap came from a row the summary no longer contains.
+        take: limit * 2,
+        select: { name: true, date: true, total_volume: true, rpe_avg: true, notes: true, duration: true, exercises_summary: true }
+      })
+    // Databases whose `WorkoutExercise` rows were never built (the table is
+    // derived, and `rebuild_exercises` may not have run) would otherwise report
+    // "no history" for an athlete with years of it. Bounded scan of the window.
+    : await prisma.workout.findMany({
+        where: { user_id: userId, date: { gte: from, lt: workout.date } },
+        orderBy: { date: 'desc' },
+        take: 60,
+        select: { name: true, date: true, total_volume: true, rpe_avg: true, notes: true, duration: true, exercises_summary: true }
+      })
+
+  const reference: Workout[] = []
+  for (const candidate of candidates) {
+    if (reference.length >= limit) break
+    let exs: any[]
+    try { exs = candidate.exercises_summary ? JSON.parse(candidate.exercises_summary) : [] } catch { continue }
+    const relevant = exs.filter(e =>
+      (e.exercise_template_id && templateIds.has(e.exercise_template_id)) ||
+      normalizedNames.has(normalizeExerciseName(String(e.name ?? '')))
+    )
+    if (!relevant.length) continue
+    reference.push(buildWorkoutData({ ...candidate, exercises_summary: JSON.stringify(relevant) }))
+  }
+
+  // Oldest first: a progression read top to bottom is the one the prompt asks
+  // for, and two adjacent lists running in opposite directions is how a model
+  // reports a trend backwards.
+  return reference.reverse()
 }
 
 export async function buildLastMesocycleSummaryData(userId: string): Promise<MesocycleFeedbackPayload['baseline_mesocycle']> {
@@ -583,9 +718,14 @@ export async function buildLastMesocycleSummaryData(userId: string): Promise<Mes
  */
 export async function buildNutritionSnapshot(
   userId: string,
-  options: { detail?: 'macros' | 'representative' } = {}
+  options: { detail?: 'macros' | 'representative'; asOf?: Date } = {}
 ): Promise<NutritionSnapshot | undefined> {
-  const version = await resolveVersion(userId, {})
+  // With `asOf`, the version that was in force on that date — the diet the
+  // athlete was actually following while the block being judged was trained,
+  // not the one they switched to afterwards.
+  const version = await resolveVersion(userId, {
+    ...(options.asOf && { date: options.asOf.toISOString().substring(0, 10) })
+  })
   if (!version) return undefined
 
   const plan = await prisma.dietPlan.findUnique({ where: { id: version.diet_plan_id } })
@@ -593,7 +733,9 @@ export async function buildNutritionSnapshot(
 
   const [latestWeight, trainingSessions] = await Promise.all([
     prisma.bodyMetric.findFirst({
-      where: { user_id: userId, weight: { not: null } },
+      // Bounded by the reference date too: g/kg of protein is a ratio, and
+      // dividing a past diet by today's body weight is the same anachronism.
+      where: { user_id: userId, weight: { not: null }, ...(options.asOf && { date: { lte: options.asOf } }) },
       orderBy: { date: 'desc' },
       select: { weight: true }
     }),
@@ -697,13 +839,15 @@ export async function buildNutritionHistory(
  */
 export async function buildTrainingLoad(
   userId: string,
-  weeks = 8
+  weeks = 8,
+  asOf?: Date
 ): Promise<Array<{ week: string; sessions: number; total_volume_kg: number; avg_rpe: number | null }>> {
-  const since = new Date()
+  const until = asOf ?? new Date()
+  const since = new Date(until)
   since.setDate(since.getDate() - weeks * 7)
 
   const workouts = await prisma.workout.findMany({
-    where: { user_id: userId, date: { gte: since } },
+    where: { user_id: userId, date: { gte: since, lte: until } },
     orderBy: { date: 'asc' },
     select: { date: true, total_volume: true, rpe_avg: true }
   })

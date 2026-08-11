@@ -29,7 +29,10 @@
             <th class="px-4 py-2.5 text-left font-semibold">Modelo</th>
             <th class="px-4 py-2.5 text-left font-semibold">Tarea</th>
             <th class="px-4 py-2.5 text-right font-semibold">Entrada</th>
+            <th class="px-4 py-2.5 text-right font-semibold" title="Parte de la entrada servida desde la caché del proveedor, facturada más barata">Caché</th>
             <th class="px-4 py-2.5 text-right font-semibold">Salida</th>
+            <th class="px-4 py-2.5 text-right font-semibold" title="Parte de la salida gastada razonando">Razona.</th>
+            <th class="px-4 py-2.5 text-right font-semibold" title="Rondas de herramientas · tiempo de la llamada">Herr./ms</th>
             <th class="px-4 py-2.5 text-right font-semibold">Coste</th>
           </tr>
         </thead>
@@ -42,7 +45,14 @@
               <span class="text-xs bg-surface-2 text-ink-2 px-2 py-0.5 rounded">{{ i.task_label }}</span>
             </td>
             <td class="px-4 py-2.5 text-right text-ink-2">{{ formatTokens(i.input_tokens) }}</td>
+            <!-- null = el proveedor no informó de caché; 0 = informó y no hubo acierto.
+                 Se distinguen: uno es desconocimiento y el otro un fallo de caché. -->
+            <td class="px-4 py-2.5 text-right text-ink-3">{{ i.cached_input_tokens === null ? NO_VALUE : formatTokens(i.cached_input_tokens) }}</td>
             <td class="px-4 py-2.5 text-right text-positive">{{ formatTokens(i.output_tokens) }}</td>
+            <td class="px-4 py-2.5 text-right text-ink-3">{{ i.reasoning_tokens === null ? NO_VALUE : formatTokens(i.reasoning_tokens) }}</td>
+            <td class="px-4 py-2.5 text-right text-ink-3 text-xs whitespace-nowrap">
+              {{ i.tool_rounds ?? NO_VALUE }} · {{ i.latency_ms == null ? NO_VALUE : formatTokens(i.latency_ms) }}
+            </td>
             <td class="px-4 py-2.5 text-right font-medium"
               :class="i.cost === null ? 'text-ink-3' : 'text-ink'">
               {{ formatCost(i.cost, i.currency) }}
@@ -79,6 +89,13 @@ interface LogItem {
   model: string | null
   task_label: string
   input_tokens: number | null
+  /** Subconjunto de la entrada; null cuando el proveedor no lo informa. */
+  cached_input_tokens: number | null
+  /** Subconjunto de la salida. */
+  reasoning_tokens: number | null
+  latency_ms: number | null
+  tool_rounds: number | null
+  tool_calls: number | null
   output_tokens: number | null
   total_tokens: number
   cost: number | null

@@ -91,6 +91,12 @@ export interface UsageTokens {
   inputTokens: number | null
   outputTokens: number | null
   totalTokens: number
+  /**
+   * Input tokens served from the provider's cache — a SUBSET of `inputTokens`,
+   * so pricing subtracts them out before charging the rest at the input rate.
+   * Null = the provider reported nothing, which is not a cache miss.
+   */
+  cachedInputTokens?: number | null
 }
 
 /**
@@ -110,8 +116,17 @@ export function rowCost(
   if (!price) return null
   if (row.inputTokens === null || row.outputTokens === null) return null
 
+  // Cached input is a subset of input, charged at its own (much lower) rate
+  // where one is configured. Clamped because the two counters come from
+  // different fields of the provider's response and a malformed one must not
+  // produce a negative cost.
+  const cached = Math.min(Math.max(row.cachedInputTokens ?? 0, 0), row.inputTokens)
+  const fresh = row.inputTokens - cached
+  const cachedRate = price.cached_input_per_1m ?? price.input_per_1m
+
   return (
-    (row.inputTokens / TOKENS_PER_PRICE_UNIT) * price.input_per_1m +
+    (fresh / TOKENS_PER_PRICE_UNIT) * price.input_per_1m +
+    (cached / TOKENS_PER_PRICE_UNIT) * cachedRate +
     (row.outputTokens / TOKENS_PER_PRICE_UNIT) * price.output_per_1m
   )
 }
@@ -136,6 +151,13 @@ export interface UsageRow {
   inputTokens: number | null
   outputTokens: number | null
   totalTokens: number
+  /** Subset of `inputTokens`; null on rows whose provider reported nothing. */
+  cachedInputTokens: number | null
+  /** Subset of `outputTokens`. Not billed apart — reported to explain a cost. */
+  reasoningTokens: number | null
+  latencyMs: number | null
+  toolRounds: number | null
+  toolCalls: number | null
   /** null when the model is unpriced or the breakdown is missing. */
   cost: number | null
 }
@@ -152,6 +174,10 @@ export interface UsageTotals {
   inputTokens: number
   outputTokens: number
   totalTokens: number
+  /** Of `inputTokens`, how many were cache reads. Discounted in `cost`. */
+  cachedInputTokens: number
+  /** Of `outputTokens`, how many were reasoning. Already inside the cost. */
+  reasoningTokens: number
   cost: number
   /** Rows skipped in `cost` because their model has no price configured. */
   unpricedCount: number
@@ -166,6 +192,8 @@ export function emptyTotals(): UsageTotals {
     inputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
+    cachedInputTokens: 0,
+    reasoningTokens: 0,
     cost: 0,
     unpricedCount: 0,
     noBreakdownCount: 0,
@@ -178,6 +206,8 @@ export function accumulate(totals: UsageTotals, row: UsageRow, prices: PriceMap)
   totals.inputTokens += row.inputTokens ?? 0
   totals.outputTokens += row.outputTokens ?? 0
   totals.totalTokens += row.totalTokens
+  totals.cachedInputTokens += row.cachedInputTokens ?? 0
+  totals.reasoningTokens += row.reasoningTokens ?? 0
 
   if (row.cost !== null) {
     totals.cost += row.cost
@@ -241,6 +271,11 @@ export function toUsageRow(
     tokens_used: number | null
     input_tokens: number | null
     output_tokens: number | null
+    cached_input_tokens?: number | null
+    reasoning_tokens?: number | null
+    latency_ms?: number | null
+    tool_rounds?: number | null
+    tool_calls?: number | null
     created_at: Date
     conversation: {
       id: string
@@ -263,7 +298,12 @@ export function toUsageRow(
     createdAt: message.created_at,
     inputTokens: message.input_tokens,
     outputTokens: message.output_tokens,
-    totalTokens: message.tokens_used ?? 0
+    totalTokens: message.tokens_used ?? 0,
+    cachedInputTokens: message.cached_input_tokens ?? null,
+    reasoningTokens: message.reasoning_tokens ?? null,
+    latencyMs: message.latency_ms ?? null,
+    toolRounds: message.tool_rounds ?? null,
+    toolCalls: message.tool_calls ?? null
   }
   return { ...base, cost: rowCost(base, prices) }
 }

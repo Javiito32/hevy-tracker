@@ -1,6 +1,7 @@
 import { prisma } from '../../utils/prisma'
 import { getSessionUser } from '../../utils/session'
 import { buildAthleteProfile, buildWorkoutData, buildLastMesocycleSummaryData, buildNutritionSnapshot, type MesocycleFeedbackPayload } from '../../utils/ai-payload'
+import { renderMesocycleFeedback } from '../../utils/ai-serialize'
 import { runAiTask, aiKeysFromConfig } from '../../utils/ai-service'
 import { MESOCYCLE_FEEDBACK_PROMPT } from '../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../utils/ai-config'
@@ -44,9 +45,9 @@ export default defineEventHandler(async (event) => {
   const { content, model } = await runAiTask({
     keys: aiKeysFromConfig(config),
     userId,
-    contextType: 'mesocycle_feedback',
+    task: 'mesocycle_feedback',
     systemPrompt: MESOCYCLE_FEEDBACK_PROMPT,
-    payload,
+    payload: renderMesocycleFeedback(payload),
     maxOutputTokens: MAX_OUTPUT_TOKENS.analysis
   })
 

@@ -4,14 +4,21 @@ import {
   buildWorkoutData,
   extractCompoundLiftsData,
   buildNutritionSnapshot,
-  type MesocycleGeneratePayload
+  type CompoundLift,
+  type NutritionSnapshot,
+  type Workout
 } from './ai-payload'
+import {
+  renderTaskDocument, serializeAthlete, serializeCompoundLifts, serializeMuscleVolume,
+  serializeNutrition, serializeWorkouts, table
+} from './ai-serialize'
 import { runAiTask, parseAiJson } from './ai-service'
-import type { AiKeys } from './ai-provider'
+import type { AiKeys, AiProvider } from './ai-provider'
 import { MESOCYCLE_GENERATE_PROMPT } from './ai-prompts'
 import { MAX_OUTPUT_TOKENS } from './ai-config'
 import { SEARCH_TEMPLATES_TOOL, searchExerciseTemplates } from './exercise-search'
 import { buildMuscleVolumeReport } from './muscle-volume'
+import { validateGeneratedMesocycle, type ValidatedPlan } from './ai-plan-validator'
 
 /**
  * Mesocycle generation, extracted from the endpoint so it can run as a
@@ -22,6 +29,10 @@ import { buildMuscleVolumeReport } from './muscle-volume'
  * answers, followed by a final turn emitting the whole block as JSON. Minutes,
  * not seconds — past any reverse proxy's read timeout, which is what turned a
  * working generation into a 504 with nothing to show for the tokens spent.
+ *
+ * The output is the one place in the app where a model's answer becomes rows in
+ * the athlete's plan, so it is the one place with a dedicated validator between
+ * the two — see ai-plan-validator.ts.
  */
 
 export interface PlanRequest {
@@ -32,8 +43,8 @@ export interface PlanRequest {
 }
 
 export interface PlanResult {
-  plan: any
-  /** Present when some exercises carry no catalogue id — see below. */
+  plan: ValidatedPlan
+  /** Present when the plan departs from the request or lost an exercise id. */
   warning?: string
   model: string
   tokens_used: number
@@ -43,11 +54,14 @@ export async function generateMesocyclePlan(
   userId: string,
   keys: AiKeys,
   request: PlanRequest,
-  progress?: (message: string) => Promise<void>
+  progress?: (message: string) => Promise<void>,
+  provider?: AiProvider
 ): Promise<PlanResult> {
   await progress?.('Reuniendo tu historial de entrenamiento…')
 
-  const [athlete, recentWorkouts, previousMesocycles, nutrition] = await Promise.all([
+  const [athlete, recentWorkoutRows, previousMesocycles, nutrition] = await Promise.all([
+    // Injuries are the reason this task exists in its current shape: a block
+    // designed around a shoulder that can't press is a different block.
     buildAthleteProfile(userId, { includeInjuries: true }),
     prisma.workout.findMany({
       where: { user_id: userId },
@@ -64,50 +78,48 @@ export async function generateMesocyclePlan(
     buildNutritionSnapshot(userId)
   ])
 
-  const payload: MesocycleGeneratePayload = {
-    task: 'mesocycle_generate',
-    today: new Date().toISOString().substring(0, 10),
-    athlete,
-    recent_workouts: recentWorkouts.map(w => buildWorkoutData(w, true)),
-    compound_lifts: extractCompoundLiftsData(recentWorkouts),
-    previous_mesocycles: previousMesocycles.map(m => ({
-      name: m.name,
-      ...(m.goal && { goal: m.goal }),
-      ...(m.split_description && { split: m.split_description }),
-      ...(m.target_sessions_weekly != null && { sessions_per_week: m.target_sessions_weekly })
-    })),
-    request,
-    ...(nutrition && { nutrition })
-  }
+  const recentWorkouts: Workout[] = recentWorkoutRows.map(w => buildWorkoutData(w, true))
+  const compoundLifts: CompoundLift[] = extractCompoundLiftsData(recentWorkoutRows)
 
   // The athlete's actual set distribution, so the new block corrects what the
   // last one under- or over-trained instead of restating a generic template.
   const muscleVolume = await buildMuscleVolumeReport(userId, 8)
-  if (muscleVolume.averages.length) {
-    payload.muscle_volume = muscleVolume.averages.map(a => ({
-      muscle: a.muscle,
-      label: a.label,
-      avg_weekly_sets: a.avg_sets,
-      verdict: a.verdict,
-      ...(a.landmarks && { mev: a.landmarks.mev, mav: a.landmarks.mav, mrv: a.landmarks.mrv })
-    }))
-  }
+
+  const document = buildGenerationDocument({
+    request,
+    athlete: serializeAthlete(athlete),
+    recentWorkouts,
+    compoundLifts,
+    previousMesocycles,
+    nutrition,
+    muscleVolume: muscleVolume.averages
+  })
 
   await progress?.('Diseñando el bloque y buscando ejercicios en el catálogo…')
+
+  // Every id the catalogue search actually handed over. The validator accepts
+  // no other: an id the model produced from memory looks exactly like a real
+  // one and fails only at push time, in the athlete's Hevy account.
+  const offeredIds = new Set<string>()
 
   const { content, model, tokensUsed } = await runAiTask({
     keys,
     userId,
-    contextType: 'mesocycle_generate',
+    task: 'mesocycle_generate',
     systemPrompt: MESOCYCLE_GENERATE_PROMPT,
-    payload,
+    payload: document,
     maxOutputTokens: MAX_OUTPUT_TOKENS.planGeneration,
     jsonMode: true,
+    ...(provider && { provider }),
     // The catalogue is ~400 entries — too many for the prompt, and a made-up id
     // yields a plan that looks fine and fails on push. So it looks them up.
     tools: [SEARCH_TEMPLATES_TOOL],
     toolImpls: {
-      search_exercise_templates: (args) => searchExerciseTemplates(userId, args)
+      search_exercise_templates: async (args) => {
+        const result = await searchExerciseTemplates(userId, args)
+        for (const hit of result.results) offeredIds.add(hit.id)
+        return result
+      }
     },
     maxToolIterations: 6,
     onToolRound: async (round) => {
@@ -117,51 +129,78 @@ export async function generateMesocyclePlan(
 
   await progress?.('Comprobando el plan…')
 
-  const plan = parseAiJson<any>(content, 'generar el plan')
+  const raw = parseAiJson<any>(content, 'generar el plan')
 
-  // A parsed object with no sessions in it is not a plan. Returned as a success
-  // it reaches the form as an empty response — every field left as it was,
-  // nothing to retry from — so it fails here, where the reason can be stated.
-  const sessions = Array.isArray(plan.sessions) ? plan.sessions : []
-  if (!sessions.length) {
-    throw createError({
-      statusCode: 502,
-      statusMessage: 'La IA devolvió un plan sin sesiones de entrenamiento. Inténtalo de nuevo, o reduce los días por semana.'
-    })
-  }
+  // Only ids that are still in the catalogue survive; `savePlan` would drop the
+  // rest anyway, but silently and much later.
+  const knownTemplateIds = offeredIds.size
+    ? new Set((await prisma.exerciseTemplate.findMany({
+        where: { id: { in: [...offeredIds] } },
+        select: { id: true }
+      })).map(t => t.id))
+    : new Set<string>()
 
-  // Shape-checked before it leaves the server. `plan.put.ts` validates the same
-  // things at save time, but the form renders a preview of the plan first, and
-  // a null session there surfaces as a raw "Cannot read properties of undefined"
-  // in the browser — an error that says nothing about what actually went wrong.
-  const isUsableExercise = (e: any) => e && typeof e === 'object' && typeof e.name === 'string' && e.name.trim()
-  const malformed = sessions.some((s: any) =>
-    !s || typeof s !== 'object' ||
-    typeof s.name !== 'string' || !s.name.trim() ||
-    !Array.isArray(s.exercises) || !s.exercises.length ||
-    !s.exercises.every(isUsableExercise)
-  )
-  if (malformed) {
-    throw createError({
-      statusCode: 502,
-      statusMessage: 'La IA devolvió un plan con sesiones incompletas. Inténtalo de nuevo.'
-    })
-  }
+  const plan = validateGeneratedMesocycle(raw, {
+    durationWeeks: request.duration_weeks,
+    daysPerWeek: request.days_per_week,
+    allowedTemplateIds: offeredIds,
+    knownTemplateIds
+  })
 
-  // Reported rather than silently dropped: a plan whose exercises aren't in the
-  // catalogue still trains fine, it just can't be pushed to Hevy.
-  const missingIds = sessions.flatMap((s: any) =>
-    s.exercises
-      .filter((e: any) => !e.exercise_template_id)
-      .map((e: any) => e.name)
-  )
+  // Exercises with no id still train fine; they just can't be pushed to Hevy.
+  const unlinked = plan.sessions.flatMap(s => s.exercises.filter(e => !e.exercise_template_id).map(e => e.name))
+  const notices = [
+    ...plan.warnings,
+    ...(unlinked.length
+      ? [`${unlinked.length} ejercicio(s) sin identificar en el catálogo (${unlinked.slice(0, 4).join(', ')}): el plan es válido, pero no se podrá enviar a Hevy hasta resolverlos.`]
+      : []),
+    ...plan.repairs
+  ]
 
   return {
     plan,
     model,
     tokens_used: tokensUsed,
-    ...(missingIds.length && {
-      warning: `${missingIds.length} ejercicio(s) sin identificar en el catálogo (${missingIds.slice(0, 4).join(', ')}). El plan es válido, pero no se podrá enviar a Hevy hasta resolverlos.`
-    })
+    ...(notices.length && { warning: notices.join(' ') })
   }
+}
+
+/** The task document. Sections are named as the prompt refers to them. */
+function buildGenerationDocument(input: {
+  request: PlanRequest
+  athlete: string
+  recentWorkouts: Workout[]
+  compoundLifts: CompoundLift[]
+  previousMesocycles: Array<{ name: string; goal: string | null; split_description: string | null; target_sessions_weekly: number | null }>
+  nutrition?: NutritionSnapshot
+  muscleVolume: Array<{ muscle: string; label: string; avg_sets: number; verdict: string; landmarks?: { mev: number; mav: number; mrv: number } | null }>
+}): string {
+  const { request } = input
+  return renderTaskDocument('generar mesociclo', new Date().toISOString().substring(0, 10), [
+    ['PETICIÓN', [
+      `objetivo: ${request.goal}`,
+      `días por semana: ${request.days_per_week}`,
+      `duración: ${request.duration_weeks} semanas`,
+      request.equipment ? `equipamiento disponible: ${request.equipment}` : null
+    ].filter(Boolean).join('\n')],
+    ['PERFIL', input.athlete],
+    ['FUERZA ACTUAL (1RM ESTIMADOS)', input.compoundLifts.length ? serializeCompoundLifts(input.compoundLifts) : null],
+    ['ENTRENOS RECIENTES', input.recentWorkouts.length ? serializeWorkouts(input.recentWorkouts, { detail: 'sets' }) : null],
+    ['MESOCICLOS ANTERIORES', input.previousMesocycles.length
+      ? table(
+          ['nombre', 'objetivo', 'sesiones/sem', 'split'],
+          input.previousMesocycles.map(m => [m.name, m.goal, m.target_sessions_weekly, m.split_description])
+        )
+      : null],
+    ['VOLUMEN POR GRUPO MUSCULAR', input.muscleVolume.length
+      ? serializeMuscleVolume(input.muscleVolume.map(a => ({
+          muscle: a.muscle,
+          label: a.label,
+          avg_weekly_sets: a.avg_sets,
+          verdict: a.verdict,
+          ...(a.landmarks && { mev: a.landmarks.mev, mav: a.landmarks.mav, mrv: a.landmarks.mrv })
+        })))
+      : null],
+    ['DIETA', input.nutrition ? serializeNutrition(input.nutrition) : null]
+  ])
 }

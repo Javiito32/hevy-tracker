@@ -488,6 +488,21 @@ model AiMessage {
   /// Completion tokens. Priced several times higher than input, which is why the
   /// split is stored rather than derived from the total.
   output_tokens    Int?
+  /// Input tokens served from the provider's prompt cache — a SUBSET of
+  /// input_tokens, billed at a fraction of the rate. Null means the provider
+  /// said nothing about caching, which is not the same as a cache miss (0).
+  cached_input_tokens Int?
+  /// Output tokens spent thinking — a subset of output_tokens. Not billed
+  /// separately; stored because it is the usual answer to "why did that cost
+  /// so much for three sentences".
+  reasoning_tokens Int?
+  /// Wall-clock time of the whole turn, summed across tool rounds.
+  latency_ms       Int?
+  /// Rounds of tool calls the turn took, and how many calls in total. A turn
+  /// that cost four rounds and one that reasoned for 40 s in a single call are
+  /// different problems with the same token total.
+  tool_rounds      Int?
+  tool_calls       Int?
   model_used       String?
   created_at       DateTime       @default(now())
 
@@ -507,6 +522,12 @@ model AiModelPrice {
   input_per_1m  Float
   /// USD per 1M output tokens.
   output_per_1m Float
+  /// USD per 1M input tokens served from the prompt cache, when the vendor
+  /// charges a reduced rate for them (Anthropic reads at ~0.1× input). Null =
+  /// not configured, and cached tokens are then billed at the full input rate:
+  /// an overestimate, which is the safe direction for a cost figure and never
+  /// invents a discount the vendor may not give.
+  cached_input_per_1m Float?
   currency      String   @default("USD")
   created_at    DateTime @default(now())
   updated_at    DateTime @updatedAt

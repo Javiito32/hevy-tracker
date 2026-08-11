@@ -26,7 +26,7 @@
     <!-- Add / edit-by-slug form. Same endpoint upserts, so re-adding an existing
          model updates its price. -->
     <form v-if="showForm" @submit.prevent="save" class="px-5 py-3.5 border-b border-line bg-bg/40">
-      <div class="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <div class="grid grid-cols-1 md:grid-cols-5 gap-3">
         <div class="md:col-span-2">
           <label class="block text-xs text-ink-3 mb-1">Modelo (slug)</label>
           <input v-model="form.model" required placeholder="anthropic/claude-sonnet-5"
@@ -40,6 +40,13 @@
         <div>
           <label class="block text-xs text-ink-3 mb-1">Salida / 1M</label>
           <input v-model="form.output_per_1m" type="number" step="0.01" min="0" required placeholder="15.00"
+            class="w-full bg-surface-2 border border-line-strong hover:border-ink-3 rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:border-ink" />
+        </div>
+        <div>
+          <!-- Optional: left empty, the cached tokens are costed at the full
+               input rate rather than at an invented discount. -->
+          <label class="block text-xs text-ink-3 mb-1">Entrada cacheada / 1M</label>
+          <input v-model="form.cached_input_per_1m" type="number" step="0.01" min="0" placeholder="opcional"
             class="w-full bg-surface-2 border border-line-strong hover:border-ink-3 rounded-lg px-3 py-2 text-sm text-ink focus:outline-none focus:border-ink" />
         </div>
       </div>
@@ -64,6 +71,7 @@
           <th class="px-4 py-2.5 text-left font-semibold">Modelo</th>
           <th class="px-4 py-2.5 text-right font-semibold">Entrada / 1M</th>
           <th class="px-4 py-2.5 text-right font-semibold">Salida / 1M</th>
+          <th class="px-4 py-2.5 text-right font-semibold">Cacheada / 1M</th>
           <th class="px-4 py-2.5 text-center font-semibold">Moneda</th>
           <th class="px-4 py-2.5 text-right font-semibold"></th>
         </tr>
@@ -77,6 +85,10 @@
           </td>
           <td class="px-4 py-2.5 text-right">
             <input v-model="edits[p.id]!.output_per_1m" type="number" step="0.01" min="0"
+              class="w-24 bg-surface-2 border border-line-strong hover:border-ink-3 rounded px-2 py-1 text-right text-ink focus:outline-none focus:border-ink" />
+          </td>
+          <td class="px-4 py-2.5 text-right">
+            <input v-model="edits[p.id]!.cached_input_per_1m" type="number" step="0.01" min="0" placeholder="—"
               class="w-24 bg-surface-2 border border-line-strong hover:border-ink-3 rounded px-2 py-1 text-right text-ink focus:outline-none focus:border-ink" />
           </td>
           <td class="px-4 py-2.5 text-center text-ink-3">{{ p.currency }}</td>
@@ -101,6 +113,8 @@ interface Price {
   model: string
   input_per_1m: number
   output_per_1m: number
+  /** null = not configured; cached input is then billed at the input rate. */
+  cached_input_per_1m: number | null
   currency: string
 }
 
@@ -120,30 +134,49 @@ const unpricedModels = computed(() => data.value?.unpriced_models ?? [])
 const showForm = ref(false)
 const saving = ref(false)
 const formError = ref('')
-const form = ref({ model: '', input_per_1m: '', output_per_1m: '' })
+const form = ref({ model: '', input_per_1m: '', output_per_1m: '', cached_input_per_1m: '' })
 
 /** Local copy per row so an in-place edit only saves when actually changed. */
-const edits = ref<Record<string, { input_per_1m: number | string; output_per_1m: number | string }>>({})
+const edits = ref<Record<string, {
+  input_per_1m: number | string
+  output_per_1m: number | string
+  cached_input_per_1m: number | string
+}>>({})
 
 watch(prices, (list) => {
   edits.value = Object.fromEntries(
-    list.map(p => [p.id, { input_per_1m: p.input_per_1m, output_per_1m: p.output_per_1m }])
+    list.map(p => [p.id, {
+      input_per_1m: p.input_per_1m,
+      output_per_1m: p.output_per_1m,
+      cached_input_per_1m: p.cached_input_per_1m ?? ''
+    }])
   )
 }, { immediate: true })
 
 const isDirty = (p: Price) => {
   const e = edits.value[p.id]
   if (!e) return false
-  return Number(e.input_per_1m) !== p.input_per_1m || Number(e.output_per_1m) !== p.output_per_1m
+  return Number(e.input_per_1m) !== p.input_per_1m
+    || Number(e.output_per_1m) !== p.output_per_1m
+    || cachedOf(e) !== p.cached_input_per_1m
 }
 
+/** '' means "no cached rate", which is a null in the DB and not a 0. */
+const cachedOf = (e: { cached_input_per_1m: number | string }): number | null =>
+  e.cached_input_per_1m === '' || e.cached_input_per_1m == null ? null : Number(e.cached_input_per_1m)
+
 const prefill = (model: string) => {
-  form.value = { model, input_per_1m: '', output_per_1m: '' }
+  form.value = { model, input_per_1m: '', output_per_1m: '', cached_input_per_1m: '' }
   showForm.value = true
 }
 
 /** Both create and in-place edit go through the upsert endpoint. */
-const post = async (body: { model: string; input_per_1m: number; output_per_1m: number }) => {
+const post = async (body: {
+  model: string
+  input_per_1m: number
+  output_per_1m: number
+  cached_input_per_1m: number | null
+}) => {
   await $fetch('/api/admin/ai-prices', { method: 'POST', body })
   await refresh()
   // Costs across the whole panel change with the price, so the parent refetches.
@@ -157,9 +190,10 @@ const save = async () => {
     await post({
       model: form.value.model.trim(),
       input_per_1m: Number(form.value.input_per_1m),
-      output_per_1m: Number(form.value.output_per_1m)
+      output_per_1m: Number(form.value.output_per_1m),
+      cached_input_per_1m: cachedOf(form.value)
     })
-    form.value = { model: '', input_per_1m: '', output_per_1m: '' }
+    form.value = { model: '', input_per_1m: '', output_per_1m: '', cached_input_per_1m: '' }
     showForm.value = false
   } catch (e: any) {
     formError.value = e?.statusMessage ?? 'No se pudo guardar el precio'
@@ -173,7 +207,12 @@ const update = async (p: Price) => {
   if (!e) return
   saving.value = true
   try {
-    await post({ model: p.model, input_per_1m: Number(e.input_per_1m), output_per_1m: Number(e.output_per_1m) })
+    await post({
+      model: p.model,
+      input_per_1m: Number(e.input_per_1m),
+      output_per_1m: Number(e.output_per_1m),
+      cached_input_per_1m: cachedOf(e)
+    })
   } finally {
     saving.value = false
   }

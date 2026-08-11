@@ -1,10 +1,27 @@
 import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
-import { buildAthleteProfile, buildWorkoutData, type WorkoutAnalysisPayload } from '../../../utils/ai-payload'
+import {
+  buildAthleteProfile, buildHistoricalReference, buildWorkoutData, type WorkoutAnalysisPayload
+} from '../../../utils/ai-payload'
+import { renderWorkoutAnalysis } from '../../../utils/ai-serialize'
 import { runAiTask, aiKeysFromConfig } from '../../../utils/ai-service'
 import { WORKOUT_ANALYSIS_PROMPT } from '../../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../../utils/ai-config'
 
+/**
+ * Analyses one session.
+ *
+ * Two things about it are dated to **the session**, not to now:
+ *
+ *  - the athlete profile (`asOf`), so re-analysing a workout from March cites
+ *    the body the athlete had in March. It used to load the current profile,
+ *    which produced sentences like "con tu peso actual de 84 kg" about a
+ *    session trained eight kilos ago, and read notes written months afterwards
+ *    as context for it;
+ *  - the mesocycle, which is the block the workout belongs to rather than
+ *    whichever block happens to be active today. An old session judged against
+ *    today's goal is judged against a goal that did not exist yet.
+ */
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
   const { id: userId } = await getSessionUser(event)
@@ -15,34 +32,24 @@ export default defineEventHandler(async (event) => {
   const workout = await prisma.workout.findFirst({ where: { id, user_id: userId } })
   if (!workout) throw createError({ statusCode: 404, statusMessage: 'Workout not found' })
 
-  const exercises: any[] = workout.exercises_summary ? JSON.parse(workout.exercises_summary) : []
-  const exerciseNames = exercises.map((e: any) => e.name)
-
-  const fourWeeksAgo = new Date(workout.date)
-  fourWeeksAgo.setDate(fourWeeksAgo.getDate() - 35)
-  const fourWeeksAgoEnd = new Date(workout.date)
-  fourWeeksAgoEnd.setDate(fourWeeksAgoEnd.getDate() - 21)
-
-  const [athlete, activeMesocycle, historicalWorkouts] = await Promise.all([
-    buildAthleteProfile(userId),
-    prisma.mesocycle.findFirst({ where: { user_id: userId, status: 'active' } }),
-    prisma.workout.findMany({
-      where: { user_id: userId, date: { gte: fourWeeksAgo, lte: fourWeeksAgoEnd } },
-      orderBy: { date: 'desc' },
-      take: 5,
-      select: { name: true, date: true, total_volume: true, rpe_avg: true, exercises_summary: true, notes: true }
-    })
+  const [athlete, mesocycle, historicalReference] = await Promise.all([
+    buildAthleteProfile(userId, { asOf: workout.date }),
+    workout.mesocycle_id
+      ? prisma.mesocycle.findFirst({ where: { id: workout.mesocycle_id, user_id: userId } })
+      // A session logged outside any block still benefits from knowing what the
+      // athlete was working towards at the time.
+      : prisma.mesocycle.findFirst({
+          where: {
+            user_id: userId,
+            start_date: { lte: workout.date },
+            OR: [{ end_date: null }, { end_date: { gte: workout.date } }]
+          },
+          orderBy: { start_date: 'desc' }
+        }),
+    // Candidates chosen by the exercises this session contains, then limited —
+    // not the last five workouts filtered afterwards. See ai-payload.ts.
+    buildHistoricalReference(userId, workout)
   ])
-
-  // Build historical reference filtered to exercises that appear in the current workout
-  const historicalReference = historicalWorkouts.reduce<ReturnType<typeof buildWorkoutData>[]>((acc, hw) => {
-    const exs: any[] = hw.exercises_summary ? JSON.parse(hw.exercises_summary) : []
-    const relevant = exs.filter((e: any) => exerciseNames.includes(e.name))
-    if (relevant.length) {
-      acc.push(buildWorkoutData({ ...hw, exercises_summary: JSON.stringify(relevant) }))
-    }
-    return acc
-  }, [])
 
   const payload: WorkoutAnalysisPayload = {
     task: 'workout_analysis',
@@ -50,11 +57,11 @@ export default defineEventHandler(async (event) => {
     athlete,
     workout: buildWorkoutData(workout),
     ...(historicalReference.length && { historical_reference: historicalReference }),
-    ...(activeMesocycle && {
+    ...(mesocycle && {
       active_mesocycle: {
-        name: activeMesocycle.name,
-        ...(activeMesocycle.goal && { goal: activeMesocycle.goal }),
-        ...(activeMesocycle.split_description && { split: activeMesocycle.split_description })
+        name: mesocycle.name,
+        ...(mesocycle.goal && { goal: mesocycle.goal }),
+        ...(mesocycle.split_description && { split: mesocycle.split_description })
       }
     })
   }
@@ -62,9 +69,9 @@ export default defineEventHandler(async (event) => {
   const { content, model } = await runAiTask({
     keys: aiKeysFromConfig(config),
     userId,
-    contextType: 'analyze',
+    task: 'analyze',
     systemPrompt: WORKOUT_ANALYSIS_PROMPT,
-    payload,
+    payload: renderWorkoutAnalysis(payload),
     maxOutputTokens: MAX_OUTPUT_TOKENS.analysis
   })
 

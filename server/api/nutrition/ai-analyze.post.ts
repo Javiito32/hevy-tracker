@@ -7,6 +7,7 @@ import {
   buildTrainingLoad,
   type NutritionAnalysisPayload
 } from '../../utils/ai-payload'
+import { renderNutritionAnalysis } from '../../utils/ai-serialize'
 import { runAiTask, aiKeysFromConfig } from '../../utils/ai-service'
 import { NUTRITION_ANALYSIS_PROMPT } from '../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../utils/ai-config'
@@ -54,9 +55,9 @@ export default defineEventHandler(async (event) => {
   const { content, model } = await runAiTask({
     keys: aiKeysFromConfig(config),
     userId,
-    contextType: 'nutrition_analysis',
+    task: 'nutrition_analysis',
     systemPrompt: NUTRITION_ANALYSIS_PROMPT,
-    payload,
+    payload: renderNutritionAnalysis(payload),
     maxOutputTokens: MAX_OUTPUT_TOKENS.analysis
   })
 

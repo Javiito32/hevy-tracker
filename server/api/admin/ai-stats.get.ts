@@ -58,6 +58,11 @@ export default defineEventHandler(async (event) => {
       tokens_used: true,
       input_tokens: true,
       output_tokens: true,
+      cached_input_tokens: true,
+      reasoning_tokens: true,
+      latency_ms: true,
+      tool_rounds: true,
+      tool_calls: true,
       created_at: true,
       conversation: { select: USAGE_CONVERSATION_SELECT }
     }
@@ -137,6 +142,11 @@ export default defineEventHandler(async (event) => {
       input_tokens: r.inputTokens,
       output_tokens: r.outputTokens,
       total_tokens: r.totalTokens,
+      cached_input_tokens: r.cachedInputTokens,
+      reasoning_tokens: r.reasoningTokens,
+      latency_ms: r.latencyMs,
+      tool_rounds: r.toolRounds,
+      tool_calls: r.toolCalls,
       cost: r.cost,
       currency: currencyOf(r.model, prices)
     }))
@@ -251,7 +261,7 @@ async function buildMonthToDate(prices: PriceMap) {
 
   const messages = await prisma.aiMessage.findMany({
     where: { ...BILLED_MESSAGE_WHERE, created_at: { gte: monthStart } },
-    select: { model_used: true, tokens_used: true, input_tokens: true, output_tokens: true }
+    select: { model_used: true, tokens_used: true, input_tokens: true, output_tokens: true, cached_input_tokens: true }
   })
 
   let cost = 0
@@ -263,7 +273,8 @@ async function buildMonthToDate(prices: PriceMap) {
         model: m.model_used,
         inputTokens: m.input_tokens,
         outputTokens: m.output_tokens,
-        totalTokens: m.tokens_used ?? 0
+        totalTokens: m.tokens_used ?? 0,
+        cachedInputTokens: m.cached_input_tokens
       },
       prices
     ) ?? 0
@@ -302,6 +313,8 @@ function serialize(t: UsageTotals) {
     inputTokens: t.inputTokens,
     outputTokens: t.outputTokens,
     totalTokens: t.totalTokens,
+    cachedInputTokens: t.cachedInputTokens,
+    reasoningTokens: t.reasoningTokens,
     cost: t.cost,
     unpriced_count: t.unpricedCount,
     no_breakdown_count: t.noBreakdownCount,

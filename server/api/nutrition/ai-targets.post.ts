@@ -6,6 +6,7 @@ import {
   buildTrainingLoad,
   type NutritionTargetsPayload
 } from '../../utils/ai-payload'
+import { renderNutritionTargets } from '../../utils/ai-serialize'
 import { runAiTask, aiKeysFromConfig, parseAiJson } from '../../utils/ai-service'
 import { NUTRITION_TARGETS_PROMPT } from '../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../utils/ai-config'
@@ -56,9 +57,9 @@ export default defineEventHandler(async (event) => {
   const { content, model } = await runAiTask({
     keys: aiKeysFromConfig(config),
     userId,
-    contextType: 'nutrition_targets',
+    task: 'nutrition_targets',
     systemPrompt: NUTRITION_TARGETS_PROMPT,
-    payload,
+    payload: renderNutritionTargets(payload),
     maxOutputTokens: MAX_OUTPUT_TOKENS.generation,
     jsonMode: true
   })

@@ -132,15 +132,19 @@ Written by `writeWorkoutExercises()` in `server/utils/exercise-store.ts`, which 
 The AI subsystem is **provider-agnostic**. No endpoint imports a vendor SDK directly:
 
 - `server/utils/ai-provider.ts` — neutral `AiProvider` interface (`generate(messages, options)` plus `generateStream(...)` yielding `StreamEvent`s) with neutral `ChatMessage` / `ToolDefinition` / `ToolCall` / `TokenUsage` types, plus an OpenAI-compatible adapter that serves two providers: **`openrouter`** (default — routes to any vendor's model via OpenRouter slugs like `anthropic/claude-sonnet-5`; key: `OPENROUTER_API_KEY`) and **`openai`** (direct; key: `OPENAI_API_KEY`). Swapping vendors/models = changing `AI_PROVIDER`/`AI_MODEL` in `ai-config.ts`.
-- `server/utils/ai-config.ts` — all tunables: `AI_PROVIDER`, `AI_MODEL` (OpenRouter slug when provider is openrouter), `AI_REASONING_EFFORT` (null for models without it), `MAX_TOOL_ITERATIONS`, `CHAT_HISTORY_WINDOW`, `MAX_OUTPUT_TOKENS` per task type.
-- `server/utils/ai-service.ts` — `runAiTask()` shared runner for the stateless endpoints (builds messages, calls the provider, persists usage to `AiConversation`/`AiMessage`) + `aiKeysFromConfig()` helper.
+- `server/utils/ai-config.ts` — all tunables: `AI_PROVIDER`, `AI_MODEL` (OpenRouter slug when provider is openrouter), `REASONING_BY_TASK` (per task, not global — reasoning bills as output, so the chat runs 'low' and only plan generation runs 'high'; null for models without it), `MAX_TOOL_ITERATIONS`, `CHAT_HISTORY_WINDOW`, `MAX_OUTPUT_TOKENS` per task type, `AI_PROMPT_CACHE`.
+- `server/utils/ai-service.ts` — `runAiTask()` shared runner for the stateless endpoints (builds messages, calls the provider, persists usage to `AiConversation`/`AiMessage`) + `aiKeysFromConfig()` helper. Its `task` is both the reasoning key and the stored `context_type`, so a task can't be configured under one name and reported under another.
+- `server/utils/ai-serialize.ts` — **the last mile**: typed domain objects in, compact text out. Nothing upstream of it knows a model exists, which is what keeps token pressure out of the domain layer. See "Compact serialization" below.
 - `server/utils/ai-prompts.ts` — all stateless system prompts, built from a shared persona + grounding rules + task instructions. Two grounding blocks are opt-in per task: `TRAINING_DATA_GROUNDING` (`buildPrompt(…, { training: true })`) and `NUTRITION_GROUNDING`. **A prompt must carry the block for the data it receives** — the warm-up rule, the "don't recompute `total_volume_kg`" rule and the 12-rep e1RM cap lived only in the chat's tool descriptions, so the stateless endpoints got the same `sets_detail` array with none of the rules for reading it.
 
 `createAiProvider()` throws a 503 when the active provider's API key is missing or unconfigured — endpoints no longer gate individually.
 
 #### Token accounting
 
-Every provider call reports a `TokenUsage` (`{ inputTokens, outputTokens, totalTokens }`), read from the OpenAI-compatible `usage` block (`prompt_tokens` / `completion_tokens` / `total_tokens`). The in/out split is what makes cost computable — output tokens are priced several times higher than input, so a single total can't be priced.
+Every provider call reports a `TokenUsage` (`{ inputTokens, outputTokens, totalTokens, cachedInputTokens, reasoningTokens }`), read from the OpenAI-compatible `usage` block (`prompt_tokens` / `completion_tokens` / `total_tokens` plus the optional `prompt_tokens_details.cached_tokens` and `completion_tokens_details.reasoning_tokens`). The in/out split is what makes cost computable — output tokens are priced several times higher than input, so a single total can't be priced.
+
+- The two detail counters are **null when the provider didn't report them**, never 0: a cached-token count of 0 claims the cache missed, and inventing it would make a silent provider look like one whose cache never works. `cachedInputTokens` is a *subset* of input (billed cheaper, so cost subtracts it out) and `reasoningTokens` a subset of output.
+- `latency_ms`, `tool_rounds` and `tool_calls` are stored alongside them (`AiCallMetrics`), because "why was this call expensive" and "why was it slow" are different questions with the same token total. Every completed call also logs one `[ai] task=… model=… in=… out=…` line — figures only, never prompts or answers.
 
 - `totalTokens` is stored as its own field rather than derived: providers may bill extras (reasoning tokens) that land in neither bucket.
 - A chat turn can chain several billed calls (one per tool-call round), so `runChatTurn` **sums** usage across iterations via `addUsage()` — the last call's usage would undercount.
@@ -171,9 +175,9 @@ Every provider call reports a `TokenUsage` (`{ inputTokens, outputTokens, totalT
 - There is no "create empty conversation" endpoint: the row is created with the first message, so abandoned drafts don't accumulate.
 
 **2. Stateless analysis/generation endpoints** — one-shot, no conversation history, all via `runAiTask()`.
-- System message = persona + instructions only (no data), from `ai-prompts.ts`.
-- User message = `JSON.stringify(payload, null, 2)` with all structured data.
-- Payload types and builder functions live in `server/utils/ai-payload.ts`.
+- System message = persona + grounding + instructions only (no data), from `ai-prompts.ts`.
+- User message = the **task document**: `## SECTION` headings and tables, rendered by `ai-serialize.ts` from the typed payload. Prompts address sections by name, so renaming one in the serializer means renaming it in the prompt.
+- Payload types and builder functions live in `server/utils/ai-payload.ts` and are unchanged by the text format — they are the app's normalised view, and the serializer is the only consumer that knows about a model.
 
 | Endpoint | Task type | Payload type |
 |---|---|---|
@@ -189,29 +193,54 @@ Every provider call reports a `TokenUsage` (`{ inputTokens, outputTokens, totalT
 
 **`ai-generate` is also the only AI endpoint that runs as a background job.** `POST /api/mesocycles/ai-generate` returns a `jobId`; the form polls `GET /api/mesocycles/ai-generate/:jobId`. Several rounds of catalogue lookups plus a final turn emitting the whole block is minutes of model time, which sits past the read timeout of any reverse proxy in front of the app — the proxy answered **504 while the generation ran to completion behind it**, so the tokens were spent and the plan discarded. It is started with `reuseRunning: false`: unlike the sync, each generation answers a different set of parameters, so handing back the job already in flight would return a plan for days/weeks nobody asked for. The task logic lives in `server/utils/ai-plan-generator.ts`, not the endpoint, so the job body and the request handler can't drift.
 
-**A generation is expensive, so nothing is spent on one that cannot succeed.** The endpoint verifies the API key *and* that `ExerciseTemplate` is non-empty before starting the job — with no catalogue the model burns every tool round on empty searches and returns a plan with no ids, which is a full generation's cost to learn what a `COUNT(*)` answers. For the same reason `runAiTask` caps intermediate tool rounds at `TOOL_ROUND_MAX_OUTPUT_TOKENS` rather than the task's own budget: `AI_REASONING_EFFORT` sizes the thinking allowance as a fraction of `max_tokens` and thinking bills as output, so a 16k cap on a round that only emits a tool call authorises ~8k of billed reasoning to decide what to look up. The client stores the job id in `sessionStorage` and resumes on mount — a reload used to discard a plan already paid for.
+**A generation is expensive, so nothing is spent on one that cannot succeed.** The endpoint verifies the API key *and* that `ExerciseTemplate` is non-empty before starting the job — with no catalogue the model burns every tool round on empty searches and returns a plan with no ids, which is a full generation's cost to learn what a `COUNT(*)` answers. For the same reason `runAiTask` caps intermediate tool rounds at `TOOL_ROUND_MAX_OUTPUT_TOKENS` rather than the task's own budget: the reasoning effort sizes the thinking allowance as a fraction of `max_tokens` and thinking bills as output, so capping the round caps its reasoning. **The effort itself is not lowered on those rounds**, and the cap stays well above a whole mesocycle: which round produces the answer isn't knowable in advance — the model stops calling tools when it has what it needs, so the round that emits the plan is usually round 2 of 6, one of the "intermediate" ones. The client stores the job id in `sessionStorage` and resumes on mount — a reload used to discard a plan already paid for.
 
 `ai-generate` and `ai-targets` pass `jsonMode: true` (mapped to the vendor's JSON mode by the adapter) and expect a structured object back. All other stateless endpoints return Markdown.
 
 **`jsonMode` is a request, not a guarantee, so both parse through `parseAiJson()` in `ai-service.ts`** — never `JSON.parse` a model response directly. It maps to OpenAI-style `response_format`, which providers that don't implement it (Anthropic through OpenRouter, the current default) accept and ignore; the model then answers correctly but inside a ```json fence or after a line of prose. `parseAiJson` unwraps that, and **throws a 502 on an empty response instead of defaulting to `{}`** — `JSON.parse(content || '{}')` turned a failed generation into `success: true` carrying an empty object, which reached the form as a button that did nothing. `ai-generate` additionally rejects a plan with no `sessions` for the same reason: the only outcome a user can't act on is silence.
 
-`MAX_OUTPUT_TOKENS.planGeneration` is separate from `generation` because **`AI_REASONING_EFFORT` spends this same budget before the answer starts**. A whole mesocycle is ~2.5k tokens of JSON on a 5-day split; sharing the nutrition targets' 3000 truncated it — mid-object when the reasoning was short, into an empty string when it wasn't.
+`MAX_OUTPUT_TOKENS.planGeneration` is separate from `generation` because **the reasoning effort spends this same budget before the answer starts**. A whole mesocycle is ~2.5k tokens of JSON on a 5-day split; sharing the nutrition targets' 3000 truncated it — mid-object when the reasoning was short, into an empty string when it wasn't.
 
 #### `server/utils/ai-payload.ts`
 
 Shared builders used by the stateless endpoints:
 
-- `buildAthleteProfile(userId, { includeInjuries? })` — fetches user profile, weekly weight history (last 5 weeks), and body measurement snapshots (current, ~1 month ago, ~3 months ago).
+- `buildAthleteProfile(userId, { includeInjuries?, asOf? })` — user profile, weekly weight history (last 5 weeks), body measurement snapshots (current, ~1 month ago, ~3 months ago) and active notes. **`includeInjuries` defaults to true** (see below) and **`asOf` dates every window** (see "Temporal context").
+- `buildHistoricalReference(userId, workout)` — earlier sessions that share exercises with the one being analysed: candidates selected off `WorkoutExercise` by `exercise_template_id` (normalised name as fallback) over a 120-day window strictly before it, *then* limited. The old order — take the 5 most recent workouts in a fixed 21–35 day window, then filter — returned nothing whenever the lifts were last trained 20 or 40 days ago.
 - `buildWorkoutData(w, includeExercises)` — maps a DB workout row to a typed `Workout` object. Pass `false` for summary-only (no sets detail).
 - `extractCompoundLiftsData(workouts)` — returns best estimated 1RM per compound exercise across a list of workouts.
 - `buildLastMesocycleSummaryData(userId)` — returns the last completed mesocycle as a structured object for use in plan feedback.
-- `buildNutritionSnapshot(userId, { detail? })` — the active diet. **Defaults to `'macros'`: energy and macros per day, no food list.** The training-side tasks judge a diet by whether it fuels the week, and the menu is a few hundred tokens they never cite; `serializeDietForAi` sets `meals_omitted: true` so the model states the limit instead of inventing a menu. `'representative'` (the meals of the most common day) is passed only by `nutrition/ai-analyze`, whose whole output is "sube este alimento 30 g".
+- `buildNutritionSnapshot(userId, { detail?, asOf? })` — the diet in force (at `asOf` when given). **Defaults to `'macros'`: energy and macros per day, no food list.** The training-side tasks judge a diet by whether it fuels the week, and the menu is a few hundred tokens they never cite; `serializeDietForAi` sets `meals_omitted: true` so the model states the limit instead of inventing a menu. `'representative'` (the meals of the most common day) is passed only by `nutrition/ai-analyze`, whose whole output is "sube este alimento 30 g".
 
-`includeInjuries: true` is only passed in `ai-generate` (injuries are a hard design constraint when building a new block).
+**Injuries travel by default.** `includeInjuries` used to default to false with only `ai-generate` opting in, so every other task that recommends exercises — the workout analysis, the weekly evaluation, the plan feedback, the chat — prescribed into a shoulder the database knew was injured. A limitation is a few tokens to carry and expensive to omit, so the opt-out is now the exception, and the serializer prints it under a hard-constraint heading rather than as one more profile line.
+
+#### Temporal context
+
+**A past event is explained with the data that existed at the time.** `asOf` bounds every window in `buildAthleteProfile` (weights, measurements, age, and notes that existed *and were still active* then: `created_at <= asOf AND (is_active OR updated_at > asOf)`), in `buildNutritionSnapshot` (the version in force that day) and in `buildTrainingLoad`.
+
+| Task | `asOf` |
+|---|---|
+| Workout analysis | the workout's own date — and the mesocycle it belonged to, not the one active today |
+| Weekly evaluation | end of the week being evaluated (or now, if in progress) |
+| Final summary | the block's `end_date` (or now, if still open) |
+| Chat, plan feedback, generation, nutrition | now |
+
+Re-analysing a March session used to quote August's body weight and read notes written months afterwards as context for it.
+
+#### Compact serialization — `server/utils/ai-serialize.ts`
+
+**Typed objects in, compact text out, and only at the last step.** The payload builders keep returning `AthleteProfile` / `Workout` / `NutritionSnapshot`; this module is the only one that knows a language model is downstream, which is what keeps token pressure out of the domain layer.
+
+Text, not JSON, for everything the model *reads*: a pretty-printed workout spent about half its tokens on punctuation, indentation and the same eight field names repeated once per set. A table names its columns once. Measured on a real 8-exercise analysis payload (profile with three measurement snapshots, two reference sessions): **19 855 → 3 226 characters, −84 %**, with no figure lost. JSON stays where it earns its keep: tool arguments (the model emits them and they get validated), structured outputs (`ai-generate`, `ai-targets`) and genuinely recursive data — of which training has none.
+
+- A set is `peso×reps@RPE`, with a suffix only when it isn't normal: `c` warm-up, `d` dropset, `f` failure. The common case costs no characters, the same reason `SetDetail.type` is only emitted when set.
+- `—` for an absent value, **never 0**. Columns empty across a whole table are dropped: an athlete who only weighs himself gets two columns, not twenty-one.
+- A section with no content prints no heading at all — an absent section is information the model doesn't have, and the prompts tell it to say so rather than assume it.
+- One renderer per task (`renderWorkoutAnalysis`, `renderWeekEvaluation`, …), and the prompts address sections by name (`## SEMANA ACTUAL`). **Rename a section here and rename it in `ai-prompts.ts`.**
 
 #### `server/utils/ai-tools.ts`
 
-16 tools available to the chat endpoint (defined provider-neutrally as `AI_TOOLS: ToolDefinition[]`):
+18 tools available to the chat endpoint (defined provider-neutrally as `AI_TOOLS: ToolDefinition[]`). **Every one answers in compact text**, not JSON: a tool result stays in the context of every later round of the same turn, so a verbose one is billed several times over.
 
 | Tool | Returns |
 |---|---|
@@ -226,13 +255,34 @@ Shared builders used by the stateless endpoints:
 | `get_volume_by_muscle_group` | Weekly sets per muscle group vs MEV/MAV/MRV, with `classification_coverage` and an explicit warning when coverage is low. |
 | `get_training_alerts` | Alerts the detectors already raised, with their evidence. The coach should call this first on open-ended questions ("¿debería hacer deload?") instead of re-deriving the diagnosis. |
 | `get_personal_records` | Current records with the mark they beat — useful to contrast a complaint of stagnation against what did improve. |
+| `get_active_plan` | **The prescription**: the block's weeks (deload, target RIR, volume multiplier), every session with sets/rep range/RIR/rest, and adherence (sets performed vs prescribed per exercise). Before this the chat could only see `split_description` and had to infer the plan from what was already trained — which answers a different question. |
+| `get_next_planned_session` | Which session is due, *why* (assigned weekday, rotation, start of block), the suggested load per exercise and its basis, plus the standing caveat that a session never synced to Hevy doesn't count. |
 | `get_diet` | A diet version: meals, foods with grams, and totals **per weekday** with identical days collapsed into `days` / `meals_by_day`. `daily_totals` is the mean of a planned day, shipped with `planned_days_per_week`. No args = the version in force now; `date` = the one in force that day (plus `weekday_of_date`); `version_id` = a specific one. |
 | `get_diet_history` | Published diet versions with date range, change note and totals. Chain into `get_diet` for a version's meals. |
 | `search_foods` | The user's food catalogue by name/brand, values per 100 g. |
 | `save_user_note` | Persists a memory note about the user (`AiNote`) surfaced in future system prompts. |
 | `deactivate_user_note` | Marks a saved note inactive by id. |
 
-Tool implementations enforce `user_id` scoping — they never access another user's data. Adding new tools requires updating both `TOOL_IMPLS` and `AI_TOOLS` in `ai-tools.ts`.
+**Ownership is a filter, not a check.** Implementations receive `userId` from the runner and never from the model; `workout_id`, `mesocycle_id`, `version_id` and `note_id` are all matched *together with the owner*, so an id from another account resolves to "not found" rather than to someone else's data. Adding a tool = one entry in `TOOL_IMPLS`, one in `AI_TOOLS`, one in `TOOL_GROUPS`.
+
+**`save_user_note` is the only tool that writes**, and it writes into every future conversation's system prompt — a bad note is a bad answer repeated indefinitely. So: deduplicated against the active notes by word overlap (≥ 0.75 of the shorter note, returning the existing one instead of a second row), bounded at 8–300 characters and 40 active notes, and restricted by both the prompt and the tool description to what the athlete said explicitly. The model re-derives the same fact on later turns, and each save used to append another row.
+
+#### Which tools travel — `selectChatTools(message)`
+
+The whole catalogue is ~2.5k tokens of definitions, re-sent on **every round** of a turn, and a question about breakfast has no use for eight training tools. Tools are grouped by the question they answer (`TOOL_GROUPS`: `training`, `plan`, `body`, `nutrition`, `memory`) and the rule is deliberately blunt: **a message that lands in exactly one domain gets that domain plus `memory`; anything else gets everything.**
+
+The bias towards "everything" is the safety property. A tool the model can't see is a question it answers worse, silently, and open-ended coaching questions ("¿cómo voy?") are exactly the ones that legitimately span training, plan and diet. The saving comes from the narrow, frequent questions. `memory` always travels because the moment an athlete mentions a trip or a niggle can fall inside a question about anything.
+
+Selected **once per turn** from the incoming message and held for every round of it: a set that changed mid-turn would invalidate the cached prefix on each round, which costs more than the definitions it drops.
+
+#### Prompt caching
+
+`AI_PROMPT_CACHE` applies to the **chat only**, because that is where a stable prefix both exists and is re-sent: every tool round replays the system prompt plus the tool definitions, so a five-round turn pays for them six times.
+
+- `buildLeanSystemPrompt` is ordered **rules first, athlete data second**. Providers that cache automatically (OpenAI family) can only reuse a byte-identical prefix, and the athlete's weight in the first paragraph would break it for everyone.
+- Anthropic through OpenRouter needs an explicit breakpoint: the adapter marks the system message with `cache_control: ephemeral` when a call passes `cachePrefix`. Tools travel before the system message in the request body, so the breakpoint covers definitions + prompt.
+- **Stateless tasks are not cached**: they run once with a payload that differs every time, so a cache write (billed above the input rate) would never be read.
+- Whether it works is measured, not assumed — `cached_input_tokens` is stored per message and shown in the admin log.
 
 ### Admin panel & AI usage analytics
 
@@ -260,7 +310,7 @@ It was one column of ten cards, which meant scrolling past a month of token cost
 
 `server/utils/ai-usage.ts` is the single home of range parsing, pricing and cost arithmetic (`parseRange`, `rangeFilter`, `loadPrices`, `rowCost`, `accumulate`, `groupTotals`, `toUsageRow`, `TASK_LABELS`). Three endpoints report money; a divergent formula between them would show three different totals for the same period. Put new cost logic here, not in an endpoint.
 
-- **Prices live in the DB** (`AiModelPrice`), not `ai-config.ts`: a vendor price change shouldn't need a deploy. Quoted **per 1M tokens**, the unit vendors publish.
+- **Prices live in the DB** (`AiModelPrice`), not `ai-config.ts`: a vendor price change shouldn't need a deploy. Quoted **per 1M tokens**, the unit vendors publish. `cached_input_per_1m` is optional: cached input is a *subset* of input billed at a reduced rate, so cost subtracts it out and charges it separately — and with no cached rate configured it is billed at the full input rate, an overestimate, which is the safe direction and never invents a discount.
 - **`rowCost` returns `null`, never an estimate**, when the model is unpriced or the row predates the in/out split. Totals therefore exclude those rows and report `unpriced_count` / `no_breakdown_count` so the UI can flag a figure as partial. Don't "fill the gap" with an assumed input/output ratio — an invented number that looks authoritative is worse than a `—`.
 - Aggregation is a **JS reduction over one query**, not `groupBy`: every dimension the panel needs (user, task type) lives on the parent `AiConversation`, and Prisma can't group across a relation.
 - The users table (`/api/admin/users`) reports **all-time** usage; `ai-stats` is the date-scoped view.
@@ -333,6 +383,18 @@ Stored, not derived: deriving "best ever" per page load rescans the history and 
 
 `ai-generate` is the **only stateless endpoint with tool calling**: the catalogue is ~400 entries (too many to inline) and an invented `exercise_template_id` yields a plan that looks fine and fails on push, so the model searches via `search_exercise_templates` (`server/utils/exercise-search.ts`). `runAiTask` therefore withholds `jsonMode` until the final turn — a model forced to emit JSON cannot express a tool call — and **sums usage across iterations**, since each round is separately billed.
 
+#### Generated plans are validated, not trusted — `server/utils/ai-plan-validator.ts`
+
+**The prompt is not a constraint**; it is a request the model usually honours, and "usually" is not enough for something that becomes rows in the plan, gets compared against logged sessions and is pushed into the athlete's Hevy account. `validateGeneratedMesocycle(raw, options)` re-checks all of it in code, with three outcomes:
+
+- **Rejected** (502, nothing persisted): not an object, no sessions, a session with no name or no exercises, an exercise with no name. There is no honest repair for missing contents, and a half-plan rendered in the form is worse than an error because it looks like a plan.
+- **Repaired and reported**: sets outside 1–15 (absent → 3), `rep_min > rep_max` (swapped), reps outside 1–60, RIR outside 0–6, rest outside 0–900, volume multiplier outside 0.2–1.5, weekday outside 1–7, duplicate or out-of-block weeks (dropped), missing weeks (filled *neutral* — no RIR override, no volume change — which is what "unspecified" means, not invented programming). Discarding minutes of generation over one out-of-range field would cost more to fix by hand than a `Math.min` fixes here.
+- **Warned** (valid, the athlete decides, and they see the plan before it is saved): session count ≠ days requested, two sessions on one weekday, a ≥4-week block whose last week isn't a deload or whose deload keeps >60 % of the volume, RIR that doesn't descend, and every dropped exercise id.
+
+**`exercise_template_id` is whitelisted, not merely checked.** The generator wraps the search tool to collect every id it actually handed the model, and an id survives only if it is in that set *and* still in the catalogue. `savePlan` would drop an invented one anyway — silently, and the athlete would find out at push time.
+
+The result (`ValidatedPlan`) is exactly what `savePlan()` accepts.
+
 ### Pushing routines to Hevy
 
 `POST /api/mesocycles/:id/push-to-hevy` writes the plan into the user's Hevy account: one `routine_folder` per block (id remembered on `Mesocycle.hevy_folder_id`), one routine per `PlannedSession` (id on `PlannedSession.hevy_routine_id`, so re-sending updates rather than duplicating). Sets carry `rep_range` and `rest_seconds`, both of which the Hevy schema supports.
@@ -356,7 +418,9 @@ The offline three derive everything from `raw_data`, which the sync never mutate
 
 ### Smoke tests
 
-`npm run smoke` (or `smoke:training` / `smoke:migrations` / `smoke:plan` / `smoke:nutrition`) runs the suites in `scripts/`. They exercise the real code paths against the dev DB with a throwaway user and clean up after themselves — including that the plateau detector **fires on a stalling lift and stays silent on a progressing one**, which a unit test of the slope function alone would not catch. Needs `DATABASE_URL` set.
+`npm run smoke` (or `smoke:training` / `smoke:migrations` / `smoke:plan` / `smoke:nutrition` / `smoke:ai`) runs the suites in `scripts/`. They exercise the real code paths against the dev DB with a throwaway user and clean up after themselves — including that the plateau detector **fires on a stalling lift and stays silent on a progressing one**, which a unit test of the slope function alone would not catch. Needs `DATABASE_URL` set.
+
+`smoke:ai` covers the AI layer **without calling a model**: the only thing replaced is the provider (a scripted fake that records what it was asked), so serializers, temporal windows, historical-reference selection, tool results and their ownership, memory writes, domain tool selection, the plan validator, cached-token costing and whole chat turns all run against the real code and the real database. It is what proves the properties this section claims — that an injury reaches the prompt, that a March analysis can't see August, that another user's id returns nothing, that an invented exercise id never survives.
 
 ### Settings & User model
 

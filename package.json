@@ -10,11 +10,12 @@
     "postinstall": "nuxt prepare",
     "db:seed": "npx tsx prisma/seed.ts",
     "db:reset": "npx prisma db push --force-reset && npx tsx prisma/seed.ts",
-    "smoke": "npm run smoke:training && npm run smoke:migrations && npm run smoke:plan && npm run smoke:nutrition",
+    "smoke": "npm run smoke:training && npm run smoke:migrations && npm run smoke:plan && npm run smoke:nutrition && npm run smoke:ai",
     "smoke:training": "npx tsx scripts/smoke-training.mts",
     "smoke:migrations": "npx tsx scripts/smoke-migrations.mts",
     "smoke:plan": "npx tsx scripts/smoke-plan.mts",
     "smoke:nutrition": "npx tsx scripts/smoke-nutrition.mts",
+    "smoke:ai": "npx tsx scripts/smoke-ai.mts",
     "palette": "node scripts/validate_palette.js \"#3987e5,#d95926,#199e70,#c98500,#d55181\" --mode dark --surface \"#131316\" && node scripts/validate_palette.js \"#2a78d6,#c2521f,#12855c,#9a6a00,#c04b76\" --mode light --surface \"#F7F7F5\""
   },
   "prisma": {

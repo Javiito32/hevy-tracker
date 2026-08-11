@@ -1,6 +1,7 @@
 import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
 import { buildAthleteProfile, buildWorkoutData, buildNutritionSnapshot, type WeekEvaluationPayload } from '../../../utils/ai-payload'
+import { renderWeekEvaluation } from '../../../utils/ai-serialize'
 import { weekNumberFor } from '../../../utils/dates'
 import { runAiTask, aiKeysFromConfig } from '../../../utils/ai-service'
 import { WEEK_EVALUATION_PROMPT } from '../../../utils/ai-prompts'
@@ -36,9 +37,14 @@ export default defineEventHandler(async (event) => {
 
   const historyStart = prevWindows.length ? prevWindows[0].start : weekStart
 
+  // The week being judged, not today: evaluating week 2 of a finished block
+  // must not quote the weight the athlete reached six weeks later. For a week
+  // still in progress this is simply "now".
+  const asOf = weekEnd < now ? weekEnd : now
+
   const [athlete, nutrition, thisWeekWorkouts, prevEvaluations, weekNotes, ...prevWeeksWorkouts] = await Promise.all([
-    buildAthleteProfile(userId),
-    buildNutritionSnapshot(userId),
+    buildAthleteProfile(userId, { asOf }),
+    buildNutritionSnapshot(userId, { asOf }),
     prisma.workout.findMany({
       where: { user_id: userId, mesocycle_id: id, date: { gte: weekStart, lt: weekEnd } },
       orderBy: { date: 'asc' },
@@ -143,9 +149,9 @@ export default defineEventHandler(async (event) => {
   const { content: aiAnalysis, model } = await runAiTask({
     keys: aiKeysFromConfig(config),
     userId,
-    contextType: 'evaluate',
+    task: 'evaluate',
     systemPrompt: WEEK_EVALUATION_PROMPT,
-    payload,
+    payload: renderWeekEvaluation(payload),
     maxOutputTokens: MAX_OUTPUT_TOKENS.analysis
   })
 

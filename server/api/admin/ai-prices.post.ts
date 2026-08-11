@@ -13,6 +13,7 @@ export default defineEventHandler(async (event) => {
     model?: string
     input_per_1m?: number | string
     output_per_1m?: number | string
+    cached_input_per_1m?: number | string | null
     currency?: string
   }>(event)
 
@@ -21,12 +22,17 @@ export default defineEventHandler(async (event) => {
 
   const inputPer1m = parsePrice(body?.input_per_1m, 'precio de entrada')
   const outputPer1m = parsePrice(body?.output_per_1m, 'precio de salida')
+  // Optional. Left empty, cached input is billed at the full input rate — an
+  // overestimate rather than an invented discount.
+  const cachedInputPer1m = body?.cached_input_per_1m == null || body.cached_input_per_1m === ''
+    ? null
+    : parsePrice(body.cached_input_per_1m, 'precio de entrada cacheada')
   const currency = body?.currency?.trim().toUpperCase() || 'USD'
 
   return prisma.aiModelPrice.upsert({
     where: { model },
-    create: { model, input_per_1m: inputPer1m, output_per_1m: outputPer1m, currency },
-    update: { input_per_1m: inputPer1m, output_per_1m: outputPer1m, currency }
+    create: { model, input_per_1m: inputPer1m, output_per_1m: outputPer1m, cached_input_per_1m: cachedInputPer1m, currency },
+    update: { input_per_1m: inputPer1m, output_per_1m: outputPer1m, cached_input_per_1m: cachedInputPer1m, currency }
   })
 })
 

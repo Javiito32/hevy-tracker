@@ -1,6 +1,7 @@
 import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
 import { buildAthleteProfile, buildWorkoutData, buildNutritionSnapshot, buildNutritionHistory, type FinalSummaryPayload } from '../../../utils/ai-payload'
+import { renderFinalSummary } from '../../../utils/ai-serialize'
 import { runAiTask, aiKeysFromConfig } from '../../../utils/ai-service'
 import { FINAL_SUMMARY_PROMPT } from '../../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../../utils/ai-config'
@@ -15,8 +16,12 @@ export default defineEventHandler(async (event) => {
   const mesocycle = await prisma.mesocycle.findFirst({ where: { id, user_id: userId } })
   if (!mesocycle) throw createError({ statusCode: 404, statusMessage: 'Mesocycle not found' })
 
+  // A completed block is summarised as of its end date: the diet and the body
+  // that belong in the story are the ones the block was trained with.
+  const asOf = mesocycle.end_date && mesocycle.end_date < new Date() ? mesocycle.end_date : new Date()
+
   const [athlete, allWorkouts, allEvaluations, allNotes, nutrition, nutritionHistory] = await Promise.all([
-    buildAthleteProfile(userId),
+    buildAthleteProfile(userId, { asOf }),
     prisma.workout.findMany({
       where: { user_id: userId, mesocycle_id: id },
       orderBy: { date: 'asc' },
@@ -31,7 +36,7 @@ export default defineEventHandler(async (event) => {
       where: { mesocycle_id: id },
       orderBy: { date: 'asc' }
     }),
-    buildNutritionSnapshot(userId),
+    buildNutritionSnapshot(userId, { asOf }),
     buildNutritionHistory(userId)
   ])
 
@@ -83,9 +88,9 @@ export default defineEventHandler(async (event) => {
   const { content: finalSummary, model } = await runAiTask({
     keys: aiKeysFromConfig(config),
     userId,
-    contextType: 'final_summary',
+    task: 'final_summary',
     systemPrompt: FINAL_SUMMARY_PROMPT,
-    payload,
+    payload: renderFinalSummary(payload),
     maxOutputTokens: MAX_OUTPUT_TOKENS.finalSummary
   })
 

@@ -1,5 +1,5 @@
 import OpenAI from 'openai'
-import { AI_MODEL, AI_PROVIDER, AI_REASONING_EFFORT } from './ai-config'
+import { AI_MODEL, AI_PROMPT_CACHE, AI_PROVIDER, type ReasoningEffort } from './ai-config'
 
 /**
  * Provider-agnostic LLM layer.
@@ -45,6 +45,20 @@ export interface GenerateOptions {
   tools?: ToolDefinition[]
   /** 'auto' lets the model decide; 'none' forbids tool calls (used to force a final answer). */
   toolChoice?: 'auto' | 'none'
+  /**
+   * Reasoning effort for this call. Per call, not per process: reasoning is
+   * billed as output, and a chat turn that reads back the context it was given
+   * should not think as hard as the one designing a mesocycle.
+   * `null`/undefined omits the parameter entirely.
+   */
+  reasoningEffort?: ReasoningEffort | null
+  /**
+   * Mark the system message as a cache breakpoint, so a provider that supports
+   * prompt caching can reuse the prefix (tool definitions + system prompt) on
+   * the next call. Only worth setting where that prefix is stable and re-sent —
+   * see AI_PROMPT_CACHE in ai-config.ts.
+   */
+  cachePrefix?: boolean
 }
 
 /**
@@ -54,11 +68,24 @@ export interface GenerateOptions {
  * several times more expensive than input ones, so a single total can't be
  * priced. `totalTokens` is kept as its own field rather than derived, because
  * providers may bill extras (reasoning tokens) that aren't in either bucket.
+ *
+ * The two detail fields are **null when the provider didn't report them**, and
+ * are never inferred. A cached-token count of 0 and "this provider doesn't tell
+ * us about caching" are different facts, and only one of them is evidence that
+ * caching isn't working.
  */
 export interface TokenUsage {
   inputTokens: number
   outputTokens: number
   totalTokens: number
+  /**
+   * Input tokens served from the provider's prompt cache. Part of
+   * `inputTokens`, not additional to it — they are billed at a reduced rate,
+   * which is why cost has to subtract them out rather than add them on.
+   */
+  cachedInputTokens: number | null
+  /** Output tokens spent on the reasoning block. Part of `outputTokens`. */
+  reasoningTokens: number | null
 }
 
 export interface GenerateResult {
@@ -66,6 +93,8 @@ export interface GenerateResult {
   text: string | null
   toolCalls: ToolCall[]
   usage: TokenUsage
+  /** Wall-clock time of this single provider call. */
+  latencyMs: number
 }
 
 /** Incremental output from `generateStream`. */
@@ -73,7 +102,8 @@ export type StreamEvent =
   | { type: 'text'; delta: string }
   /** Emitted once at the end of the stream, if the model requested any tools. */
   | { type: 'toolCalls'; toolCalls: ToolCall[] }
-  | { type: 'usage'; usage: TokenUsage }
+  /** Emitted once the stream closes: usage plus how long the call took. */
+  | { type: 'usage'; usage: TokenUsage; latencyMs: number }
 
 export interface AiProvider {
   readonly model: string
@@ -94,10 +124,20 @@ export interface AiKeys {
 
 // ── OpenAI-compatible adapter (OpenAI direct + OpenRouter) ─────────────────────
 
-function toOpenAiMessages(messages: ChatMessage[]): any[] {
-  return messages.map(m => {
+function toOpenAiMessages(messages: ChatMessage[], cachePrefix = false): any[] {
+  return messages.map((m, index) => {
     if (m.role === 'tool') {
       return { role: 'tool', tool_call_id: m.toolCallId, content: m.content }
+    }
+    // Prompt-cache breakpoint on the system message. Anthropic (through
+    // OpenRouter) caches everything up to and including the marked block, which
+    // is tools + system — exactly the prefix every tool round re-sends
+    // unchanged. Providers that cache automatically ignore the field.
+    if (m.role === 'system' && cachePrefix && index === 0) {
+      return {
+        role: 'system',
+        content: [{ type: 'text', text: m.content, cache_control: { type: 'ephemeral' } }]
+      }
     }
     if (m.role === 'assistant' && m.toolCalls?.length) {
       return {
@@ -122,15 +162,38 @@ function parseToolArguments(raw: string | undefined): Record<string, any> {
 /** How long a single provider call may take before the SDK aborts it. */
 const REQUEST_TIMEOUT_MS = 20 * 60 * 1000
 
-export const EMPTY_USAGE: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+export const EMPTY_USAGE: TokenUsage = {
+  inputTokens: 0,
+  outputTokens: 0,
+  totalTokens: 0,
+  cachedInputTokens: null,
+  reasoningTokens: null
+}
 
-/** Reads the OpenAI-compatible `usage` block into neutral shape. */
-function toTokenUsage(usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined): TokenUsage {
+/**
+ * Reads the OpenAI-compatible `usage` block into neutral shape.
+ *
+ * The two `*_details` sub-objects are optional in the spec and absent from
+ * several providers, so they are read as "unknown" rather than as zero: a 0
+ * cached-token count is a claim that the cache missed, and inventing it would
+ * make a provider that says nothing look like one whose cache never works.
+ */
+function toTokenUsage(usage: any): TokenUsage {
+  const cached = usage?.prompt_tokens_details?.cached_tokens
+  const reasoning = usage?.completion_tokens_details?.reasoning_tokens
   return {
     inputTokens: usage?.prompt_tokens ?? 0,
     outputTokens: usage?.completion_tokens ?? 0,
-    totalTokens: usage?.total_tokens ?? 0
+    totalTokens: usage?.total_tokens ?? 0,
+    cachedInputTokens: typeof cached === 'number' ? cached : null,
+    reasoningTokens: typeof reasoning === 'number' ? reasoning : null
   }
+}
+
+/** null + null stays null; a number on either side makes the sum a number. */
+function addOptional(a: number | null, b: number | null): number | null {
+  if (a === null && b === null) return null
+  return (a ?? 0) + (b ?? 0)
 }
 
 /**
@@ -142,7 +205,9 @@ export function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     outputTokens: a.outputTokens + b.outputTokens,
-    totalTokens: a.totalTokens + b.totalTokens
+    totalTokens: a.totalTokens + b.totalTokens,
+    cachedInputTokens: addOptional(a.cachedInputTokens, b.cachedInputTokens),
+    reasoningTokens: addOptional(a.reasoningTokens, b.reasoningTokens)
   }
 }
 
@@ -167,10 +232,10 @@ class OpenAiCompatibleProvider implements AiProvider {
   private buildRequest(messages: ChatMessage[], options: GenerateOptions) {
     return {
       model: this.model,
-      messages: toOpenAiMessages(messages),
+      messages: toOpenAiMessages(messages, AI_PROMPT_CACHE && options.cachePrefix === true),
       ...(options.maxOutputTokens && { max_completion_tokens: options.maxOutputTokens }),
       ...(options.jsonMode && { response_format: { type: 'json_object' as const } }),
-      ...(AI_REASONING_EFFORT && { reasoning_effort: AI_REASONING_EFFORT }),
+      ...(options.reasoningEffort && { reasoning_effort: options.reasoningEffort }),
       ...(options.tools?.length && {
         tools: options.tools.map(t => ({
           type: 'function' as const,
@@ -182,10 +247,12 @@ class OpenAiCompatibleProvider implements AiProvider {
   }
 
   async generate(messages: ChatMessage[], options: GenerateOptions = {}): Promise<GenerateResult> {
+    const startedAt = Date.now()
     const completion = await this.client.chat.completions.create({
       ...this.buildRequest(messages, options),
       stream: false
     })
+    const latencyMs = Date.now() - startedAt
 
     const choice = completion.choices[0]
     const toolCalls: ToolCall[] = (choice?.message?.tool_calls ?? [])
@@ -199,11 +266,13 @@ class OpenAiCompatibleProvider implements AiProvider {
     return {
       text: choice?.message?.content ?? null,
       toolCalls,
-      usage: toTokenUsage(completion.usage)
+      usage: toTokenUsage(completion.usage),
+      latencyMs
     }
   }
 
   async *generateStream(messages: ChatMessage[], options: GenerateOptions = {}): AsyncGenerator<StreamEvent> {
+    const startedAt = Date.now()
     const stream = await this.client.chat.completions.create({
       ...this.buildRequest(messages, options),
       stream: true,
@@ -244,7 +313,7 @@ class OpenAiCompatibleProvider implements AiProvider {
       if (toolCalls.length) yield { type: 'toolCalls', toolCalls }
     }
 
-    if (usage && usage.totalTokens > 0) yield { type: 'usage', usage }
+    if (usage && usage.totalTokens > 0) yield { type: 'usage', usage, latencyMs: Date.now() - startedAt }
   }
 }
 

@@ -1,8 +1,9 @@
 import { buildLeanSystemPrompt } from './ai-context'
-import { AI_TOOLS, executeTool } from './ai-tools'
+import { executeTool, selectChatTools } from './ai-tools'
 import { prisma } from './prisma'
-import { CHAT_HISTORY_WINDOW, MAX_OUTPUT_TOKENS, MAX_TOOL_ITERATIONS } from './ai-config'
-import { addUsage, createAiProvider, EMPTY_USAGE, type AiKeys, type ChatMessage, type TokenUsage } from './ai-provider'
+import { CHAT_HISTORY_WINDOW, MAX_OUTPUT_TOKENS, MAX_TOOL_ITERATIONS, REASONING_BY_TASK } from './ai-config'
+import { addUsage, createAiProvider, EMPTY_USAGE, type AiProvider, type AiKeys, type ChatMessage, type TokenUsage } from './ai-provider'
+import { logAiCall, usageColumns, type AiCallMetrics } from './ai-service'
 import { CHAT_CONTEXT_TYPE, deriveConversationTitle } from './conversations'
 
 /**
@@ -26,6 +27,8 @@ export interface ChatTurnOptions {
   /** Stream the reply as `delta` events instead of returning it in one piece. */
   stream?: boolean
   onEvent?: (event: ChatTurnEvent) => void | Promise<void>
+  /** Injectable for tests; defaults to the configured provider. */
+  provider?: AiProvider
 }
 
 export interface ChatTurnResult {
@@ -36,6 +39,8 @@ export interface ChatTurnResult {
   /** Summed across every provider call the turn made (one per tool-call round). */
   usage: TokenUsage
   toolsInvoked: string[]
+  /** Latency, rounds and calls — persisted and logged, see ai-service.ts. */
+  metrics: AiCallMetrics
 }
 
 /**
@@ -87,8 +92,13 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
     data: { conversation_id: convoId, role: 'user', content: message }
   })
 
-  const provider = createAiProvider(keys)
+  const provider = options.provider ?? createAiProvider(keys)
   const systemPrompt = await buildLeanSystemPrompt(userId)
+
+  // Chosen once, from this turn's message, and held for every round below: a
+  // tool set that changed mid-turn would invalidate the cached prefix on each
+  // round, which costs more than the definitions it drops.
+  const tools = selectChatTools(message)
 
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
@@ -101,6 +111,8 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
   // usage accumulates across them rather than being overwritten.
   let usage: TokenUsage = EMPTY_USAGE
   let finalReply: string | null = null
+  let latencyMs = 0
+  let toolRounds = 0
 
   try {
     for (let i = 0; i <= MAX_TOOL_ITERATIONS; i++) {
@@ -108,9 +120,14 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
       // with whatever data it has gathered instead of erroring out.
       const isLastIteration = i === MAX_TOOL_ITERATIONS
       const generateOptions = {
-        tools: AI_TOOLS,
+        tools,
         toolChoice: isLastIteration ? 'none' as const : 'auto' as const,
-        maxOutputTokens: MAX_OUTPUT_TOKENS.chat
+        maxOutputTokens: MAX_OUTPUT_TOKENS.chat,
+        reasoningEffort: REASONING_BY_TASK.chat,
+        // The prefix (tool definitions + system prompt) is re-sent verbatim on
+        // every round of this turn and on every turn of the conversation, which
+        // is the case prompt caching exists for.
+        cachePrefix: true
       }
 
       let text: string | null = null
@@ -129,6 +146,7 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
             toolCalls = event.toolCalls
           } else if (event.type === 'usage') {
             usage = addUsage(usage, event.usage)
+            latencyMs += event.latencyMs
           }
         }
         text = buffered || null
@@ -137,6 +155,7 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
         text = result.text
         toolCalls = result.toolCalls
         usage = addUsage(usage, result.usage)
+        latencyMs += result.latencyMs
       }
 
       if (import.meta.dev) console.log(`[chat] iteration=${i} tool_calls=${toolCalls.length} tokens=${usage.totalTokens} (in=${usage.inputTokens} out=${usage.outputTokens})`)
@@ -146,14 +165,17 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
         break
       }
 
+      toolRounds++
       messages.push({ role: 'assistant', content: text ?? '', toolCalls })
       for (const call of toolCalls) {
         if (import.meta.dev) console.log(`[chat] tool_call: ${call.name}`, JSON.stringify(call.arguments))
         toolsInvoked.push(call.name)
         await emit({ type: 'tool', name: call.name })
+        // Tools answer in text (see ai-tools.ts); it goes to the model as it is,
+        // since JSON-encoding a table only adds escapes to pay for.
         const toolResult = await executeTool(call.name, userId, call.arguments)
-        if (import.meta.dev) console.log(`[chat] tool_result: ${call.name} → ${JSON.stringify(toolResult).slice(0, 120)}...`)
-        messages.push({ role: 'tool', toolCallId: call.id, content: JSON.stringify(toolResult) })
+        if (import.meta.dev) console.log(`[chat] tool_result: ${call.name} → ${toolResult.slice(0, 120)}...`)
+        messages.push({ role: 'tool', toolCallId: call.id, content: toolResult })
       }
     }
   } catch (error) {
@@ -170,17 +192,19 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
     finalReply = 'No pude completar la consulta — se alcanzó el límite de herramientas encadenadas.'
   }
 
+  const metrics: AiCallMetrics = { latencyMs, toolRounds, toolCalls: toolsInvoked.length }
+
   await prisma.aiMessage.create({
     data: {
       conversation_id: convoId,
       role: 'assistant',
       content: finalReply,
-      tokens_used: usage.totalTokens || null,
-      input_tokens: usage.inputTokens || null,
-      output_tokens: usage.outputTokens || null,
+      ...usageColumns(usage, metrics),
       model_used: provider.model
     }
   })
+
+  logAiCall(CHAT_CONTEXT_TYPE, provider.model, usage, metrics)
 
   const title = isFirstTurn ? deriveConversationTitle(message) : null
   const updated = await prisma.aiConversation.update({
@@ -195,6 +219,7 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
     model: provider.model,
     title: updated.title,
     usage,
-    toolsInvoked
+    toolsInvoked,
+    metrics
   }
 }

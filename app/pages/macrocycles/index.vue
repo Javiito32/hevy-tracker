@@ -11,7 +11,7 @@
     </div>
 
     <!-- Create form modal -->
-    <div v-if="showForm" class="fixed inset-0 bg-bg/80 backdrop-blur-sm z-[90] flex items-center justify-center p-4" .self="showForm = false">
+    <div v-if="showForm" class="fixed inset-0 bg-bg/80 backdrop-blur-sm z-[90] flex items-center justify-center p-4" @click.self="showForm = false">
       <div class="bg-surface border border-line-strong rounded-card w-full max-w-lg p-6">
         <h2 class="text-lg font-bold text-ink mb-4">Nuevo macrociclo</h2>
         <form @submit.prevent="createMacro" class="space-y-4">

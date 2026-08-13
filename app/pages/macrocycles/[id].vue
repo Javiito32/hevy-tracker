@@ -41,7 +41,7 @@
       </div>
 
       <!-- Edit modal -->
-      <div v-if="showEdit" class="fixed inset-0 bg-bg/80 backdrop-blur-sm z-[90] flex items-center justify-center p-4" .self="showEdit = false">
+      <div v-if="showEdit" class="fixed inset-0 bg-bg/80 backdrop-blur-sm z-[90] flex items-center justify-center p-4" @click.self="showEdit = false">
         <div class="bg-surface border border-line-strong rounded-card w-full max-w-lg p-6">
           <h2 class="text-lg font-bold text-ink mb-4">Editar macrociclo</h2>
           <form @submit.prevent="saveMacro" class="space-y-4">

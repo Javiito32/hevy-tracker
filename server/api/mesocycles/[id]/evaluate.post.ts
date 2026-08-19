@@ -2,10 +2,12 @@ import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
 import { buildAthleteProfile, buildWorkoutData, buildNutritionSnapshot, type WeekEvaluationPayload } from '../../../utils/ai-payload'
 import { renderWeekEvaluation } from '../../../utils/ai-serialize'
-import { weekNumberFor } from '../../../utils/dates'
+import { localDayKey, weekNumberFor } from '../../../utils/dates'
 import { runAiTask, aiKeysFromConfig } from '../../../utils/ai-service'
 import { WEEK_EVALUATION_PROMPT } from '../../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../../utils/ai-config'
+import { getWeekAdherence } from '../../../utils/plan-service'
+import { buildMuscleVolumeReport } from '../../../utils/muscle-volume'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -42,11 +44,19 @@ export default defineEventHandler(async (event) => {
   // still in progress this is simply "now".
   const asOf = weekEnd < now ? weekEnd : now
 
-  const [athlete, nutrition, thisWeekWorkouts, prevEvaluations, weekNotes, ...prevWeeksWorkouts] = await Promise.all([
+  const weekWorkoutWhere = (start: Date, end: Date) => ({
+    user_id: userId,
+    date: { gte: start, lt: end },
+    // Unlinked sessions in the window still happened this week. Another
+    // block's rows stay out — they belong to a different story.
+    OR: [{ mesocycle_id: id }, { mesocycle_id: null }]
+  })
+
+  const [athlete, nutrition, thisWeekWorkouts, prevEvaluations, weekNotes, weekAdherence, muscleVolume, alerts, ...prevWeeksWorkouts] = await Promise.all([
     buildAthleteProfile(userId, { asOf }),
     buildNutritionSnapshot(userId, { asOf }),
     prisma.workout.findMany({
-      where: { user_id: userId, mesocycle_id: id, date: { gte: weekStart, lt: weekEnd } },
+      where: weekWorkoutWhere(weekStart, weekEnd),
       orderBy: { date: 'asc' },
       select: { name: true, date: true, total_volume: true, rpe_avg: true, exercises_summary: true, notes: true }
     }),
@@ -57,16 +67,24 @@ export default defineEventHandler(async (event) => {
       where: { mesocycle_id: id },
       orderBy: { week_number: 'desc' },
       take: 4,
-      select: { week_number: true, summary: true, volume_trend: true }
+      select: { week_number: true, summary: true, volume_trend: true, recommendations: true }
     }),
     prisma.mesocycleNote.findMany({
       where: { mesocycle_id: id, date: { gte: historyStart, lt: weekEnd } },
       orderBy: { date: 'asc' }
     }),
+    getWeekAdherence(userId, id, weekStart, weekEnd, weekNumber),
+    buildMuscleVolumeReport(userId, 8),
+    prisma.trainingAlert.findMany({
+      where: { user_id: userId, status: 'active', detected_at: { lte: asOf } },
+      orderBy: { detected_at: 'desc' },
+      take: 12,
+      select: { type: true, subject: true, title: true, severity: true }
+    }),
     // Previous weeks: no exercises_summary — summary only to reduce token usage
     ...prevWindows.map(w =>
       prisma.workout.findMany({
-        where: { user_id: userId, mesocycle_id: id, date: { gte: w.start, lt: w.end } },
+        where: weekWorkoutWhere(w.start, w.end),
         orderBy: { date: 'asc' },
         select: { name: true, date: true, total_volume: true, rpe_avg: true, notes: true }
       })
@@ -86,7 +104,7 @@ export default defineEventHandler(async (event) => {
 
   const payload: WeekEvaluationPayload = {
     task: 'week_evaluation',
-    today: now.toISOString().substring(0, 10),
+    today: localDayKey(now),
     athlete,
     mesocycle: {
       name: mesocycle.name,
@@ -96,8 +114,8 @@ export default defineEventHandler(async (event) => {
     },
     current_week: {
       number: weekNumber,
-      from: weekStart.toISOString().substring(0, 10),
-      to: weekEnd.toISOString().substring(0, 10),
+      from: localDayKey(weekStart),
+      to: localDayKey(new Date(weekEnd.getTime() - 1)),
       in_progress: weekInProgress,
       ...(weekInProgress && { days_remaining: daysLeftInWeek }),
       workouts: thisWeekWorkouts.map(w => buildWorkoutData(w, true)),
@@ -112,7 +130,7 @@ export default defineEventHandler(async (event) => {
       athlete_notes: weekNotes
         .filter((n: any) => new Date(n.date) >= weekStart)
         .map((n: any) => ({
-          date: new Date(n.date).toISOString().substring(0, 10),
+          date: localDayKey(new Date(n.date)),
           content: n.content
         }))
     },
@@ -121,8 +139,8 @@ export default defineEventHandler(async (event) => {
       const vol = (ww as any[]).reduce((s: number, x: any) => s + Number(x.total_volume ?? 0), 0)
       return {
         number: w.weekNum,
-        from: w.start.toISOString().substring(0, 10),
-        to: w.end.toISOString().substring(0, 10),
+        from: localDayKey(w.start),
+        to: localDayKey(new Date(w.end.getTime() - 1)),
         workouts: (ww as any[]).map(x => buildWorkoutData(x, false)),
         total_volume_kg: Math.round(vol)
       }
@@ -131,7 +149,7 @@ export default defineEventHandler(async (event) => {
       const earlier = weekNotes
         .filter((n: any) => new Date(n.date) < weekStart)
         .map((n: any) => ({
-          date: new Date(n.date).toISOString().substring(0, 10),
+          date: localDayKey(new Date(n.date)),
           content: n.content
         }))
       return earlier.length ? { earlier_notes: earlier } : {}
@@ -141,9 +159,21 @@ export default defineEventHandler(async (event) => {
       .map(e => ({
         week: e.week_number,
         ...(e.summary && { summary: e.summary }),
-        ...(e.volume_trend && { volume_trend: e.volume_trend })
+        ...(e.volume_trend && { volume_trend: e.volume_trend }),
+        ...(e.recommendations && { recommendations: e.recommendations })
       })),
-    ...(nutrition && { nutrition })
+    ...(nutrition && { nutrition }),
+    ...(weekAdherence.has_plan ? { week_adherence: { overall_pct: weekAdherence.overall_pct, rows: weekAdherence.rows } } : {}),
+    ...(muscleVolume.averages.length ? {
+      muscle_volume: muscleVolume.averages.map(a => ({
+        muscle: a.muscle,
+        label: a.label,
+        avg_weekly_sets: a.avg_sets,
+        verdict: a.verdict,
+        ...(a.landmarks && { mev: a.landmarks.mev, mav: a.landmarks.mav, mrv: a.landmarks.mrv })
+      }))
+    } : {}),
+    ...(alerts.length ? { alerts } : {})
   }
 
   const { content: aiAnalysis, model } = await runAiTask({

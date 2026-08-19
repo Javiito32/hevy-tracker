@@ -19,6 +19,16 @@
         >
           Histórico
         </NuxtLink>
+        <button
+          v-if="shown"
+          type="button"
+          :disabled="downloadingPdf"
+          title="Descarga el menú de lunes a domingo"
+          class="bg-surface-2 border border-line-strong hover:border-ink-3 text-ink-2 px-4 py-2 rounded-lg transition text-sm font-medium disabled:opacity-45 disabled:cursor-not-allowed"
+          @click="downloadPdf"
+        >
+          {{ downloadingPdf ? 'Generando…' : 'PDF de la semana' }}
+        </button>
       </div>
     </div>
 
@@ -309,6 +319,7 @@ const INPUT =
 const { data, pending, refresh } = useFetch<any>('/api/nutrition/plans')
 
 const working = ref(false)
+const downloadingPdf = ref(false)
 const error = ref('')
 const showPlanForm = ref(false)
 const showPublishForm = ref(false)
@@ -501,5 +512,40 @@ const openAddFood = (meal: any) => {
 const onFoodAdded = async () => {
   addFoodOpen.value = false
   await refresh()
+}
+
+const downloadPdf = async () => {
+  if (!shown.value || downloadingPdf.value) return
+  downloadingPdf.value = true
+  try {
+    const blob = await $fetch<Blob>(`/api/nutrition/versions/${shown.value.id}/pdf`, {
+      responseType: 'blob'
+    })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = pdfFilename()
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    URL.revokeObjectURL(url)
+  } catch (err: any) {
+    toast.error(err?.data?.statusMessage || 'No se ha podido generar el PDF.')
+  } finally {
+    downloadingPdf.value = false
+  }
+}
+
+/** Mirrors `dietPdfFilename` on the server — the body is a blob, so the
+ *  Content-Disposition name never reaches the <a download> attribute. */
+const pdfFilename = () => {
+  const name = (data.value?.plan?.name || 'dieta')
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60) || 'dieta'
+  return `${name}-v${shown.value?.version_number ?? 1}.pdf`
 }
 </script>

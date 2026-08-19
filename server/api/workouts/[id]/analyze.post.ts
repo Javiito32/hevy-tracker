@@ -7,6 +7,8 @@ import { renderWorkoutAnalysis } from '../../../utils/ai-serialize'
 import { runAiTask, aiKeysFromConfig } from '../../../utils/ai-service'
 import { WORKOUT_ANALYSIS_PROMPT } from '../../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../../utils/ai-config'
+import { localDayKey } from '../../../utils/dates'
+import { matchWorkoutToPlan } from '../../../utils/plan-service'
 
 /**
  * Analyses one session.
@@ -32,7 +34,7 @@ export default defineEventHandler(async (event) => {
   const workout = await prisma.workout.findFirst({ where: { id, user_id: userId } })
   if (!workout) throw createError({ statusCode: 404, statusMessage: 'Workout not found' })
 
-  const [athlete, mesocycle, historicalReference] = await Promise.all([
+  const [athlete, mesocycle, historicalReference, prescribed] = await Promise.all([
     buildAthleteProfile(userId, { asOf: workout.date }),
     workout.mesocycle_id
       ? prisma.mesocycle.findFirst({ where: { id: workout.mesocycle_id, user_id: userId } })
@@ -48,12 +50,23 @@ export default defineEventHandler(async (event) => {
         }),
     // Candidates chosen by the exercises this session contains, then limited —
     // not the last five workouts filtered afterwards. See ai-payload.ts.
-    buildHistoricalReference(userId, workout)
+    buildHistoricalReference(userId, workout),
+    workout.mesocycle_id
+      ? matchWorkoutToPlan(userId, workout.mesocycle_id, workout.id)
+      : Promise.resolve(null)
   ])
+
+  // A session logged outside any block can still match the plan that was in
+  // force that day — same lookup used for the mesocycle heading above.
+  const prescribedOrDated = prescribed ?? (
+    mesocycle && !workout.mesocycle_id
+      ? await matchWorkoutToPlan(userId, mesocycle.id, workout.id)
+      : null
+  )
 
   const payload: WorkoutAnalysisPayload = {
     task: 'workout_analysis',
-    today: new Date().toISOString().substring(0, 10),
+    today: localDayKey(new Date()),
     athlete,
     workout: buildWorkoutData(workout),
     ...(historicalReference.length && { historical_reference: historicalReference }),
@@ -63,7 +76,8 @@ export default defineEventHandler(async (event) => {
         ...(mesocycle.goal && { goal: mesocycle.goal }),
         ...(mesocycle.split_description && { split: mesocycle.split_description })
       }
-    })
+    }),
+    ...(prescribedOrDated && { prescribed: prescribedOrDated })
   }
 
   const { content, model } = await runAiTask({

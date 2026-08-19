@@ -1,9 +1,11 @@
 import type {
   AthleteProfile,
+  BlockRecord,
   BodyMeasurements,
   CompoundLift,
   Exercise,
   FinalSummaryPayload,
+  LiftProgression,
   MesocycleFeedbackPayload,
   NutritionAnalysisPayload,
   NutritionHistoryEntry,
@@ -15,6 +17,8 @@ import type {
   Workout,
   WorkoutAnalysisPayload
 } from './ai-payload'
+import type { WorkoutVsPlan, WeekAdherenceRow } from './plan-service'
+import { WEEKDAY_LABELS_ES, isWeekday } from './nutrition-calculator'
 
 /**
  * The last mile before the model: typed domain objects in, compact text out.
@@ -143,6 +147,7 @@ function exerciseRow(ex: Exercise, withSets: boolean): Array<string | null> {
 /** Header line of a session: everything that isn't a per-exercise figure. */
 function workoutHeader(w: Workout): string {
   const parts = [w.date, w.name]
+  if (w.id) parts.push(`id ${w.id}`)
   if (w.duration_min) parts.push(`${w.duration_min} min`)
   parts.push(`vol ${int(w.total_volume_kg)} kg`)
   if (w.rpe_avg != null) parts.push(`RPE ${num(w.rpe_avg)}`)
@@ -178,10 +183,72 @@ export function serializeWorkouts(workouts: Workout[], options: WorkoutFormat = 
  * For the lists whose job is the shape of a period rather than the content of a
  * session — previous weeks in an evaluation, recent sessions as a baseline.
  */
-export function serializeWorkoutLines(workouts: Array<Omit<Workout, 'exercises'>>): string {
+export function serializeWorkoutLines(workouts: Array<Omit<Workout, 'exercises'> & { exercises?: Exercise[] }>): string {
   return table(
-    ['fecha', 'sesión', 'vol_kg', 'RPE', 'nota'],
-    workouts.map(w => [w.date, w.name, int(w.total_volume_kg), w.rpe_avg != null ? num(w.rpe_avg) : null, w.notes ?? null])
+    ['fecha', 'sesión', 'id', 'vol_kg', 'RPE', 'ejercicios', 'nota'],
+    workouts.map(w => [
+      w.date,
+      w.name,
+      w.id ?? null,
+      int(w.total_volume_kg),
+      w.rpe_avg != null ? num(w.rpe_avg) : null,
+      w.exercises?.length
+        ? w.exercises.map(e => `${e.name} ${e.sets}`).join(', ')
+        : null,
+      w.notes ?? null
+    ])
+  )
+}
+
+export function serializePrescribedComparison(p: WorkoutVsPlan): string {
+  const day = isWeekday(p.day_of_week) ? WEEKDAY_LABELS_ES[p.day_of_week] : null
+  const head = [
+    `sesión del plan: ${p.session_name}${day ? ` · ${day}` : ''}`,
+    `semana ${p.week} del bloque${p.is_deload ? ' (DESCARGA)' : ''} · solape ${Math.round(p.match_score * 100)}%`
+  ].join('\n')
+  const rows = table(
+    ['ejercicio', 'series prescritas', 'series hechas', 'reps', 'RIR'],
+    p.exercises.map(e => [e.name, e.prescribed_sets, e.actual_sets, e.prescribed_reps, e.prescribed_rir])
+  )
+  const extras = p.extras.length
+    ? `no estaban prescritos: ${p.extras.map(e => `${e.name} ${e.actual_sets} series`).join(', ')}`
+    : null
+  return [head, rows, extras].filter(Boolean).join('\n')
+}
+
+export function serializeWeekAdherence(rows: WeekAdherenceRow[], overallPct: number | null): string {
+  return `global ${overallPct ?? NONE}%\n` + table(
+    ['sesión', 'ejercicio', 'prescritas', 'hechas', '%'],
+    rows.map(r => [r.session, r.exercise, r.planned_sets, r.actual_sets, r.adherence_pct])
+  )
+}
+
+export function serializeLiftProgression(lifts: LiftProgression[]): string {
+  return table(
+    ['ejercicio', 'primer e1RM', 'último e1RM', 'mejor', 'delta', 'sesiones', 'desde', 'hasta'],
+    lifts.map(l => [
+      l.exercise,
+      l.first_e1rm_kg,
+      l.last_e1rm_kg,
+      l.best_e1rm_kg,
+      l.delta_kg != null ? `${l.delta_kg >= 0 ? '+' : ''}${num(l.delta_kg)}` : null,
+      l.sessions,
+      l.first_date,
+      l.last_date
+    ])
+  )
+}
+
+export function serializeBlockRecords(records: BlockRecord[]): string {
+  return table(
+    ['ejercicio', 'tipo', 'valor', 'anterior', 'fecha'],
+    records.map(r => [
+      r.exercise,
+      r.type,
+      num(r.value, 2),
+      r.previous_value != null ? num(r.previous_value, 2) : null,
+      r.date
+    ])
   )
 }
 
@@ -440,6 +507,7 @@ export function renderWorkoutAnalysis(p: WorkoutAnalysisPayload): string {
     ['PERFIL (a fecha de la sesión analizada)', serializeAthlete(p.athlete)],
     ['MESOCICLO', p.active_mesocycle ? mesocycleLine(p.active_mesocycle) : null],
     ['ENTRENAMIENTO', serializeWorkout(p.workout, { detail: 'sets' })],
+    ['SESIÓN PRESCRITA', p.prescribed ? serializePrescribedComparison(p.prescribed) : null],
     ['SESIONES ANTERIORES COMPARABLES', p.historical_reference?.length
       ? serializeWorkouts(p.historical_reference, { detail: 'sets' })
       : null]
@@ -470,6 +538,13 @@ export function renderWeekEvaluation(p: WeekEvaluationPayload): string {
       : null],
     ['NOTAS ANTERIORES', p.earlier_notes?.length ? serializeNotes(p.earlier_notes) : null],
     ['EVALUACIONES PREVIAS', p.previous_evaluations.length ? serializeEvaluations(p.previous_evaluations) : null],
+    ['ADHERENCIA DE LA SEMANA', p.week_adherence
+      ? serializeWeekAdherence(p.week_adherence.rows, p.week_adherence.overall_pct)
+      : null],
+    ['VOLUMEN POR GRUPO MUSCULAR', p.muscle_volume?.length ? serializeMuscleVolume(p.muscle_volume) : null],
+    ['ALERTAS', p.alerts?.length
+      ? p.alerts.map(a => `- [${a.type}${a.subject ? ` · ${a.subject}` : ''}] ${a.title} · ${a.severity}`).join('\n')
+      : null],
     ['DIETA', p.nutrition ? serializeNutrition(p.nutrition) : null]
   ])
 }
@@ -486,6 +561,8 @@ export function renderFinalSummary(p: FinalSummaryPayload): string {
     [`PERFIL (a fecha de ${p.as_of ?? 'hoy'})`, serializeAthlete(p.athlete)],
     ['MESOCICLO', mesocycleLine(p.mesocycle)],
     ['ESTADÍSTICAS DEL BLOQUE', stats],
+    ['PROGRESIÓN DE CARGAS', p.lift_progression?.length ? serializeLiftProgression(p.lift_progression) : null],
+    ['RÉCORDS DEL BLOQUE', p.block_records?.length ? serializeBlockRecords(p.block_records) : null],
     ['PRIMERA SESIÓN', p.first_workout ? serializeWorkout(p.first_workout, { detail: 'sets' }) : null],
     ['ÚLTIMA SESIÓN', p.last_workout ? serializeWorkout(p.last_workout, { detail: 'sets' }) : null],
     ['EVALUACIONES SEMANALES', p.weekly_evaluations.length ? serializeEvaluations(p.weekly_evaluations) : null],
@@ -505,6 +582,31 @@ export function renderMesocycleFeedback(p: MesocycleFeedbackPayload): string {
     p.plan.notes ? `notas: ${p.plan.notes}` : null
   ].filter(Boolean).join('\n')
 
+  const structured = p.plan.sessions?.length
+    ? [
+        p.plan.weeks?.length
+          ? 'semanas:\n' + table(
+              ['semana', 'descarga', 'RIR', 'x volumen'],
+              p.plan.weeks.map(w => [w.week_number, w.is_deload ? 'sí' : '', w.target_rir ?? null, w.volume_multiplier ?? null])
+            )
+          : null,
+        ...p.plan.sessions.map(s => {
+          const day = isWeekday(s.day_of_week) ? WEEKDAY_LABELS_ES[s.day_of_week] : 'sin día'
+          return `### ${s.name} · ${day}\n` + table(
+            ['ejercicio', 'series', 'reps', 'RIR'],
+            s.exercises.map(e => [
+              e.name,
+              e.target_sets ?? null,
+              e.rep_min && e.rep_max
+                ? (e.rep_min === e.rep_max ? `${e.rep_min}` : `${e.rep_min}-${e.rep_max}`)
+                : null,
+              e.target_rir ?? null
+            ])
+          )
+        })
+      ].filter(Boolean).join('\n\n')
+    : null
+
   const baseline = p.baseline_mesocycle
     ? [
         mesocycleLine(p.baseline_mesocycle),
@@ -515,11 +617,18 @@ export function renderMesocycleFeedback(p: MesocycleFeedbackPayload): string {
       ].filter(Boolean).join('\n')
     : null
 
+  const recent = p.recent_workouts.length
+    ? (p.recent_workouts.some(w => w.exercises?.length)
+        ? serializeWorkouts(p.recent_workouts, { detail: 'exercises' })
+        : serializeWorkoutLines(p.recent_workouts))
+    : null
+
   return renderTaskDocument('feedback de plan', p.today, [
     ['PERFIL', serializeAthlete(p.athlete)],
     ['PLAN PROPUESTO', plan || 'El deportista no ha escrito nada todavía.'],
+    ['PLAN ESTRUCTURADO', structured],
     ['BLOQUE ANTERIOR (LÍNEA BASE)', baseline],
-    ['ENTRENOS RECIENTES', p.recent_workouts.length ? serializeWorkoutLines(p.recent_workouts) : null],
+    ['ENTRENOS RECIENTES', recent],
     ['DIETA', p.nutrition ? serializeNutrition(p.nutrition) : null]
   ])
 }

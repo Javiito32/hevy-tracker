@@ -1,8 +1,9 @@
 import { prisma } from './prisma'
 import { localDayKey, localWeekKey } from './dates'
 import { resolveVersion, serializeDietForAi } from './diet-service'
-import { normalizeExerciseName } from './exercise-aliases'
+import { loadTemplateTitles, normalizeExerciseName, resolveTitle } from './exercise-aliases'
 import { WEEKDAY_LABELS_ES, isWeekday } from './nutrition-calculator'
+import type { WorkoutVsPlan, WeekAdherenceRow } from './plan-service'
 
 // ── Interfaces ─────────────────────────────────────────────────────────────────
 
@@ -33,6 +34,8 @@ export interface Exercise {
 }
 
 export interface Workout {
+  /** Present when the caller has it — chat tools use it to fetch the same session. */
+  id?: string
   name: string
   date: string
   duration_min?: number
@@ -205,6 +208,8 @@ export interface WorkoutAnalysisPayload {
   workout: Workout
   historical_reference?: Workout[]
   active_mesocycle?: { name: string; goal?: string; split?: string }
+  /** The planned session this workout matched, when there is a structured plan. */
+  prescribed?: WorkoutVsPlan
 }
 
 export interface WeekEvaluationPayload {
@@ -241,6 +246,17 @@ export interface WeekEvaluationPayload {
   earlier_notes?: Array<{ date: string; content: string }>
   previous_evaluations: WeeklyEvaluation[]
   nutrition?: NutritionSnapshot
+  week_adherence?: { overall_pct: number | null; rows: WeekAdherenceRow[] }
+  muscle_volume?: Array<{
+    muscle: string
+    label: string
+    avg_weekly_sets: number
+    verdict: string
+    mev?: number
+    mav?: number
+    mrv?: number
+  }>
+  alerts?: Array<{ type: string; subject: string; title: string; severity: string }>
 }
 
 export interface FinalSummaryPayload {
@@ -267,13 +283,34 @@ export interface FinalSummaryPayload {
   diary_notes: Array<{ date: string; content: string }>
   nutrition?: NutritionSnapshot
   nutrition_history?: NutritionHistoryEntry[]
+  lift_progression?: LiftProgression[]
+  block_records?: BlockRecord[]
+}
+
+export interface LiftProgression {
+  exercise: string
+  first_e1rm_kg: number | null
+  last_e1rm_kg: number | null
+  best_e1rm_kg: number | null
+  first_date: string
+  last_date: string
+  sessions: number
+  delta_kg: number | null
+}
+
+export interface BlockRecord {
+  exercise: string
+  type: string
+  value: number
+  previous_value: number | null
+  date: string
 }
 
 export interface MesocycleFeedbackPayload {
   task: 'mesocycle_feedback'
   today: string
   athlete: AthleteProfile
-  recent_workouts: Omit<Workout, 'exercises'>[]
+  recent_workouts: Workout[]
   plan: {
     name?: string
     goal?: string
@@ -281,6 +318,23 @@ export interface MesocycleFeedbackPayload {
     sessions_per_week?: number
     split_description?: string
     notes?: string
+    sessions?: Array<{
+      name: string
+      day_of_week?: number | null
+      exercises: Array<{
+        name: string
+        target_sets?: number
+        rep_min?: number | null
+        rep_max?: number | null
+        target_rir?: number | null
+      }>
+    }>
+    weeks?: Array<{
+      week_number: number
+      is_deload?: boolean
+      target_rir?: number | null
+      volume_multiplier?: number
+    }>
   }
   baseline_mesocycle?: {
     name: string
@@ -424,8 +478,168 @@ export function extractCompoundLiftsData(workouts: any[]): CompoundLift[] {
     .map(([exercise, { rm, date }]) => ({ exercise, estimated_1rm_kg: parseFloat(rm.toFixed(1)), date }))
 }
 
+/**
+ * Best e1RM per compound lift across the whole history, not the last handful
+ * of sessions. Generation used to scan five recent workouts, so a squat last
+ * trained six sessions ago vanished from "fuerza actual".
+ *
+ * Personal-record rows overlay the scan when they exist and are higher — they
+ * are the stored best, and `rebuild_records` may not have run.
+ */
+export async function buildCurrentStrength(userId: string, limit = 20): Promise<CompoundLift[]> {
+  const [rows, records, aliases] = await Promise.all([
+    prisma.workoutExercise.findMany({
+      where: { user_id: userId, best_e1rm: { not: null } },
+      select: { name: true, exercise_template_id: true, best_e1rm: true, date: true }
+    }),
+    prisma.personalRecord.findMany({
+      where: { user_id: userId, type: 'e1rm' },
+      select: { exercise_name: true, exercise_template_id: true, value: true, achieved_at: true }
+    }),
+    loadTemplateTitles(userId)
+  ])
+
+  const isCompound = (name: string) => {
+    const lower = name.toLowerCase()
+    return COMPOUND_KEYWORDS.some(kw => lower.includes(kw))
+  }
+
+  const best = new Map<string, { name: string; rm: number; date: Date }>()
+  const consider = (
+    templateId: string | null,
+    rawName: string,
+    rm: number,
+    date: Date
+  ) => {
+    const name = templateId ? resolveTitle(aliases, templateId, rawName) : rawName
+    if (!isCompound(name)) return
+    const key = templateId || `name:${normalizeExerciseName(rawName)}`
+    const cur = best.get(key)
+    if (!cur || rm > cur.rm) best.set(key, { name, rm, date })
+  }
+
+  for (const r of rows) {
+    if (r.best_e1rm == null) continue
+    consider(r.exercise_template_id, r.name, r.best_e1rm, r.date)
+  }
+  for (const rec of records) {
+    consider(rec.exercise_template_id, rec.exercise_name, rec.value, rec.achieved_at)
+  }
+
+  return [...best.values()]
+    .sort((a, b) => b.rm - a.rm)
+    .slice(0, limit)
+    .map(x => ({
+      exercise: x.name,
+      estimated_1rm_kg: parseFloat(x.rm.toFixed(1)),
+      date: localDayKey(x.date)
+    }))
+}
+
+/**
+ * How each lift moved across one block: first / last / best e1RM, plus the
+ * records the detector stored during those dates.
+ *
+ * The final-summary prompt used to be asked for "inicio vs final: cargas" and
+ * handed the first and last *sessions*, which are almost never the same
+ * routine. This is the comparison that question actually needs.
+ */
+export async function buildBlockLiftProgression(
+  userId: string,
+  mesocycleId: string,
+  asOf: Date
+): Promise<{ lifts: LiftProgression[]; records: BlockRecord[] }> {
+  const [rows, records, aliases] = await Promise.all([
+    prisma.workoutExercise.findMany({
+      where: {
+        user_id: userId,
+        date: { lte: asOf },
+        workout: { mesocycle_id: mesocycleId },
+        best_e1rm: { not: null }
+      },
+      orderBy: { date: 'asc' },
+      select: { name: true, exercise_template_id: true, date: true, best_e1rm: true }
+    }),
+    prisma.personalRecord.findMany({
+      where: {
+        user_id: userId,
+        achieved_at: { lte: asOf },
+        workout: { mesocycle_id: mesocycleId }
+      },
+      orderBy: { achieved_at: 'asc' },
+      select: {
+        exercise_name: true, exercise_template_id: true, type: true,
+        value: true, previous_value: true, achieved_at: true
+      }
+    }),
+    loadTemplateTitles(userId)
+  ])
+
+  type Acc = {
+    name: string
+    first: number
+    last: number
+    best: number
+    firstDate: Date
+    lastDate: Date
+    sessions: number
+  }
+  const byKey = new Map<string, Acc>()
+  for (const r of rows) {
+    if (r.best_e1rm == null) continue
+    const key = r.exercise_template_id || `name:${normalizeExerciseName(r.name)}`
+    const name = r.exercise_template_id ? resolveTitle(aliases, r.exercise_template_id, r.name) : r.name
+    const cur = byKey.get(key)
+    if (!cur) {
+      byKey.set(key, {
+        name, first: r.best_e1rm, last: r.best_e1rm, best: r.best_e1rm,
+        firstDate: r.date, lastDate: r.date, sessions: 1
+      })
+    } else {
+      cur.last = r.best_e1rm
+      cur.lastDate = r.date
+      if (r.best_e1rm > cur.best) cur.best = r.best_e1rm
+      cur.sessions++
+    }
+  }
+
+  const lifts: LiftProgression[] = [...byKey.values()]
+    .sort((a, b) => b.sessions - a.sessions)
+    .slice(0, 25)
+    .map(a => ({
+      exercise: a.name,
+      first_e1rm_kg: parseFloat(a.first.toFixed(1)),
+      last_e1rm_kg: parseFloat(a.last.toFixed(1)),
+      best_e1rm_kg: parseFloat(a.best.toFixed(1)),
+      first_date: localDayKey(a.firstDate),
+      last_date: localDayKey(a.lastDate),
+      sessions: a.sessions,
+      delta_kg: parseFloat((a.last - a.first).toFixed(1))
+    }))
+
+  const RECORD_TYPE_LABEL: Record<string, string> = {
+    max_weight: 'Peso máximo',
+    e1rm: '1RM estimado',
+    volume: 'Volumen en sesión',
+    reps_at_weight: 'Repeticiones a un peso'
+  }
+
+  const blockRecords: BlockRecord[] = records.map(r => ({
+    exercise: r.exercise_template_id
+      ? resolveTitle(aliases, r.exercise_template_id, r.exercise_name)
+      : r.exercise_name,
+    type: RECORD_TYPE_LABEL[r.type] ?? r.type,
+    value: r.value,
+    previous_value: r.previous_value,
+    date: localDayKey(r.achieved_at)
+  }))
+
+  return { lifts, records: blockRecords }
+}
+
 export function buildWorkoutData(w: any, includeExercises = true): Workout {
   const workout: Workout = {
+    ...(w.id && { id: String(w.id) }),
     name: w.name,
     // Local components: `Workout.date` is the instant the session started, and
     // `toISOString()` on a 00:30 session in Madrid dates it to the day before —
@@ -914,7 +1128,7 @@ export async function buildFinalSummaryPayload(
   const now = new Date()
   const asOf = mesocycle.end_date && mesocycle.end_date < now ? mesocycle.end_date : now
 
-  const [athlete, allWorkouts, allEvaluations, allNotes, nutrition, nutritionHistory] = await Promise.all([
+  const [athlete, allWorkouts, allEvaluations, allNotes, nutrition, nutritionHistory, liftData] = await Promise.all([
     buildAthleteProfile(userId, { asOf }),
     prisma.workout.findMany({
       where: { user_id: userId, mesocycle_id: mesocycleId, date: { lte: asOf } },
@@ -931,7 +1145,8 @@ export async function buildFinalSummaryPayload(
       orderBy: { date: 'asc' }
     }),
     buildNutritionSnapshot(userId, { asOf }),
-    buildNutritionHistory(userId, 12, asOf)
+    buildNutritionHistory(userId, 12, asOf),
+    buildBlockLiftProgression(userId, mesocycleId, asOf)
   ])
 
   const totalVolume = allWorkouts.reduce((s, w) => s + Number(w.total_volume ?? 0), 0)
@@ -978,7 +1193,9 @@ export async function buildFinalSummaryPayload(
       content: n.content
     })),
     ...(nutrition && { nutrition }),
-    ...(nutritionHistory.length > 0 && { nutrition_history: nutritionHistory })
+    ...(nutritionHistory.length > 0 && { nutrition_history: nutritionHistory }),
+    ...(liftData.lifts.length > 0 && { lift_progression: liftData.lifts }),
+    ...(liftData.records.length > 0 && { block_records: liftData.records })
   }
 }
 

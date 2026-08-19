@@ -412,6 +412,20 @@ export async function suggestLoad(
  */
 const SESSION_MATCH_MIN = 0.5
 
+/** Shared by "what did they just train" and "which prescription was this session". */
+function scoreSessionOverlap(
+  session: { exercises: Array<{ exercise_template_id: string | null; name: string }> },
+  performedIds: Set<string>,
+  performedNames: Set<string>
+): number {
+  if (!session.exercises.length) return 0
+  const hits = session.exercises.filter(e =>
+    (e.exercise_template_id && performedIds.has(e.exercise_template_id)) ||
+    performedNames.has(normalizeExerciseName(e.name))
+  ).length
+  return hits / session.exercises.length
+}
+
 /**
  * Which planned session the athlete's last workout corresponds to.
  *
@@ -445,12 +459,7 @@ async function findLastTrainedSession(
   let bestIndex = -1
   let bestScore = 0
   sessions.forEach((s, index) => {
-    if (!s.exercises.length) return
-    const hits = s.exercises.filter(e =>
-      (e.exercise_template_id && performedIds.has(e.exercise_template_id)) ||
-      performedNames.has(normalizeExerciseName(e.name))
-    ).length
-    const score = hits / s.exercises.length
+    const score = scoreSessionOverlap(s, performedIds, performedNames)
     if (score > bestScore) { bestScore = score; bestIndex = index }
   })
 
@@ -477,9 +486,11 @@ function isSameLocalDay(a: Date, b: Date): boolean {
  * A plan with no weekday assignment is a rotation by definition, so it advances
  * from whichever session was last trained.
  */
-export async function getNextSession(userId: string, mesocycleId: string) {
+type NextReason = 'weekday' | 'next_weekday' | 'rotation' | 'start'
+
+async function pickNextPlannedSession(userId: string, mesocycleId: string) {
   const plan = await loadPlan(mesocycleId, userId)
-  if (!plan.has_plan) return { has_plan: false as const }
+  if (!plan.has_plan) return null
 
   const today = new Date()
   const isoDay = today.getDay() === 0 ? 7 : today.getDay()
@@ -493,7 +504,7 @@ export async function getNextSession(userId: string, mesocycleId: string) {
   const doneToday = trainedToday && last !== null && plan.sessions[last.index] === dueToday
 
   let session: typeof plan.sessions[number]
-  let reason: 'weekday' | 'next_weekday' | 'rotation' | 'start'
+  let reason: NextReason
 
   if (dueToday && !doneToday) {
     session = dueToday
@@ -514,6 +525,32 @@ export async function getNextSession(userId: string, mesocycleId: string) {
 
   const week = weekNumberFor(plan.start_date, today)
   const weekPlan = plan.weeks.find(w => w.week_number === week)
+  return { plan, session, reason, week, weekPlan, last, trainedToday }
+}
+
+/**
+ * Name and day of the session due next — no per-exercise load suggestions.
+ *
+ * The chat's standing context only needs the pointer ("Empuje · lunes");
+ * `suggestLoad` per exercise is a query each and belongs on the tool call.
+ */
+export async function peekNextSession(userId: string, mesocycleId: string) {
+  const picked = await pickNextPlannedSession(userId, mesocycleId)
+  if (!picked) return null
+  return {
+    name: picked.session.name,
+    day_of_week: picked.session.day_of_week,
+    week: picked.week,
+    is_deload: picked.weekPlan?.is_deload ?? false,
+    reason: picked.reason
+  }
+}
+
+export async function getNextSession(userId: string, mesocycleId: string) {
+  const picked = await pickNextPlannedSession(userId, mesocycleId)
+  if (!picked) return { has_plan: false as const }
+
+  const { plan, session, reason, week, weekPlan, last, trainedToday } = picked
 
   const exercises = await Promise.all(
     session.exercises.map(async (e) => {
@@ -620,6 +657,186 @@ export async function getAdherence(userId: string, mesocycleId: string) {
   return {
     has_plan: true as const,
     weeks_elapsed: weeksElapsed,
+    overall_pct: totalPlanned > 0 ? Math.round((totalActual / totalPlanned) * 100) : null,
+    rows: rows.sort((a, b) => (a.adherence_pct ?? 0) - (b.adherence_pct ?? 0))
+  }
+}
+
+export interface WorkoutVsPlanExercise {
+  name: string
+  prescribed_sets: number
+  actual_sets: number
+  prescribed_reps: string | null
+  prescribed_rir: number | null
+}
+
+export interface WorkoutVsPlan {
+  session_name: string
+  day_of_week: number | null
+  match_score: number
+  week: number
+  is_deload: boolean
+  exercises: WorkoutVsPlanExercise[]
+  extras: Array<{ name: string; actual_sets: number }>
+}
+
+/**
+ * The planned session this workout actually was, by exercise overlap.
+ *
+ * Title matching is the wrong key: Hevy names the routine whatever the coach
+ * called it. Same threshold as `findLastTrainedSession` — below half the
+ * prescribed lifts this is a different day's work that happens to share one.
+ */
+export async function matchWorkoutToPlan(
+  userId: string,
+  mesocycleId: string,
+  workoutId: string
+): Promise<WorkoutVsPlan | null> {
+  const plan = await loadPlan(mesocycleId, userId)
+  if (!plan.has_plan) return null
+
+  const workout = await prisma.workout.findFirst({
+    where: { id: workoutId, user_id: userId },
+    select: {
+      date: true,
+      exercises: { select: { exercise_template_id: true, name: true, working_sets: true } }
+    }
+  })
+  if (!workout?.exercises.length) return null
+
+  const performedIds = new Set(
+    workout.exercises.map(e => e.exercise_template_id).filter(Boolean) as string[]
+  )
+  const performedNames = new Set(workout.exercises.map(e => normalizeExerciseName(e.name)))
+
+  let best: typeof plan.sessions[number] | null = null
+  let bestScore = 0
+  for (const session of plan.sessions) {
+    const score = scoreSessionOverlap(session, performedIds, performedNames)
+    if (score > bestScore) { bestScore = score; best = session }
+  }
+  if (!best || bestScore < SESSION_MATCH_MIN) return null
+
+  const week = weekNumberFor(plan.start_date, workout.date)
+  const weekPlan = plan.weeks.find(w => w.week_number === week)
+  const multiplier = weekPlan?.volume_multiplier ?? 1
+
+  const actualByTemplate = new Map<string, number>()
+  const actualByName = new Map<string, number>()
+  for (const e of workout.exercises) {
+    if (e.exercise_template_id) {
+      actualByTemplate.set(e.exercise_template_id, (actualByTemplate.get(e.exercise_template_id) ?? 0) + e.working_sets)
+    }
+    const key = normalizeExerciseName(e.name)
+    actualByName.set(key, (actualByName.get(key) ?? 0) + e.working_sets)
+  }
+
+  const claimed = new Set<string>()
+  const exercises = best.exercises.map(e => {
+    const actual = (e.exercise_template_id ? actualByTemplate.get(e.exercise_template_id) : undefined)
+      ?? actualByName.get(normalizeExerciseName(e.name))
+      ?? 0
+    if (e.exercise_template_id) claimed.add(`id:${e.exercise_template_id}`)
+    claimed.add(`name:${normalizeExerciseName(e.name)}`)
+    const reps = e.rep_min && e.rep_max
+      ? (e.rep_min === e.rep_max ? `${e.rep_min}` : `${e.rep_min}-${e.rep_max}`)
+      : null
+    return {
+      name: e.name,
+      prescribed_sets: Math.max(1, Math.round(e.target_sets * multiplier)),
+      actual_sets: actual,
+      prescribed_reps: reps,
+      prescribed_rir: weekPlan?.target_rir ?? e.target_rir ?? null
+    }
+  })
+
+  const extras = workout.exercises
+    .filter(e => {
+      const byId = e.exercise_template_id ? claimed.has(`id:${e.exercise_template_id}`) : false
+      const byName = claimed.has(`name:${normalizeExerciseName(e.name)}`)
+      return !byId && !byName
+    })
+    .map(e => ({ name: e.name, actual_sets: e.working_sets }))
+
+  return {
+    session_name: best.name,
+    day_of_week: best.day_of_week,
+    match_score: bestScore,
+    week,
+    is_deload: weekPlan?.is_deload ?? false,
+    exercises,
+    extras
+  }
+}
+
+export interface WeekAdherenceRow {
+  session: string
+  exercise: string
+  planned_sets: number
+  actual_sets: number
+  adherence_pct: number | null
+}
+
+/**
+ * Planned versus performed for ONE week of the block.
+ *
+ * `getAdherence` is the running total (sets to date). A weekly evaluation that
+ * used that figure would judge week 1 against the whole block's prescription
+ * and week 6 against a sum the athlete could not yet have completed.
+ */
+export async function getWeekAdherence(
+  userId: string,
+  mesocycleId: string,
+  weekStart: Date,
+  weekEnd: Date,
+  weekNumber: number
+): Promise<{ has_plan: false } | { has_plan: true; overall_pct: number | null; rows: WeekAdherenceRow[] }> {
+  const plan = await loadPlan(mesocycleId, userId)
+  if (!plan.has_plan) return { has_plan: false as const }
+
+  const weekPlan = plan.weeks.find(w => w.week_number === weekNumber)
+  const multiplier = weekPlan?.volume_multiplier ?? 1
+
+  const performed = await prisma.workoutExercise.findMany({
+    where: {
+      user_id: userId,
+      date: { gte: weekStart, lt: weekEnd },
+      workout: { OR: [{ mesocycle_id: mesocycleId }, { mesocycle_id: null }] }
+    },
+    select: { exercise_template_id: true, name: true, working_sets: true }
+  })
+
+  const byTemplate = new Map<string, number>()
+  const byName = new Map<string, number>()
+  for (const p of performed) {
+    if (p.exercise_template_id) {
+      byTemplate.set(p.exercise_template_id, (byTemplate.get(p.exercise_template_id) ?? 0) + p.working_sets)
+    }
+    const key = normalizeExerciseName(p.name)
+    byName.set(key, (byName.get(key) ?? 0) + p.working_sets)
+  }
+
+  const rows = plan.sessions.flatMap(s =>
+    s.exercises.map(e => {
+      const actual = (e.exercise_template_id ? byTemplate.get(e.exercise_template_id) : undefined)
+        ?? byName.get(normalizeExerciseName(e.name))
+        ?? 0
+      const planned = Math.max(1, Math.round(e.target_sets * multiplier))
+      return {
+        session: s.name,
+        exercise: e.name,
+        planned_sets: planned,
+        actual_sets: actual,
+        adherence_pct: planned > 0 ? Math.min(999, Math.round((actual / planned) * 100)) : null
+      }
+    })
+  )
+
+  const totalPlanned = rows.reduce((s, r) => s + r.planned_sets, 0)
+  const totalActual = rows.reduce((s, r) => s + r.actual_sets, 0)
+
+  return {
+    has_plan: true as const,
     overall_pct: totalPlanned > 0 ? Math.round((totalActual / totalPlanned) * 100) : null,
     rows: rows.sort((a, b) => (a.adherence_pct ?? 0) - (b.adherence_pct ?? 0))
   }

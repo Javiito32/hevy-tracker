@@ -10,6 +10,7 @@ import { renderNutritionTargets } from '../../utils/ai-serialize'
 import { runAiTask, aiKeysFromConfig, parseAiJson } from '../../utils/ai-service'
 import { NUTRITION_TARGETS_PROMPT } from '../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../utils/ai-config'
+import { localDayKey } from '../../utils/dates'
 
 const GOALS = ['bulk', 'cut', 'maintenance', 'recomp']
 
@@ -42,7 +43,7 @@ export default defineEventHandler(async (event) => {
 
   const payload: NutritionTargetsPayload = {
     task: 'nutrition_targets',
-    today: new Date().toISOString().substring(0, 10),
+    today: localDayKey(new Date()),
     athlete,
     request: {
       goal,

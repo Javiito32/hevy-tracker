@@ -1,9 +1,10 @@
 import { prisma } from './prisma'
-import { daysLeftInWeek, isoWeekday, weekNumberFor } from './dates'
+import { daysLeftInWeek, isoWeekday, localDayKey, weekNumberFor } from './dates'
 import { buildAthleteProfile, buildNutritionSnapshot, buildWorkoutData } from './ai-payload'
 import { serializeAthlete, serializeNutrition, serializeWorkoutLines } from './ai-serialize'
 import { DATA_NOT_INSTRUCTIONS, NUTRITION_GROUNDING, TRAINING_DATA_GROUNDING } from './ai-prompts'
-import { WEEKDAY_LABELS_ES, type Weekday } from './nutrition-calculator'
+import { WEEKDAY_LABELS_ES, isWeekday, type Weekday } from './nutrition-calculator'
+import { peekNextSession } from './plan-service'
 
 /**
  * The chat's system prompt.
@@ -71,9 +72,11 @@ async function buildActiveDietSummary(userId: string): Promise<string> {
   // question is about.
   const todayName = WEEKDAY_LABELS_ES[isoWeekday() as Weekday].toLowerCase()
   const todayGroup = nutrition.days?.find(d => d.weekdays.includes(todayName))
+  const todayMacro = (value: number | null | undefined, suffix: string) =>
+    value != null ? `${Math.round(value)} ${suffix}` : `— ${suffix}`
   lines.push(
     todayGroup
-      ? `HOY (${todayName}): ${Math.round(todayGroup.kcal ?? 0)} kcal · P ${Math.round(todayGroup.protein_g ?? 0)} g · C ${Math.round(todayGroup.carbs_g ?? 0)} g · G ${Math.round(todayGroup.fat_g ?? 0)} g`
+      ? `HOY (${todayName}): ${todayMacro(todayGroup.kcal, 'kcal')} · P ${todayMacro(todayGroup.protein_g, 'g')} · C ${todayMacro(todayGroup.carbs_g, 'g')} · G ${todayMacro(todayGroup.fat_g, 'g')}`
       : `HOY (${todayName}): sin comidas planificadas — está sin planificar, no es un día de 0 kcal.`
   )
   lines.push('El detalle de comidas y alimentos NO está aquí: si la pregunta va de comidas, alimentos o gramos, invoca get_diet.')
@@ -110,7 +113,7 @@ export const joinSystemPrompt = (prompt: ChatSystemPrompt): string =>
 export const buildLeanSystemPrompt = async (userId: string): Promise<ChatSystemPrompt> => {
   const now = new Date()
 
-  const [athlete, activeMesocycle, recentWorkouts, activeNotes, dietBlock] = await Promise.all([
+  const [athlete, activeMesocycle, recentWorkouts, activeNotes, dietBlock, alerts] = await Promise.all([
     // Notes are excluded here and rendered once below, WITH their ids. They
     // used to travel twice: `serializeAthlete` printed their text under the
     // profile and "NOTAS RECORDADAS" printed the same text again with the id
@@ -128,11 +131,21 @@ export const buildLeanSystemPrompt = async (userId: string): Promise<ChatSystemP
     prisma.workout.findMany({
       where: { user_id: userId },
       take: 3, orderBy: { date: 'desc' },
-      select: { name: true, date: true, total_volume: true, rpe_avg: true, notes: true }
+      select: { id: true, name: true, date: true, total_volume: true, rpe_avg: true, notes: true, exercises_summary: true }
     }),
     prisma.aiNote.findMany({ where: { user_id: userId, is_active: true }, orderBy: { created_at: 'asc' } }),
-    buildActiveDietSummary(userId)
+    buildActiveDietSummary(userId),
+    prisma.trainingAlert.findMany({
+      where: { user_id: userId, status: 'active' },
+      orderBy: { detected_at: 'desc' },
+      take: 8,
+      select: { type: true, subject: true, title: true }
+    })
   ])
+
+  const nextSession = activeMesocycle && activeMesocycle._count.planned_sessions > 0
+    ? await peekNextSession(userId, activeMesocycle.id)
+    : null
 
   const mesoBlock = activeMesocycle
     ? (() => {
@@ -144,7 +157,7 @@ export const buildLeanSystemPrompt = async (userId: string): Promise<ChatSystemP
           ? activeMesocycle.evaluations.map(e => `  Semana ${e.week_number}: ${e.summary ?? 'Sin resumen'} (volumen: ${e.volume_trend ?? 'N/A'})`).join('\n')
           : '  Sin evaluaciones previas.'
         const notesSummary = activeMesocycle.diary_notes.length
-          ? activeMesocycle.diary_notes.map(n => `  [${new Date(n.date).toISOString().substring(0, 10)}] ${n.content}`).join('\n')
+          ? activeMesocycle.diary_notes.map(n => `  [${localDayKey(new Date(n.date))}] ${n.content}`).join('\n')
           : '  Sin notas de diario.'
         return `- Nombre: ${activeMesocycle.name}
 - ID: ${activeMesocycle.id}
@@ -163,8 +176,27 @@ ${notesSummary}`
     : '- No hay ningún mesociclo activo.'
 
   const recentText = recentWorkouts.length
-    ? serializeWorkoutLines(recentWorkouts.map(w => buildWorkoutData(w, false)))
+    ? serializeWorkoutLines(recentWorkouts.map(w => buildWorkoutData(w, true)))
     : 'No hay entrenamientos recientes registrados.'
+
+  const signals: string[] = []
+  if (alerts.length) {
+    signals.push(
+      `ALERTAS (${alerts.length} activas): ${alerts.map(a =>
+        `${a.type}${a.subject ? ` · ${a.subject}` : ''}`
+      ).join('; ')}. Detalle: get_training_alerts.`
+    )
+  } else {
+    signals.push('ALERTAS: ninguna activa.')
+  }
+  if (nextSession) {
+    const day = isWeekday(nextSession.day_of_week)
+      ? WEEKDAY_LABELS_ES[nextSession.day_of_week].toLowerCase()
+      : 'sin día fijo'
+    signals.push(
+      `SIGUIENTE SESIÓN: ${nextSession.name} · ${day} · semana ${nextSession.week}${nextSession.is_deload ? ' (descarga)' : ''}. Cargas y series: get_next_planned_session.`
+    )
+  }
 
   const notesBlock = activeNotes.length > 0
     ? activeNotes.map(n => `- [${n.id}] ${n.content}`).join('\n')
@@ -189,8 +221,11 @@ ${serializeAthlete(athlete)}
 ### MESOCICLO ACTIVO
 ${mesoBlock}
 
-### ÚLTIMOS 3 ENTRENAMIENTOS (resumen)
+### ÚLTIMOS 3 ENTRENAMIENTOS (ejercicios, sin series)
 ${recentText}
+
+### SEÑALES
+${signals.join('\n')}
 
 ### DIETA ACTIVA
 ${dietBlock}
@@ -209,7 +244,8 @@ Analiza los entrenamientos del usuario, compara con sus objetivos y da feedback 
 
 ## HERRAMIENTAS
 Tienes herramientas para consultar más datos bajo demanda. Úsalas solo cuando las necesites:
-- Lo que se responde con el contexto de abajo → responde directamente, sin herramientas.
+- Lo que se responde con el contexto de abajo → responde directamente, sin herramientas. Los últimos entrenos listan ejercicios, no series: para juzgar una sesión llama a \`get_workout_detail\` (el id aparece junto al nombre).
+- Las alertas y la siguiente sesión aparecen como punteros. Si la pregunta va de eso, llama a \`get_training_alerts\` o \`get_next_planned_session\` — no inventes el detalle.
 - Comparaciones históricas, semanas concretas, progresión de un ejercicio, métricas corporales pasadas, mesociclos anteriores → invoca la herramienta correspondiente.
 - Para lo PLANIFICADO (qué toca hoy, qué ejercicios y series tiene prescritos, si está siguiendo el plan, qué cambiar) usa \`get_active_plan\` o \`get_next_planned_session\`. No deduzcas el plan a partir de los entrenamientos hechos: son cosas distintas.
 - Para las series detalladas de un entreno concreto usa \`get_workout_detail\`, no \`get_workouts_in_range\` con detail=full.

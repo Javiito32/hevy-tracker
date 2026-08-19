@@ -86,6 +86,7 @@ export const WORKOUT_ANALYSIS_PROMPT = buildPrompt(
 3. **Áreas de mejora** (con datos concretos)
 4. **Recomendaciones** para la siguiente sesión similar
 
+"## SESIÓN PRESCRITA" es la sesión del plan que coincide con esta (por los ejercicios, no por el título): compara series hechas frente a prescritas. Si no está, esta sesión no encajó con ninguna del plan o no hay plan estructurado.
 "## SESIONES ANTERIORES COMPARABLES" son sesiones previas filtradas a los ejercicios que aparecen en esta, ordenadas de la más antigua a la más reciente, para comparar cargas y series ejercicio a ejercicio. Si no está, dilo y no supongas una tendencia a partir de una sola sesión.
 El perfil que recibes es el que el deportista tenía EN LA FECHA DE ESA SESIÓN, no el de hoy: no cites su peso actual ni cambios posteriores.
 Ten en cuenta "## MESOCICLO" si está: las recomendaciones deben encajar con el objetivo del bloque, no con uno genérico. Si el perfil trae notas recientes (viajes, estrés, molestias), tenlas en cuenta antes de atribuir una mala sesión a falta de esfuerzo.`,
@@ -102,7 +103,8 @@ export const WEEK_EVALUATION_PROMPT = buildPrompt(
 ## Recomendaciones próxima semana
 
 Si la semana figura como EN CURSO, aún no ha terminado: evalúa lo hecho hasta ahora, contrasta las sesiones completadas con el objetivo y ajusta las conclusiones a los días que quedan — no llames abandono a una semana a medias.
-Usa la comparación de volumen que ya viene calculada en vez de recalcularla, y "## SEMANAS PREVIAS" (de la más antigua a la más reciente, sin detalle de series) para la tendencia de fondo. "## EVALUACIONES PREVIAS" va en el mismo orden: no repitas lo que ya dijiste ahí, continúa desde ello.
+Usa la comparación de volumen que ya viene calculada en vez de recalcularla, y "## SEMANAS PREVIAS" (de la más antigua a la más reciente, sin detalle de series) para la tendencia de fondo. "## EVALUACIONES PREVIAS" va en el mismo orden e incluye las recomendaciones que ya diste: no las repitas, continúa desde ellas.
+"## ADHERENCIA DE LA SEMANA" son series hechas frente a prescritas ESTA semana, no el acumulado del bloque. "## VOLUMEN POR GRUPO MUSCULAR" es series efectivas semanales vs MEV/MAV/MRV. "## ALERTAS" son las que los detectores ya levantaron — no rederives el diagnóstico.
 "## NOTAS DE ESTA SEMANA" son las notas de diario escritas DENTRO de la semana evaluada y explican fatiga, sueño o incidencias de estos días. "## NOTAS ANTERIORES", si aparece, es de semanas previas: úsalo como contexto, nunca como evidencia sobre esta semana.
 
 ${NUTRITION_GROUNDING} Cuando la dieta esté presente, valora si la ingesta planificada encaja con la carga de la semana.`,
@@ -125,7 +127,7 @@ export const FINAL_SUMMARY_PROMPT = buildPrompt(
 ## Recomendaciones para el próximo mesociclo
 (Ajustes de volumen, intensidad, split o ejercicios)
 
-Para la progresión, apóyate en "## ESTADÍSTICAS DEL BLOQUE", en "## EVALUACIONES SEMANALES" (en orden, de la primera semana a la última) y en la evolución de peso y medidas del perfil. **"## PRIMERA SESIÓN" y "## ÚLTIMA SESIÓN" son simplemente la primera y la última del bloque, y casi nunca son la misma rutina** — si no comparten ejercicios, no las compares entre sí: úsalas como muestra del punto de partida y de llegada, y busca la progresión de carga solo en los ejercicios que aparezcan en ambas.
+Para la progresión de CARGAS apóyate en "## PROGRESIÓN DE CARGAS" (e1RM por ejercicio: primera, última y mejor del bloque) y en "## RÉCORDS DEL BLOQUE". **"## PRIMERA SESIÓN" y "## ÚLTIMA SESIÓN" son simplemente la primera y la última del bloque, y casi nunca son la misma rutina** — no las uses para juzgar si un lift mejoró. Las estadísticas del bloque y "## EVALUACIONES SEMANALES" (de la primera semana a la última) cubren volumen, RPE y el hilo de lo ya dicho.
 "## DIARIO DEL BLOQUE" recorre todo el mesociclo; cita una nota con su fecha cuando explique una caída o un pico.
 
 ${NUTRITION_GROUNDING} Si además hay "## HISTORIAL DE DIETA", relaciona los cambios de dieta a lo largo del bloque con la evolución de peso y rendimiento.`,
@@ -143,7 +145,8 @@ export const MESOCYCLE_FEEDBACK_PROMPT = buildPrompt(
 
 Si existe "## BLOQUE ANTERIOR (LÍNEA BASE)", compara el plan con lo que el deportista hizo realmente en su último bloque, y usa "## ENTRENOS RECIENTES" (resumen, sin detalle de series) para ver de qué carga real parte.
 
-**El plan es lo que el deportista ha escrito hasta ahora, y su descripción es texto libre: puede no detallar ejercicios, series ni repeticiones.** No des por hecho que un ejercicio o un número de series está en el plan si no aparece escrito, y no evalúes lo que no puedes ver — si te falta el detalle para juzgar el volumen, dilo en una línea y pide el dato concreto que falta en vez de suponerlo.
+Si existe "## PLAN ESTRUCTURADO", es la prescripción real (sesiones, series, reps, RIR). El split en texto es un resumen: no lo uses para contar series si tienes la estructura.
+Si solo está "## PLAN PROPUESTO" en texto libre, puede no detallar ejercicios, series ni repeticiones. No des por hecho que un ejercicio o un número de series está en el plan si no aparece escrito, y no evalúes lo que no puedes ver — si te falta el detalle para juzgar el volumen, dilo en una línea y pide el dato concreto que falta en vez de suponerlo.
 
 ${NUTRITION_GROUNDING} Señala si el plan de entrenamiento es incompatible con la ingesta planificada (por ejemplo, mucho volumen con déficit calórico marcado).`,
   { training: true }

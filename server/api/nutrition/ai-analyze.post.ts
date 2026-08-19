@@ -11,6 +11,7 @@ import { renderNutritionAnalysis } from '../../utils/ai-serialize'
 import { runAiTask, aiKeysFromConfig } from '../../utils/ai-service'
 import { NUTRITION_ANALYSIS_PROMPT } from '../../utils/ai-prompts'
 import { MAX_OUTPUT_TOKENS } from '../../utils/ai-config'
+import { localDayKey } from '../../utils/dates'
 
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
@@ -46,7 +47,7 @@ export default defineEventHandler(async (event) => {
 
   const payload: NutritionAnalysisPayload = {
     task: 'nutrition_analysis',
-    today: new Date().toISOString().substring(0, 10),
+    today: localDayKey(new Date()),
     athlete,
     nutrition,
     nutrition_history: nutritionHistory,

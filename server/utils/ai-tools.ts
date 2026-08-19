@@ -7,7 +7,7 @@ import {
   serializeWorkouts, table
 } from './ai-serialize'
 import { dayAnchor, resolveVersion, serializeDietForAi, getActivePlan, toDateKey } from './diet-service'
-import { normalizeExerciseName } from './exercise-aliases'
+import { loadTemplateTitles, normalizeExerciseName, resolveTitle } from './exercise-aliases'
 import { NUTRIENT_KEYS, WEEKDAY_LABELS_ES, isWeekday } from './nutrition-calculator'
 import { buildMuscleVolumeReport } from './muscle-volume'
 import { getCurrentRecords, RECORD_LABELS, type RecordType } from './personal-records'
@@ -141,6 +141,150 @@ const getWorkoutsInRange: ToolFn = async (userId, args) => {
   )}`
 }
 
+/** One logged movement, keyed by template id when we have one. */
+type ExerciseIdentity = {
+  key: string
+  templateId: string | null
+  displayName: string
+  labels: string[]
+}
+
+function identityKey(templateId: string | null, name: string): string {
+  return templateId || `name:${normalizeExerciseName(name)}`
+}
+
+async function loggedIdentities(
+  userId: string,
+  rows: Array<{ name: string; exercise_template_id: string | null }>
+): Promise<ExerciseIdentity[]> {
+  const aliases = await loadTemplateTitles(userId, rows.map(r => r.exercise_template_id))
+  const ids = [...new Set(rows.map(r => r.exercise_template_id).filter(Boolean))] as string[]
+  const catalogue = ids.length
+    ? new Map((await prisma.exerciseTemplate.findMany({
+        where: { id: { in: ids } },
+        select: { id: true, title: true }
+      })).map(t => [t.id, t.title]))
+    : new Map<string, string>()
+
+  const byKey = new Map<string, ExerciseIdentity>()
+  for (const r of rows) {
+    const key = identityKey(r.exercise_template_id, r.name)
+    const display = r.exercise_template_id
+      ? resolveTitle(aliases, r.exercise_template_id, r.name)
+      : r.name
+    const existing = byKey.get(key)
+    if (!existing) {
+      const labels = [r.name, display]
+      if (r.exercise_template_id) {
+        const cat = catalogue.get(r.exercise_template_id)
+        if (cat) labels.push(cat)
+        const alias = aliases.get(r.exercise_template_id)
+        if (alias) labels.push(alias)
+      }
+      byKey.set(key, {
+        key,
+        templateId: r.exercise_template_id,
+        displayName: display,
+        labels: [...new Set(labels.filter(Boolean))]
+      })
+    } else if (!existing.labels.includes(r.name)) {
+      existing.labels.push(r.name)
+    }
+  }
+  return [...byKey.values()]
+}
+
+function matchIdentities(identities: ExerciseIdentity[], query: string): ExerciseIdentity[] {
+  const needle = normalizeExerciseName(query)
+  const exact = identities.filter(id => id.labels.some(l => normalizeExerciseName(l) === needle))
+  if (exact.length) return exact
+  return identities.filter(id => id.labels.some(l => normalizeExerciseName(l).includes(needle)))
+}
+
+/** Fallback when `WorkoutExercise` was never built — name matching only. */
+async function listExercisesFromSummaries(userId: string, since: Date, weeksBack: number): Promise<string> {
+  const workouts = await prisma.workout.findMany({
+    where: { user_id: userId, date: { gte: since } },
+    orderBy: { date: 'asc' },
+    select: { date: true, exercises_summary: true }
+  })
+  const map = new Map<string, { name: string; sessions: number; last_date: string; best_1rm: number | null }>()
+  for (const w of workouts) {
+    if (!w.exercises_summary) continue
+    let exs: any[]
+    try { exs = JSON.parse(w.exercises_summary) } catch { continue }
+    for (const ex of exs) {
+      const key = (ex.exercise_template_id as string | null) || `name:${normalizeExerciseName(String(ex.name ?? ''))}`
+      const existing = map.get(key)
+      const rm = ex.estimated_1rm ? parseFloat(ex.estimated_1rm) : null
+      if (!existing) {
+        map.set(key, { name: String(ex.name ?? key), sessions: 1, last_date: fmtDate(w.date), best_1rm: rm })
+      } else {
+        existing.sessions++
+        if (fmtDate(w.date) > existing.last_date) existing.last_date = fmtDate(w.date)
+        if (rm != null && (existing.best_1rm == null || rm > existing.best_1rm)) existing.best_1rm = rm
+      }
+    }
+  }
+  if (!map.size) return `Sin ejercicios registrados en las últimas ${weeksBack} semanas.`
+  return `EJERCICIOS REGISTRADOS (${map.size}, últimas ${weeksBack} semanas)\n` + table(
+    ['ejercicio', 'sesiones', 'última', 'mejor_e1RM_kg'],
+    [...map.values()]
+      .sort((a, b) => b.sessions - a.sessions)
+      .map(s => [s.name, s.sessions, s.last_date, s.best_1rm != null ? num(s.best_1rm) : null])
+  )
+}
+
+async function progressionFromSummaries(
+  userId: string, query: string, since: Date, weeksBack: number
+): Promise<string> {
+  const needle = normalizeExerciseName(query)
+  const workouts = await prisma.workout.findMany({
+    where: { user_id: userId, date: { gte: since } },
+    orderBy: { date: 'asc' },
+    select: { date: true, exercises_summary: true }
+  })
+  const parsed = workouts
+    .map(w => {
+      if (!w.exercises_summary) return null
+      try { return { date: w.date, exs: JSON.parse(w.exercises_summary) as any[] } } catch { return null }
+    })
+    .filter(Boolean) as Array<{ date: Date; exs: any[] }>
+
+  const hasExact = parsed.some(w => w.exs.some(e =>
+    normalizeExerciseName(String(e.name)) === needle ||
+    (e.exercise_template_id && String(e.exercise_template_id) === query)
+  ))
+  const matchedNames = new Set<string>()
+  const rows: Array<Array<string | number | null>> = []
+  for (const w of parsed) {
+    const match = hasExact
+      ? w.exs.find(e => normalizeExerciseName(String(e.name)) === needle)
+      : w.exs.find(e => normalizeExerciseName(String(e.name)).includes(needle))
+    if (!match) continue
+    matchedNames.add(match.name)
+    const details: any[] = match.sets_details || []
+    const working = details.filter(s => s?.type !== 'warmup')
+    const best = working.length
+      ? working.reduce((a: any, b: any) =>
+          ((b?.weight ?? 0) * (b?.reps ?? 0)) > ((a?.weight ?? 0) * (a?.reps ?? 0)) ? b : a)
+      : null
+    rows.push([
+      fmtDate(w.date),
+      match.working_sets ?? match.sets ?? null,
+      match.total_volume ? int(Number(match.total_volume)) : null,
+      match.estimated_1rm ? num(parseFloat(match.estimated_1rm)) : null,
+      best ? `${num(best.weight)}×${best.reps ?? NONE}${best.rpe ? `@${num(best.rpe)}` : ''}` : null
+    ])
+  }
+  if (!rows.length) {
+    return `Sin sesiones de "${query}" en las últimas ${weeksBack} semanas. Usa list_exercises para ver el nombre exacto.`
+  }
+  return `PROGRESIÓN "${query}" · ${rows.length} sesiones · últimas ${weeksBack} semanas\n` +
+    `coincide con: ${[...matchedNames].join(', ')}\n` +
+    table(['fecha', 'series', 'vol_kg', 'e1RM_kg', 'mejor serie'], rows)
+}
+
 const getWorkoutDetail: ToolFn = async (userId, args) => {
   if (!args.workout_id && !args.date) return fail('workout_id o date es requerido')
 
@@ -163,111 +307,115 @@ const getWorkoutDetail: ToolFn = async (userId, args) => {
 const listExercises: ToolFn = async (userId, args) => {
   const weeksBack = Math.min(Math.max(Number(args.weeks_back) || 52, 1), 156)
   const since = daysAgo(weeksBack * 7)
-  const workouts = await prisma.workout.findMany({
-    where: { user_id: userId, date: { gte: since } },
-    orderBy: { date: 'asc' },
-    select: { date: true, exercises_summary: true }
-  })
 
-  const map = new Map<string, { sessions: number; last_date: string; best_1rm: number | null; type: string }>()
-  for (const w of workouts) {
-    if (!w.exercises_summary) continue
-    let exs: any[]
-    try { exs = JSON.parse(w.exercises_summary) } catch { continue }
-    for (const ex of exs) {
-      const existing = map.get(ex.name)
-      const rm = ex.estimated_1rm ? parseFloat(ex.estimated_1rm) : null
-      if (!existing) {
-        map.set(ex.name, { sessions: 1, last_date: fmtDate(w.date), best_1rm: rm, type: ex.type || 'strength' })
-      } else {
-        existing.sessions++
-        if (fmtDate(w.date) > existing.last_date) existing.last_date = fmtDate(w.date)
-        if (rm != null && (existing.best_1rm == null || rm > existing.best_1rm)) existing.best_1rm = rm
-      }
+  const rows = await prisma.workoutExercise.findMany({
+    where: { user_id: userId, date: { gte: since } },
+    select: { name: true, date: true, exercise_template_id: true, best_e1rm: true, workout_id: true }
+  })
+  if (!rows.length) return listExercisesFromSummaries(userId, since, weeksBack)
+
+  const identities = await loggedIdentities(userId, rows)
+  const byKey = new Map(identities.map(id => [id.key, {
+    name: id.displayName,
+    sessions: new Set<string>(),
+    last_date: '',
+    best_1rm: null as number | null
+  }]))
+
+  for (const r of rows) {
+    const key = identityKey(r.exercise_template_id, r.name)
+    const bucket = byKey.get(key)
+    if (!bucket) continue
+    bucket.sessions.add(r.workout_id)
+    const day = fmtDate(r.date)
+    if (day > bucket.last_date) bucket.last_date = day
+    if (r.best_e1rm != null && (bucket.best_1rm == null || r.best_e1rm > bucket.best_1rm)) {
+      bucket.best_1rm = r.best_e1rm
     }
   }
-  if (!map.size) return `Sin ejercicios registrados en las últimas ${weeksBack} semanas.`
 
-  return `EJERCICIOS REGISTRADOS (${map.size}, últimas ${weeksBack} semanas)\n` + table(
-    ['ejercicio', 'tipo', 'sesiones', 'última', 'mejor_e1RM_kg'],
-    [...map.entries()]
-      .sort((a, b) => b[1].sessions - a[1].sessions)
-      .map(([name, s]) => [name, s.type, s.sessions, s.last_date, s.best_1rm != null ? num(s.best_1rm) : null])
+  return `EJERCICIOS REGISTRADOS (${byKey.size}, últimas ${weeksBack} semanas)\n` + table(
+    ['ejercicio', 'sesiones', 'última', 'mejor_e1RM_kg'],
+    [...byKey.values()]
+      .sort((a, b) => b.sessions.size - a.sessions.size)
+      .map(s => [s.name, s.sessions.size, s.last_date, s.best_1rm != null ? num(s.best_1rm) : null])
   )
 }
 
 const getExerciseProgression: ToolFn = async (userId, args) => {
   const query = (args.exercise_name || '').toString().trim()
   if (!query) return fail('exercise_name es requerido')
-  const needle = normalizeExerciseName(query)
   const weeksBack = Math.min(Math.max(Number(args.weeks_back) || 12, 1), 52)
   const since = daysAgo(weeksBack * 7)
 
-  const workouts = await prisma.workout.findMany({
+  const logged = await prisma.workoutExercise.findMany({
     where: { user_id: userId, date: { gte: since } },
+    select: { name: true, exercise_template_id: true }
+  })
+  if (!logged.length) {
+    return progressionFromSummaries(userId, query, since, weeksBack)
+  }
+
+  const identities = await loggedIdentities(userId, logged)
+  const matched = matchIdentities(identities, query)
+  if (!matched.length) {
+    return `Sin sesiones de "${query}" en las últimas ${weeksBack} semanas. Usa list_exercises para ver el nombre exacto.`
+  }
+  if (matched.length > 1) {
+    return `La búsqueda "${query}" coincide con varios ejercicios distintos: ${matched.map(m => m.displayName).join(', ')}. Repite con el nombre exacto (list_exercises).`
+  }
+
+  const identity = matched[0]
+  const sessions = await prisma.workoutExercise.findMany({
+    where: {
+      user_id: userId,
+      date: { gte: since },
+      ...(identity.templateId
+        ? { exercise_template_id: identity.templateId }
+        : { name: { in: identity.labels }, exercise_template_id: null })
+    },
     orderBy: { date: 'asc' },
-    select: { date: true, exercises_summary: true }
+    select: {
+      date: true, working_sets: true, total_volume: true, best_e1rm: true,
+      top_set_weight: true, top_set_reps: true
+    }
   })
 
-  // Two passes: prefer exact-name matches so a generic query like "remo" doesn't
-  // silently mix sessions from different exercises. Fall back to substring match.
-  const parsed = workouts
-    .map(w => {
-      if (!w.exercises_summary) return null
-      try { return { date: w.date, exs: JSON.parse(w.exercises_summary) as any[] } } catch { return null }
-    })
-    .filter(Boolean) as Array<{ date: Date; exs: any[] }>
-
-  const hasExact = parsed.some(w => w.exs.some(e => normalizeExerciseName(String(e.name)) === needle))
-  const matchedNames = new Set<string>()
-  const rows: Array<Array<string | number | null>> = []
-
-  for (const w of parsed) {
-    const match = hasExact
-      ? w.exs.find(e => normalizeExerciseName(String(e.name)) === needle)
-      : w.exs.find(e => normalizeExerciseName(String(e.name)).includes(needle))
-    if (!match) continue
-    matchedNames.add(match.name)
-
-    const details: any[] = match.sets_details || []
-    const working = details.filter(s => s?.type !== 'warmup')
-    const best = working.length
-      ? working.reduce((a: any, b: any) =>
-          ((b?.weight ?? 0) * (b?.reps ?? 0)) > ((a?.weight ?? 0) * (a?.reps ?? 0)) ? b : a)
+  const rows = sessions.map(s => [
+    fmtDate(s.date),
+    s.working_sets || null,
+    s.total_volume ? int(s.total_volume) : null,
+    s.best_e1rm != null ? num(s.best_e1rm) : null,
+    s.top_set_weight != null
+      ? `${num(s.top_set_weight)}×${s.top_set_reps ?? NONE}`
       : null
-
-    rows.push([
-      fmtDate(w.date),
-      match.sets ?? null,
-      match.total_volume ? int(Number(match.total_volume)) : null,
-      match.estimated_1rm ? num(parseFloat(match.estimated_1rm)) : null,
-      best ? `${num(best.weight)}×${best.reps ?? NONE}${best.rpe ? `@${num(best.rpe)}` : ''}` : null
-    ])
-  }
+  ])
 
   if (!rows.length) {
     return `Sin sesiones de "${query}" en las últimas ${weeksBack} semanas. Usa list_exercises para ver el nombre exacto.`
   }
 
-  const header = `PROGRESIÓN "${query}" · ${rows.length} sesiones · últimas ${weeksBack} semanas\n` +
-    `coincide con: ${[...matchedNames].join(', ')}` +
-    (matchedNames.size > 1
-      ? '\nAVISO: la búsqueda coincide con varios ejercicios distintos y las sesiones están mezcladas. Usa list_exercises y repite con el nombre exacto.'
-      : '')
-
-  return `${header}\n${table(['fecha', 'series', 'vol_kg', 'e1RM_kg', 'mejor serie'], rows)}`
+  return `PROGRESIÓN "${identity.displayName}" · ${rows.length} sesiones · últimas ${weeksBack} semanas\n` +
+    `coincide con: ${identity.labels.join(', ')}\n` +
+    table(['fecha', 'series', 'vol_kg', 'e1RM_kg', 'mejor serie'], rows)
 }
 
 const getWeeklyAggregates: ToolFn = async (userId, args) => {
   const weeksBack = Math.min(Math.max(Number(args.weeks_back) || 8, 1), 26)
   const since = daysAgo(weeksBack * 7)
-  const workouts = await prisma.workout.findMany({
-    where: { user_id: userId, date: { gte: since } },
-    orderBy: { date: 'asc' },
-    select: { date: true, total_volume: true, rpe_avg: true, exercises_summary: true }
-  })
+  const [workouts, exerciseRows] = await Promise.all([
+    prisma.workout.findMany({
+      where: { user_id: userId, date: { gte: since } },
+      orderBy: { date: 'asc' },
+      select: { date: true, total_volume: true, rpe_avg: true }
+    }),
+    prisma.workoutExercise.findMany({
+      where: { user_id: userId, date: { gte: since } },
+      select: { date: true, name: true, exercise_template_id: true, working_sets: true, total_volume: true }
+    })
+  ])
 
-  const byWeek = new Map<string, { volumes: number[]; rpes: number[]; count: number; exercises: Map<string, { sets: number; volume: number }> }>()
+  const byWeek = new Map<string, { volumes: number[]; rpes: number[]; count: number; exercises: Map<string, { name: string; sets: number; volume: number }> }>()
   for (const w of workouts) {
     const key = localWeekKey(new Date(w.date))
     if (!byWeek.has(key)) byWeek.set(key, { volumes: [], rpes: [], count: 0, exercises: new Map() })
@@ -275,16 +423,24 @@ const getWeeklyAggregates: ToolFn = async (userId, args) => {
     bucket.count++
     if (w.total_volume) bucket.volumes.push(Number(w.total_volume))
     if (w.rpe_avg) bucket.rpes.push(Number(w.rpe_avg))
-    if (!w.exercises_summary) continue
-    let exs: any[]
-    try { exs = JSON.parse(w.exercises_summary) } catch { continue }
-    for (const ex of exs) {
-      if (!bucket.exercises.has(ex.name)) bucket.exercises.set(ex.name, { sets: 0, volume: 0 })
-      const e = bucket.exercises.get(ex.name)!
-      e.sets += ex.sets ?? 0
-      e.volume += ex.total_volume ? Math.round(Number(ex.total_volume)) : 0
-    }
   }
+
+  const identities = exerciseRows.length ? await loggedIdentities(userId, exerciseRows) : []
+  const nameByKey = new Map(identities.map(id => [id.key, id.displayName]))
+
+  for (const r of exerciseRows) {
+    const week = localWeekKey(new Date(r.date))
+    if (!byWeek.has(week)) byWeek.set(week, { volumes: [], rpes: [], count: 0, exercises: new Map() })
+    const bucket = byWeek.get(week)!
+    const key = identityKey(r.exercise_template_id, r.name)
+    if (!bucket.exercises.has(key)) {
+      bucket.exercises.set(key, { name: nameByKey.get(key) ?? r.name, sets: 0, volume: 0 })
+    }
+    const e = bucket.exercises.get(key)!
+    e.sets += r.working_sets ?? 0
+    e.volume += r.total_volume ? Math.round(Number(r.total_volume)) : 0
+  }
+
   if (!byWeek.size) return `Sin entrenamientos en las últimas ${weeksBack} semanas.`
 
   const weeks = [...byWeek.entries()].sort((a, b) => a[0].localeCompare(b[0]))
@@ -300,10 +456,10 @@ const getWeeklyAggregates: ToolFn = async (userId, args) => {
   )
 
   const detail = weeks.flatMap(([week, b]) =>
-    [...b.exercises.entries()]
-      .sort((a, b2) => b2[1].volume - a[1].volume)
+    [...b.exercises.values()]
+      .sort((a, b2) => b2.volume - a.volume)
       .slice(0, MAX_EXERCISES_PER_WEEK)
-      .map(([name, s]) => [week, name, s.sets, int(s.volume)])
+      .map(s => [week, s.name, s.sets, int(s.volume)])
   )
 
   return `AGREGADOS SEMANALES · últimas ${weeksBack} semanas\n${summary}\n\n` +
@@ -845,7 +1001,7 @@ export const AI_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'get_workout_detail',
-    description: 'Detalle completo de un entrenamiento con todas sus series. Pasa workout_id (aparece en get_workouts_in_range) o date (YYYY-MM-DD).',
+    description: 'Detalle completo de un entrenamiento con todas sus series. Pasa workout_id (aparece como "id …" en el encabezado de get_workouts_in_range y en los últimos entrenos del contexto) o date (YYYY-MM-DD).',
     parameters: {
       type: 'object',
       properties: {
@@ -856,7 +1012,7 @@ export const AI_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'list_exercises',
-    description: 'Ejercicios que el usuario ha registrado, con nº de sesiones, última fecha y mejor 1RM estimado. Úsalo antes de get_exercise_progression cuando no sepas el nombre exacto.',
+    description: 'Ejercicios que el usuario ha registrado, agrupados por movimiento (el mismo lift con nombre en inglés y en español cuenta como uno). Nº de sesiones, última fecha y mejor 1RM estimado. Úsalo antes de get_exercise_progression cuando no sepas el nombre exacto.',
     parameters: {
       type: 'object',
       properties: { weeks_back: { type: 'number', description: 'Semanas hacia atrás (1-156, default 52)' } }
@@ -864,7 +1020,7 @@ export const AI_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'get_exercise_progression',
-    description: 'Progresión de UN ejercicio: 1RM estimado, volumen y mejor serie por sesión. Prioriza el nombre exacto; si la palabra coincide con varios ejercicios lo avisa.',
+    description: 'Progresión de UN ejercicio: 1RM estimado, volumen y mejor serie por sesión. Resuelve el nombre en cualquier idioma (título del catálogo o el que el atleta usa). Si coincide con varios movimientos distintos, pide el nombre exacto en vez de mezclarlos.',
     parameters: {
       type: 'object',
       properties: {
@@ -1083,7 +1239,11 @@ const DOMAIN_KEYWORDS: Record<Exclude<ToolDomain, 'memory'>, string[]> = {
  * is cheaper than the answer it prevents.
  */
 const DOMAIN_DEPENDENCIES: Partial<Record<ToolDomain, ToolDomain[]>> = {
-  nutrition: ['body']
+  nutrition: ['body'],
+  // Prescribed vs performed is a plan question that arrives dressed as a
+  // training one ("¿cómo va mi press?"). Without the plan tools the model can
+  // only narrate the log.
+  training: ['plan']
 }
 
 /**

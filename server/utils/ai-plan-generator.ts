@@ -2,7 +2,7 @@ import { prisma } from './prisma'
 import {
   buildAthleteProfile,
   buildWorkoutData,
-  extractCompoundLiftsData,
+  buildCurrentStrength,
   buildNutritionSnapshot,
   type CompoundLift,
   type NutritionSnapshot,
@@ -15,7 +15,7 @@ import {
 import { runAiTask, parseAiJson } from './ai-service'
 import type { AiKeys, AiProvider } from './ai-provider'
 import { MESOCYCLE_GENERATE_PROMPT } from './ai-prompts'
-import { weekNumberFor } from './dates'
+import { localDayKey, weekNumberFor } from './dates'
 import { WEEKDAY_LABELS_ES, isWeekday } from './nutrition-calculator'
 import { MAX_OUTPUT_TOKENS } from './ai-config'
 import { SEARCH_TEMPLATES_TOOL, searchExerciseTemplates } from './exercise-search'
@@ -88,7 +88,7 @@ export async function generateMesocyclePlan(
   ])
 
   const recentWorkouts: Workout[] = recentWorkoutRows.map(w => buildWorkoutData(w, true))
-  const compoundLifts: CompoundLift[] = extractCompoundLiftsData(recentWorkoutRows)
+  const compoundLifts: CompoundLift[] = await buildCurrentStrength(userId)
 
   // The athlete's actual set distribution, so the new block corrects what the
   // last one under- or over-trained instead of restating a generic template.
@@ -233,7 +233,7 @@ function buildGenerationDocument(input: {
   currentBlock: string | null
 }): string {
   const { request } = input
-  return renderTaskDocument('generar mesociclo', new Date().toISOString().substring(0, 10), [
+  return renderTaskDocument('generar mesociclo', localDayKey(new Date()), [
     ['PETICIÓN', [
       `objetivo: ${request.goal}`,
       `días por semana: ${request.days_per_week}`,

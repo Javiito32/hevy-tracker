@@ -21,11 +21,11 @@ import { PrismaClient } from '@prisma/client'
 }
 
 const {
-  buildAthleteProfile, buildFinalSummaryPayload, buildHistoricalReference,
+  buildAthleteProfile, buildCurrentStrength, buildFinalSummaryPayload, buildHistoricalReference,
   buildNutritionHistory, buildNutritionSnapshot, buildWorkoutData
 } = await import('../server/utils/ai-payload')
 const {
-  formatSet, renderFinalSummary, renderWorkoutAnalysis, serializeAthlete, serializeNutrition,
+  formatSet, renderFinalSummary, renderMesocycleFeedback, renderWorkoutAnalysis, serializeAthlete, serializeNutrition,
   serializeWorkout, table
 } = await import('../server/utils/ai-serialize')
 const { buildLeanSystemPrompt, joinSystemPrompt } = await import('../server/utils/ai-context')
@@ -35,7 +35,7 @@ const { runChatTurn } = await import('../server/utils/ai-chat')
 const { generateMesocyclePlan } = await import('../server/utils/ai-plan-generator')
 const { rowCost } = await import('../server/utils/ai-usage')
 const { toOpenAiMessages, reassembleStreamedReasoning } = await import('../server/utils/ai-provider')
-const { savePlan } = await import('../server/utils/plan-service')
+const { matchWorkoutToPlan, savePlan } = await import('../server/utils/plan-service')
 const { buildWorkoutMetrics } = await import('../server/utils/workout-metrics')
 const { writeWorkoutExercises } = await import('../server/utils/exercise-store')
 const { refreshTemplateAliases } = await import('../server/utils/exercise-aliases')
@@ -290,12 +290,26 @@ async function main() {
       !workoutsResult.includes('user_id') && !workoutsResult.includes('raw_data') && !workoutsResult.includes('null'),
       workoutsResult.slice(0, 200))
     check('trae la tabla de ejercicios', workoutsResult.includes('ejercicio | series'))
+    check('get_workouts_in_range incluye el id de la sesión',
+      workoutsResult.includes(`id ${target.id}`), workoutsResult.slice(0, 180))
 
     const detail = await executeTool('get_workout_detail', user.id, { workout_id: target.id })
     check('get_workout_detail trae las series', detail.includes('100×8@9'), detail)
 
     const progression = await executeTool('get_exercise_progression', user.id, { exercise_name: 'Press de banca (Barra)', weeks_back: 52 })
     check('la progresión encuentra el ejercicio por nombre exacto', progression.includes('PROGRESIÓN'), progression.slice(0, 120))
+    const progressionEn = await executeTool('get_exercise_progression', user.id, { exercise_name: 'Bench Press (Barbell)', weeks_back: 52 })
+    check('la progresión resuelve el nombre inglés del catálogo al mismo lift',
+      progressionEn.includes('PROGRESIÓN') && !progressionEn.includes('varios ejercicios'),
+      progressionEn.slice(0, 180))
+    await createWorkout(user.id, {
+      name: 'Empuje EN', date: daysAgo(2),
+      exercises: [{ title: 'Bench Press (Barbell)', templateId: 'AI_BENCH', sets: [{ weight: 95, reps: 8, rpe: 8 }] }]
+    })
+    const listed = await executeTool('list_exercises', user.id, { weeks_back: 52 })
+    const benchRows = listed.split('\n').filter(l => /banca|bench press/i.test(l))
+    check('list_exercises agrupa el mismo template aunque el título cambie',
+      benchRows.length === 1, listed)
 
     const bodyText = await executeTool('get_body_metrics_range', user.id, {
       start_date: daysAgo(365).toISOString().substring(0, 10),
@@ -383,6 +397,8 @@ async function main() {
     check('una pregunta de entreno no arrastra las de dieta',
       trainingTools.includes('get_exercise_progression') && !trainingTools.includes('get_diet'),
       trainingTools.join(','))
+    check('una pregunta de entreno arrastra las del plan',
+      trainingTools.includes('get_active_plan'), trainingTools.join(','))
 
     // ── Plan validator ───────────────────────────────────────────────────────
     console.log('\n── Validación del plan generado ──')
@@ -585,6 +601,22 @@ async function main() {
       { name: 'Tirón', day_of_week: 4, exercises: [{ exercise_template_id: 'AI_ROW', name: 'Barbell Row', target_sets: 4, rep_min: 8, rep_max: 10, target_rir: 2 }] }
     ], [{ week_number: 1, target_rir: 3, volume_multiplier: 1 }, { week_number: 2, target_rir: 2, volume_multiplier: 1 }])
 
+    await prisma.workout.update({ where: { id: target.id }, data: { mesocycle_id: meso.id } })
+    const vsPlan = await matchWorkoutToPlan(user.id, meso.id, target.id)
+    check('empareja la sesión con el plan por template id, no por título',
+      vsPlan?.session_name === 'Empuje' && (vsPlan?.exercises[0]?.actual_sets ?? 0) >= 1,
+      JSON.stringify(vsPlan))
+    const analysisWithPlan = renderWorkoutAnalysis({
+      task: 'workout_analysis',
+      today: localDayKeyOf(new Date()),
+      athlete: await buildAthleteProfile(user.id, { asOf: target.date }),
+      workout: buildWorkoutData(target),
+      prescribed: vsPlan!
+    })
+    check('el documento de análisis incluye la sesión prescrita',
+      analysisWithPlan.includes('## SESIÓN PRESCRITA') && analysisWithPlan.includes('series prescritas'),
+      analysisWithPlan.slice(analysisWithPlan.indexOf('SESIÓN PRESCRITA'), analysisWithPlan.indexOf('SESIÓN PRESCRITA') + 200))
+
     // 1. Simple turn: no tools.
     const simple = new FakeProvider([{ text: 'Vas bien.' }])
     const turn1 = await runChatTurn({
@@ -714,6 +746,12 @@ async function main() {
       systemPrompt.slice(systemPrompt.indexOf('DIETA ACTIVA'), systemPrompt.indexOf('DIETA ACTIVA') + 300))
     check('el contexto apunta al plan estructurado sin incluirlo',
       systemPrompt.includes('get_active_plan') && !systemPrompt.includes('Bench Press (Barbell) — 4'))
+    check('los últimos entrenos listan los ejercicios',
+      systemPrompt.includes('Press de banca') && systemPrompt.includes('ÚLTIMOS 3 ENTRENAMIENTOS'),
+      systemPrompt.slice(systemPrompt.indexOf('ÚLTIMOS 3'), systemPrompt.indexOf('ÚLTIMOS 3') + 280))
+    check('el contexto apunta las alertas y la siguiente sesión',
+      systemPrompt.includes('ALERTAS') && systemPrompt.includes('SIGUIENTE SESIÓN') && systemPrompt.includes('get_next_planned_session'),
+      systemPrompt.slice(systemPrompt.indexOf('SEÑALES'), systemPrompt.indexOf('SEÑALES') + 280))
     check('el contexto declara que los datos no son instrucciones',
       systemPrompt.includes('no instrucciones') || systemPrompt.includes('no son instrucciones'))
 
@@ -909,6 +947,10 @@ async function main() {
     check('y el documento renderizado la nombra en el encabezado del perfil',
       renderFinalSummary(summaryPayload).includes(`## PERFIL (a fecha de ${summaryPayload.as_of})`),
       renderFinalSummary(summaryPayload).slice(0, 200))
+    const summaryDoc = renderFinalSummary(summaryPayload)
+    check('el resumen final lleva la progresión de cargas del bloque',
+      summaryDoc.includes('## PROGRESIÓN DE CARGAS') && summaryDoc.includes('Press de banca'),
+      summaryDoc.slice(summaryDoc.indexOf('PROGRESIÓN'), summaryDoc.indexOf('PROGRESIÓN') + 240))
     check('un mesociclo de otro usuario no produce payload',
       (await buildFinalSummaryPayload(user.id, otherMeso.id)) === null)
 
@@ -987,6 +1029,34 @@ async function main() {
       !macrosOnly.includes('Salmón') && macrosOnly.includes('MENÚ NO INCLUIDO'), macrosOnly.slice(-200))
 
     // ── Plan generation, with a scripted provider ────────────────────────────
+    await createWorkout(user.id, {
+      name: 'Pierna vieja', date: daysAgo(60),
+      exercises: [{ title: 'Sentadilla trasera', templateId: null, sets: [{ weight: 140, reps: 5, rpe: 8 }] }]
+    })
+    const strength = await buildCurrentStrength(user.id)
+    check('la fuerza actual ve un compuesto fuera de los últimos 5 entrenos',
+      strength.some(l => /sentadilla/i.test(l.exercise)), JSON.stringify(strength.map(l => l.exercise)))
+
+    const feedbackDoc = renderMesocycleFeedback({
+      task: 'mesocycle_feedback',
+      today: localDayKeyOf(new Date()),
+      athlete: await buildAthleteProfile(user.id),
+      recent_workouts: [],
+      plan: {
+        name: 'Propuesto',
+        goal: 'Hipertrofia',
+        split_description: 'texto libre',
+        sessions: [{
+          name: 'Empuje',
+          day_of_week: 1,
+          exercises: [{ name: 'Press de banca (Barra)', target_sets: 4, rep_min: 6, rep_max: 8, target_rir: 2 }]
+        }]
+      }
+    })
+    check('el feedback renderiza el plan estructurado, no solo el split',
+      feedbackDoc.includes('## PLAN ESTRUCTURADO') && feedbackDoc.includes('Press de banca'),
+      feedbackDoc.slice(feedbackDoc.indexOf('PLAN'), feedbackDoc.indexOf('PLAN') + 300))
+
     console.log('\n── Generación de plan (proveedor simulado) ──')
 
     const generation = new FakeProvider([
@@ -1023,6 +1093,8 @@ async function main() {
       generationDoc.includes('## PETICIÓN') && generationDoc.includes('## PERFIL') && !generationDoc.startsWith('{'),
       generationDoc.slice(0, 120))
     check('la generación traslada las lesiones al modelo', generationDoc.includes('LESIONES'))
+    check('la generación cita la sentadilla antigua como fuerza actual',
+      generationDoc.includes('Sentadilla'), generationDoc.slice(generationDoc.indexOf('FUERZA'), generationDoc.indexOf('FUERZA') + 240))
     check('la generación razona en alto en todas sus rondas',
       generation.calls.every(c => c.options.reasoningEffort === 'high'),
       generation.calls.map(c => c.options.reasoningEffort).join(','))

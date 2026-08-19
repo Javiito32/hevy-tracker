@@ -412,7 +412,11 @@ const analyzeWithAI = async () => {
         split_description: form.value.split_description,
         target_sessions_weekly: form.value.target_sessions_weekly,
         duration_weeks: durationWeeks,
-        notes: form.value.notes
+        notes: form.value.notes,
+        ...(generatedPlan.value && {
+          sessions: generatedPlan.value.sessions,
+          weeks: generatedPlan.value.weeks
+        })
       }
     })
     aiFeedback.value = result.feedback

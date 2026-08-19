@@ -27,6 +27,14 @@ import {
   loadVersionFull,
   assertDraft
 } from '../server/utils/diet-service'
+import { PDFDocument } from 'pdf-lib'
+import {
+  buildDietPdf,
+  dietPdfFilename,
+  currentWeekLabel,
+  weekdayDateKey,
+  formatDietPdfNumber
+} from '../server/utils/diet-pdf'
 import { runFanoutDietWeekdays } from '../server/utils/maintenance'
 
 const prisma = new PrismaClient()
@@ -283,6 +291,62 @@ async function main() {
       'el grupo mayoritario son los 6 días sin tocar')
     check('y avisa de que omite los demás', (aiRep as any).meals_other_days_omitted === true,
       'sin esto el modelo responde del sábado con el menú del lunes')
+
+    // ── 10. Weekly PDF ───────────────────────────────────────────────────────
+    console.log('\nPDF de la semana')
+    const pdfVersion = serializeVersion(await loadVersionFull(v4.id))
+    const pdfInput = {
+      plan: { name: 'Volumen invierno 2026', goal: 'bulk', notes: 'Sin lácteos.' },
+      version: pdfVersion,
+      athleteName: 'Smoke',
+      generatedAt: new Date('2026-08-19T12:00:00')
+    }
+    const bytes = await buildDietPdf(pdfInput)
+    const header = Buffer.from(bytes.subarray(0, 5)).toString('utf8')
+    check('el documento es un PDF', header === '%PDF-', `fue ${JSON.stringify(header)}`)
+    check('los miles llevan punto aunque el locale del proceso sea C',
+      formatDietPdfNumber(1918, 0) === '1.918')
+    check('los decimales llevan coma', formatDietPdfNumber(5.3, 1) === '5,3')
+
+    const loadedPdf = await PDFDocument.load(bytes)
+    check('tiene al menos una página', loadedPdf.getPageCount() >= 1, `fueron ${loadedPdf.getPageCount()}`)
+    check('el título lleva el nombre de la dieta',
+      loadedPdf.getTitle()?.includes('Volumen invierno 2026') === true,
+      `fue ${loadedPdf.getTitle()}`)
+    check('el nombre del archivo es ASCII y versionado',
+      dietPdfFilename(pdfInput) === 'volumen-invierno-2026-v4.pdf',
+      `fue ${dietPdfFilename(pdfInput)}`)
+    check('la semana se etiqueta con fechas, no solo con el día de la semana',
+      currentWeekLabel(new Date('2026-08-19T12:00:00')) === 'Semana del 17 al 23 de agosto de 2026',
+      currentWeekLabel(new Date('2026-08-19T12:00:00')))
+    check('el lunes de esa semana es el 17',
+      weekdayDateKey(1, new Date('2026-08-19T12:00:00')) === '2026-08-17',
+      weekdayDateKey(1, new Date('2026-08-19T12:00:00')))
+
+    const emptyPdf = await buildDietPdf({
+      plan: { name: 'Vacía', goal: null, notes: null },
+      version: serializeVersion(await loadVersionFull(v1.id)),
+      generatedAt: new Date('2026-08-19T12:00:00')
+    })
+    check('una dieta a medio rellenar también genera PDF',
+      (await PDFDocument.load(emptyPdf)).getPageCount() >= 1)
+
+    const weird = await buildDietPdf({
+      plan: { name: 'Dieta™ con — rayas y μgramos', goal: 'cut', notes: 'Café ≥ 2 tazas… “sí”' },
+      version: serializeVersion(await loadVersionFull(v4.id)),
+      generatedAt: new Date('2026-08-19T12:00:00')
+    })
+    check('caracteres fuera de WinAnsi no tiran la generación',
+      (await PDFDocument.load(weird)).getPageCount() >= 1)
+    check('el slug del archivo pierde marcas y acentos',
+      dietPdfFilename({
+        plan: { name: 'Dieta™ con — rayas y μgramos', goal: 'cut' },
+        version: { version_number: 1 } as any
+      }) === 'dieta-con-rayas-y-gramos-v1.pdf',
+      dietPdfFilename({
+        plan: { name: 'Dieta™ con — rayas y μgramos', goal: 'cut' },
+        version: { version_number: 1 } as any
+      }))
 
   } finally {
     await prisma.dietItem.deleteMany({ where: { diet_meal: { diet_version: { diet_plan: { user_id: user.id } } } } })

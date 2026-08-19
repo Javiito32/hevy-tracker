@@ -590,6 +590,13 @@ const weekdayName = (weekday: Weekday) => WEEKDAY_LABELS_ES[weekday].toLowerCase
 const macrosOf = (n: any) =>
   n ? { kcal: n.kcal, protein_g: n.protein_g, carbs_g: n.carbs_g, fat_g: n.fat_g } : null
 
+/** Weekdays with no food, as one group. Null macros, not zeros. */
+const unplannedWeekdays = (days: Array<{ weekday: Weekday; planned: boolean }>) => {
+  const empty = days.filter(d => !d.planned).map(d => weekdayName(d.weekday))
+  if (!empty.length) return []
+  return [{ weekdays: empty, kcal: null, protein_g: null, carbs_g: null, fat_g: null }]
+}
+
 export interface DietAiOptions {
   weightKg?: number | null
   /**
@@ -693,11 +700,16 @@ export const serializeDietForAi = (version: any, options: DietAiOptions) => {
     }),
     ...(s.protein_g_per_kg != null && { protein_g_per_kg: s.protein_g_per_kg }),
 
-    /** One line per distinct day pattern, always complete. */
-    days: groups.map(g => ({
-      weekdays: g.weekdays.map(weekdayName),
-      ...macrosOf(s.days.find(d => d.weekday === g.weekdays[0])?.totals)
-    })),
+    /** One line per distinct day pattern. Unplanned weekdays are listed too
+     *  (null macros), so a Mon–Fri plan never looks like Saturday is missing
+     *  data the model should invent. */
+    days: [
+      ...groups.map(g => ({
+        weekdays: g.weekdays.map(weekdayName),
+        ...macrosOf(s.days.find(d => d.weekday === g.weekdays[0])?.totals)
+      })),
+      ...unplannedWeekdays(s.days)
+    ],
 
     ...(options.detail === 'macros'
       ? {
@@ -709,10 +721,13 @@ export const serializeDietForAi = (version: any, options: DietAiOptions) => {
         }
       : options.detail === 'full'
       ? {
-          meals_by_day: groups.map(g => ({
-            weekdays: g.weekdays.map(weekdayName),
-            meals: mealsOf(g)
-          }))
+          meals_by_day: [
+            ...groups.map(g => ({
+              weekdays: g.weekdays.map(weekdayName),
+              meals: mealsOf(g)
+            })),
+            ...unplannedWeekdays(s.days).map(d => ({ weekdays: d.weekdays, meals: [] as Array<{ name: string; foods: never[] }> }))
+          ]
         }
       : {
           // Always present, even for a diet with no food at all: a consumer that

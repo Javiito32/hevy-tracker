@@ -1,4 +1,5 @@
 import { prisma } from './prisma'
+import { loadTemplateTitles, normalizeExerciseName } from './exercise-aliases'
 
 /**
  * Personal record detection.
@@ -102,28 +103,45 @@ export async function detectPersonalRecords(userId: string, workoutId: string): 
   await prisma.personalRecord.deleteMany({ where: { user_id: userId, workout_id: workoutId } })
 
   const names = [...new Set(candidates.map(c => c.exercise_name))]
+  const templateIds = [...new Set(candidates.map(c => c.exercise_template_id).filter(Boolean))] as string[]
   const priors = await prisma.personalRecord.findMany({
     where: {
       user_id: userId,
-      exercise_name: { in: names },
-      achieved_at: { lt: workout.date }
+      achieved_at: { lt: workout.date },
+      OR: [
+        { exercise_name: { in: names } },
+        ...(templateIds.length ? [{ exercise_template_id: { in: templateIds } }] : [])
+      ]
     },
-    select: { exercise_name: true, type: true, value: true, at_weight: true }
+    select: { exercise_name: true, exercise_template_id: true, type: true, value: true, at_weight: true }
   })
 
-  const priorKey = (c: { exercise_name: string; type: string; at_weight?: number | null }) =>
-    `${c.exercise_name}|${c.type}|${c.at_weight ?? ''}`
+  const priorKeysFor = (c: { exercise_name: string; exercise_template_id?: string | null; type: string; at_weight?: number | null }) => {
+    const keys = [`name:${normalizeExerciseName(c.exercise_name)}|${c.type}|${c.at_weight ?? ''}`]
+    if (c.exercise_template_id) keys.push(`id:${c.exercise_template_id}|${c.type}|${c.at_weight ?? ''}`)
+    return keys
+  }
 
   const bestPrior = new Map<string, number>()
   for (const p of priors) {
-    const k = priorKey(p)
-    const cur = bestPrior.get(k)
-    if (cur == null || p.value > cur) bestPrior.set(k, p.value)
+    for (const k of priorKeysFor(p)) {
+      const cur = bestPrior.get(k)
+      if (cur == null || p.value > cur) bestPrior.set(k, p.value)
+    }
+  }
+
+  const previousOf = (c: Candidate): number | null => {
+    let best: number | undefined
+    for (const k of priorKeysFor(c)) {
+      const v = bestPrior.get(k)
+      if (v != null && (best == null || v > best)) best = v
+    }
+    return best ?? null
   }
 
   const toCreate = candidates
     .filter(c => {
-      const prev = bestPrior.get(priorKey(c))
+      const prev = previousOf(c)
       return prev == null || c.value > prev
     })
     .map(c => ({
@@ -132,7 +150,7 @@ export async function detectPersonalRecords(userId: string, workoutId: string): 
       exercise_name: c.exercise_name,
       type: c.type,
       value: c.value,
-      previous_value: bestPrior.get(priorKey(c)) ?? null,
+      previous_value: previousOf(c),
       at_weight: c.at_weight ?? null,
       workout_id: workout.id,
       achieved_at: workout.date
@@ -174,16 +192,95 @@ export async function rebuildPersonalRecords(
 
 /** The current best per exercise and type — what the progress page marks. */
 export async function getCurrentRecords(userId: string, exerciseName?: string) {
+  const where = exerciseName
+    ? { user_id: userId, OR: await recordMatchFilter(userId, exerciseName) }
+    : { user_id: userId }
+
   const records = await prisma.personalRecord.findMany({
-    where: { user_id: userId, ...(exerciseName ? { exercise_name: exerciseName } : {}) },
+    where,
     orderBy: { achieved_at: 'desc' }
   })
 
   const best = new Map<string, typeof records[number]>()
   for (const r of records) {
-    const key = `${r.exercise_name}|${r.type}|${r.at_weight ?? ''}`
+    const identity = r.exercise_template_id || `name:${normalizeExerciseName(r.exercise_name)}`
+    const key = `${identity}|${r.type}|${r.at_weight ?? ''}`
     const cur = best.get(key)
     if (!cur || r.value > cur.value) best.set(key, r)
   }
   return [...best.values()]
+}
+
+/**
+ * Catalogue title, athlete alias and logged name all name the same lift.
+ * Matching only `exercise_name` is how "Bench Press" returned nothing next to
+ * years of "Press de banca".
+ */
+async function recordMatchFilter(userId: string, query: string): Promise<Array<Record<string, unknown>>> {
+  const needle = normalizeExerciseName(query)
+  const [distinct, aliases] = await Promise.all([
+    prisma.personalRecord.findMany({
+      where: { user_id: userId },
+      select: { exercise_name: true, exercise_template_id: true }
+    }),
+    prisma.exerciseTemplateAlias.findMany({
+      where: { user_id: userId },
+      select: { exercise_template_id: true, title: true }
+    })
+  ])
+
+  const templateIds = [...new Set(distinct.map(r => r.exercise_template_id).filter(Boolean))] as string[]
+  const titles = templateIds.length
+    ? await loadTemplateTitles(userId, templateIds)
+    : new Map<string, string>()
+  const catalogue = templateIds.length
+    ? new Map((await prisma.exerciseTemplate.findMany({
+        where: { id: { in: templateIds } },
+        select: { id: true, title: true }
+      })).map(t => [t.id, t.title]))
+    : new Map<string, string>()
+
+  const matchedIds = new Set<string>()
+  const matchedNames = new Set<string>()
+
+  const labelsOf = (r: { exercise_name: string; exercise_template_id: string | null }) => {
+    const labels = [r.exercise_name]
+    if (r.exercise_template_id) {
+      const alias = titles.get(r.exercise_template_id)
+        ?? aliases.find(a => a.exercise_template_id === r.exercise_template_id)?.title
+      const cat = catalogue.get(r.exercise_template_id)
+      if (alias) labels.push(alias)
+      if (cat) labels.push(cat)
+    }
+    return labels
+  }
+
+  const hits = (labels: string[], mode: 'exact' | 'sub') =>
+    labels.some(l => {
+      const n = normalizeExerciseName(l)
+      return mode === 'exact' ? n === needle : n.includes(needle)
+    })
+
+  const collect = (mode: 'exact' | 'sub') => {
+    for (const r of distinct) {
+      if (!hits(labelsOf(r), mode)) continue
+      matchedNames.add(r.exercise_name)
+      if (r.exercise_template_id) matchedIds.add(r.exercise_template_id)
+    }
+    for (const a of aliases) {
+      if (!hits([a.title], mode)) continue
+      matchedIds.add(a.exercise_template_id)
+    }
+  }
+
+  collect('exact')
+  if (!matchedIds.size && !matchedNames.size) collect('sub')
+
+  if (!matchedIds.size && !matchedNames.size) {
+    return [{ exercise_name: query }]
+  }
+  return [
+    ...(matchedIds.size ? [{ exercise_template_id: { in: [...matchedIds] } }] : []),
+    ...(matchedNames.size ? [{ exercise_name: { in: [...matchedNames] } }] : [])
+  ]
 }

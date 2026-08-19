@@ -285,6 +285,13 @@ async function main() {
     check('el detalle completo lleva las comidas de cada grupo',
       Array.isArray((aiFull as any).meals_by_day) && (aiFull as any).meals_by_day.length === 2)
 
+    const weekdayOnly = await makeVersion(8)
+    await addMeal(weekdayOnly.id, 1, [{ food: fullFood, grams: 100 }])
+    const aiPartial = serializeDietForAi(await loadVersionFull(weekdayOnly.id), { detail: 'macros' })
+    check('la tabla de días incluye los no planificados',
+      aiPartial.days.some((d: any) => d.weekdays.includes('sábado') && d.kcal == null),
+      JSON.stringify(aiPartial.days))
+
     const aiRep = serializeDietForAi(await loadVersionFull(v4.id), { detail: 'representative' })
     check('el payload reducido dice a qué días se refieren sus comidas',
       Array.isArray((aiRep as any).meals_apply_to) && (aiRep as any).meals_apply_to.length === 6,

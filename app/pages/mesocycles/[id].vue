@@ -59,7 +59,7 @@
                active mesocycle, so a link from a paused one would silently
                discuss a different block. -->
           <NuxtLink
-            :to="{ path: '/chat', query: { context: 'mesocycle', name: mesocycle.name } }"
+            :to="{ path: '/chat', query: { context: 'mesocycle', name: mesocycle.name, id: mesocycle.id } }"
             class="px-4 py-2 bg-accent text-accent-ink text-sm rounded-lg hover:opacity-85 transition"
           >
             Hablar con IA

@@ -36,6 +36,7 @@ const { generateMesocyclePlan } = await import('../server/utils/ai-plan-generato
 const { rowCost } = await import('../server/utils/ai-usage')
 const { toOpenAiMessages, reassembleStreamedReasoning } = await import('../server/utils/ai-provider')
 const { matchWorkoutToPlan, savePlan } = await import('../server/utils/plan-service')
+const { getCurrentRecords, detectPersonalRecords } = await import('../server/utils/personal-records')
 const { buildWorkoutMetrics } = await import('../server/utils/workout-metrics')
 const { writeWorkoutExercises } = await import('../server/utils/exercise-store')
 const { refreshTemplateAliases } = await import('../server/utils/exercise-aliases')
@@ -280,6 +281,15 @@ async function main() {
     console.log('\n── Resultados de herramientas ──')
 
     await refreshTemplateAliases(user.id)
+    await detectPersonalRecords(user.id, target.id)
+    const recordsEn = await getCurrentRecords(user.id, 'Bench Press (Barbell)')
+    const recordsEs = await getCurrentRecords(user.id, 'Press de banca')
+    check('los récords resuelven el nombre inglés del catálogo',
+      recordsEn.some(r => r.exercise_template_id === 'AI_BENCH'),
+      JSON.stringify(recordsEn.map(r => r.exercise_name)))
+    check('y el nombre en español del historial',
+      recordsEs.some(r => r.exercise_template_id === 'AI_BENCH'),
+      JSON.stringify(recordsEs.map(r => r.exercise_name)))
 
     const workoutsResult = await executeTool('get_workouts_in_range', user.id, {
       start_date: daysAgo(90).toISOString().substring(0, 10),
@@ -747,11 +757,32 @@ async function main() {
     check('el contexto apunta al plan estructurado sin incluirlo',
       systemPrompt.includes('get_active_plan') && !systemPrompt.includes('Bench Press (Barbell) — 4'))
     check('los últimos entrenos listan los ejercicios',
-      systemPrompt.includes('Press de banca') && systemPrompt.includes('ÚLTIMOS 3 ENTRENAMIENTOS'),
-      systemPrompt.slice(systemPrompt.indexOf('ÚLTIMOS 3'), systemPrompt.indexOf('ÚLTIMOS 3') + 280))
+      systemPrompt.includes('Press de banca') && systemPrompt.includes('ÚLTIMOS ENTRENAMIENTOS'),
+      systemPrompt.slice(systemPrompt.indexOf('ÚLTIMOS ENTRENAMIENTOS'), systemPrompt.indexOf('ÚLTIMOS ENTRENAMIENTOS') + 280))
+    check('el último entreno trae las series de trabajo',
+      systemPrompt.includes('105×8@9') || systemPrompt.includes('100×8@9'),
+      systemPrompt.slice(systemPrompt.indexOf('ÚLTIMOS ENTRENAMIENTOS'), systemPrompt.indexOf('ÚLTIMOS ENTRENAMIENTOS') + 400))
+    check('SEÑALES trae la semana y el volumen por músculo',
+      systemPrompt.includes('ESTA SEMANA') && systemPrompt.includes('VOLUMEN ESTA SEMANA'),
+      systemPrompt.slice(systemPrompt.indexOf('SEÑALES'), systemPrompt.indexOf('SEÑALES') + 400))
+    check('el contexto lista otros mesociclos',
+      systemPrompt.includes('OTROS MESOCICLOS'))
     check('el contexto apunta las alertas y la siguiente sesión',
       systemPrompt.includes('ALERTAS') && systemPrompt.includes('SIGUIENTE SESIÓN') && systemPrompt.includes('get_next_planned_session'),
       systemPrompt.slice(systemPrompt.indexOf('SEÑALES'), systemPrompt.indexOf('SEÑALES') + 280))
+
+    const paused = await prisma.mesocycle.create({
+      data: {
+        user_id: user.id, name: 'Bloque de fuerza viejo', goal: 'Fuerza',
+        start_date: daysAgo(120), end_date: daysAgo(90), status: 'paused'
+      }
+    })
+    const focused = await buildLeanSystemPrompt(user.id, { focusMesocycleId: paused.id })
+    check('un bloque pausado llega como EN DISCUSIÓN',
+      focused.dynamic.includes('MESOCICLO EN DISCUSIÓN') && focused.dynamic.includes('Bloque de fuerza viejo'),
+      focused.dynamic.slice(focused.dynamic.indexOf('MESOCICLO'), focused.dynamic.indexOf('MESOCICLO') + 400))
+    check('y el activo se conserva',
+      focused.dynamic.includes('MESOCICLO ACTIVO') && focused.dynamic.includes('Bloque hipertrofia'))
     check('el contexto declara que los datos no son instrucciones',
       systemPrompt.includes('no instrucciones') || systemPrompt.includes('no son instrucciones'))
 

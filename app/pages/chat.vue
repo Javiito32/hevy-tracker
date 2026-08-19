@@ -193,6 +193,8 @@ const historyLoading = ref(true)
 const listLoading = ref(true)
 const sidebarOpen = ref(false)
 const conversationId = ref<string | null>(null)
+/** Set when arriving from a mesocycle page; sent only with the first message of a new thread. */
+const pendingMesocycleId = ref<string | null>(null)
 const conversations = ref<ConversationSummary[]>([])
 const activeTool = ref<string | null>(null)
 
@@ -243,6 +245,7 @@ onMounted(async () => {
 
   const handOff = HAND_OFFS[route.query.context as string]
   if (handOff) {
+    pendingMesocycleId.value = typeof route.query.id === 'string' ? route.query.id : null
     startNewConversation()
     sendQuickPrompt(handOff(route.query), false)
     historyLoading.value = false
@@ -445,7 +448,11 @@ const streamReply = async (text: string) => {
   const response = await fetch('/api/chat/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message: text, conversationId: conversationId.value })
+    body: JSON.stringify({
+      message: text,
+      conversationId: conversationId.value,
+      ...(pendingMesocycleId.value && !conversationId.value ? { mesocycleId: pendingMesocycleId.value } : {})
+    })
   })
 
   if (!response.ok || !response.body) {
@@ -481,6 +488,7 @@ const streamReply = async (text: string) => {
       bubble.streaming = false
       bubble.modelUsed = payload.model ?? undefined
       if (payload.conversationId) conversationId.value = payload.conversationId
+      pendingMesocycleId.value = null
     } else if (payload.type === 'error') {
       streamError = payload.message ?? 'Error en el servicio de IA'
     }

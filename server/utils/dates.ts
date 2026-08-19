@@ -20,12 +20,16 @@ export function localDayKey(date: Date): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
 
+/** Monday 00:00 local of the week `date` falls in. */
+export function localMonday(date: Date = new Date()): Date {
+  const monday = new Date(date.getFullYear(), date.getMonth(), date.getDate())
+  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7))
+  return monday
+}
+
 /** Monday of the week `date` falls in, as a local day key. */
 export function localWeekKey(date: Date): string {
-  const monday = new Date(date.getFullYear(), date.getMonth(), date.getDate())
-  // getDay(): 0 = Sunday. Shift so Monday starts the week.
-  monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7))
-  return localDayKey(monday)
+  return localDayKey(localMonday(date))
 }
 
 /** 1 = Monday … 7 = Sunday, the convention the whole schema uses. */

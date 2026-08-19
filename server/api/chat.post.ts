@@ -14,7 +14,7 @@ import { CHAT_CONTEXT_TYPE } from '../utils/conversations'
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
   const { id: userId } = await getSessionUser(event)
-  const body = await readBody<{ message?: string; conversationId?: string | null }>(event)
+  const body = await readBody<{ message?: string; conversationId?: string | null; mesocycleId?: string | null }>(event)
 
   const message = body?.message
   if (!message) throw createError({ statusCode: 400, statusMessage: 'Message is required' })
@@ -35,6 +35,7 @@ export default defineEventHandler(async (event) => {
     const result = await runChatTurn({
       userId,
       conversationId: body?.conversationId ?? null,
+      mesocycleId: body?.mesocycleId ?? null,
       message,
       keys: aiKeys
     })

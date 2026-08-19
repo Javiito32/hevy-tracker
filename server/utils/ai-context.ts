@@ -1,10 +1,11 @@
 import { prisma } from './prisma'
-import { daysLeftInWeek, isoWeekday, localDayKey, weekNumberFor } from './dates'
+import { daysLeftInWeek, isoWeekday, localDayKey, localMonday, localWeekKey, weekNumberFor } from './dates'
 import { buildAthleteProfile, buildNutritionSnapshot, buildWorkoutData } from './ai-payload'
-import { serializeAthlete, serializeNutrition, serializeWorkoutLines } from './ai-serialize'
+import { serializeAthlete, serializeNutrition, serializeWorkout, serializeWorkoutLines } from './ai-serialize'
 import { DATA_NOT_INSTRUCTIONS, NUTRITION_GROUNDING, TRAINING_DATA_GROUNDING } from './ai-prompts'
 import { WEEKDAY_LABELS_ES, isWeekday, type Weekday } from './nutrition-calculator'
-import { peekNextSession } from './plan-service'
+import { getWeekAdherence, peekNextSession } from './plan-service'
+import { buildMuscleVolumeReport } from './muscle-volume'
 
 /**
  * The chat's system prompt.
@@ -26,13 +27,48 @@ import { peekNextSession } from './plan-service'
  * premium on every turn and read on none. See `stableContent` in
  * ai-provider.ts.
  *
- * The data half is deliberately small: profile, active block, the last three
- * sessions, the diet's numbers, saved notes. Everything else — history,
- * progressions, the structured plan, the menu — is a tool call, because it is
- * needed in a minority of turns and costs tokens in all of them.
+ * The data half is deliberately small: profile, active (and optionally
+ * discussed) block, this week's signals, the last session with sets, the
+ * diet's numbers, saved notes. Everything else — history, progressions, the
+ * structured plan, the menu — is a tool call.
  */
 
 const DAY_NAMES_ES = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado']
+
+const STATUS_ES: Record<string, string> = { active: 'activo', paused: 'pausado', completed: 'completado' }
+
+function formatMesoBlock(meso: {
+  id: string
+  name: string
+  start_date: Date
+  goal: string | null
+  split_description: string | null
+  target_sessions_weekly: number | null
+  evaluations: Array<{ week_number: number; summary: string | null; volume_trend: string | null }>
+  diary_notes: Array<{ date: Date; content: string }>
+  _count: { planned_sessions: number }
+}, now: Date): string {
+  const weekNumber = weekNumberFor(meso.start_date, now)
+  const evalSummary = meso.evaluations.length
+    ? meso.evaluations.map(e => `  Semana ${e.week_number}: ${e.summary ?? 'Sin resumen'} (volumen: ${e.volume_trend ?? 'N/A'})`).join('\n')
+    : '  Sin evaluaciones previas.'
+  const notesSummary = meso.diary_notes.length
+    ? meso.diary_notes.map(n => `  [${localDayKey(new Date(n.date))}] ${n.content}`).join('\n')
+    : '  Sin notas de diario.'
+  return `- Nombre: ${meso.name}
+- ID: ${meso.id}
+- Semana actual: ${weekNumber}
+- Objetivo: ${meso.goal || 'No especificado'}
+- Objetivo entrenos/semana: ${meso.target_sessions_weekly ?? 'No especificado'}
+- Plan estructurado: ${meso._count.planned_sessions > 0
+    ? `sí, ${meso._count.planned_sessions} sesiones prescritas. NO está en este contexto: consúltalo con get_active_plan (incluye adherencia) o get_next_planned_session.`
+    : 'no hay plan estructurado; solo la descripción en texto del split.'}
+- Split (texto, puede no detallar series ni repeticiones): ${meso.split_description || 'No especificado'}
+Últimas evaluaciones:
+${evalSummary}
+Diario reciente:
+${notesSummary}`
+}
 
 /**
  * The athlete's profile as text. Kept as an export because
@@ -110,10 +146,16 @@ export const joinSystemPrompt = (prompt: ChatSystemPrompt): string =>
  *
  * Only the `dynamic` half is rebuilt per turn — see the note above.
  */
-export const buildLeanSystemPrompt = async (userId: string): Promise<ChatSystemPrompt> => {
+export const buildLeanSystemPrompt = async (
+  userId: string,
+  options: { focusMesocycleId?: string | null } = {}
+): Promise<ChatSystemPrompt> => {
   const now = new Date()
+  const weekStart = localMonday(now)
+  const weekEnd = new Date(weekStart)
+  weekEnd.setDate(weekEnd.getDate() + 7)
 
-  const [athlete, activeMesocycle, recentWorkouts, activeNotes, dietBlock, alerts] = await Promise.all([
+  const [athlete, activeMesocycle, recentWorkouts, activeNotes, dietBlock, alerts, otherMesocycles, weekWorkouts, muscleReport] = await Promise.all([
     // Notes are excluded here and rendered once below, WITH their ids. They
     // used to travel twice: `serializeAthlete` printed their text under the
     // profile and "NOTAS RECORDADAS" printed the same text again with the id
@@ -140,46 +182,99 @@ export const buildLeanSystemPrompt = async (userId: string): Promise<ChatSystemP
       orderBy: { detected_at: 'desc' },
       take: 8,
       select: { type: true, subject: true, title: true }
-    })
+    }),
+    prisma.mesocycle.findMany({
+      where: { user_id: userId },
+      orderBy: { updated_at: 'desc' },
+      take: 6,
+      select: { id: true, name: true, status: true, start_date: true, end_date: true }
+    }),
+    prisma.workout.findMany({
+      where: { user_id: userId, date: { gte: weekStart, lt: weekEnd } },
+      select: { total_volume: true }
+    }),
+    buildMuscleVolumeReport(userId, 2)
   ])
+
+  const focusId = options.focusMesocycleId && options.focusMesocycleId !== activeMesocycle?.id
+    ? options.focusMesocycleId
+    : null
+  const focusMesocycle = focusId
+    ? await prisma.mesocycle.findFirst({
+        where: { id: focusId, user_id: userId },
+        include: {
+          evaluations: { orderBy: { week_number: 'desc' }, take: 2, select: { week_number: true, summary: true, volume_trend: true } },
+          diary_notes: { orderBy: { date: 'desc' }, take: 3 },
+          _count: { select: { planned_sessions: true } }
+        }
+      })
+    : null
 
   const nextSession = activeMesocycle && activeMesocycle._count.planned_sessions > 0
     ? await peekNextSession(userId, activeMesocycle.id)
     : null
 
-  const mesoBlock = activeMesocycle
-    ? (() => {
-        // Same formula as the weekly evaluation and the adherence report — they
-        // used to be `ceil` here and `floor + 1` there, so on day 7, 14, 21… of
-        // a block the coach and the evaluation named different weeks.
-        const weekNumber = weekNumberFor(activeMesocycle.start_date, now)
-        const evalSummary = activeMesocycle.evaluations.length
-          ? activeMesocycle.evaluations.map(e => `  Semana ${e.week_number}: ${e.summary ?? 'Sin resumen'} (volumen: ${e.volume_trend ?? 'N/A'})`).join('\n')
-          : '  Sin evaluaciones previas.'
-        const notesSummary = activeMesocycle.diary_notes.length
-          ? activeMesocycle.diary_notes.map(n => `  [${localDayKey(new Date(n.date))}] ${n.content}`).join('\n')
-          : '  Sin notas de diario.'
-        return `- Nombre: ${activeMesocycle.name}
-- ID: ${activeMesocycle.id}
-- Semana actual: ${weekNumber}
-- Objetivo: ${activeMesocycle.goal || 'No especificado'}
-- Objetivo entrenos/semana: ${activeMesocycle.target_sessions_weekly ?? 'No especificado'}
-- Plan estructurado: ${activeMesocycle._count.planned_sessions > 0
-          ? `sí, ${activeMesocycle._count.planned_sessions} sesiones prescritas. NO está en este contexto: consúltalo con get_active_plan (incluye adherencia) o get_next_planned_session.`
-          : 'no hay plan estructurado; solo la descripción en texto del split.'}
-- Split (texto, puede no detallar series ni repeticiones): ${activeMesocycle.split_description || 'No especificado'}
-Últimas evaluaciones:
-${evalSummary}
-Diario reciente:
-${notesSummary}`
-      })()
-    : '- No hay ningún mesociclo activo.'
+  const weekAdherence = activeMesocycle && activeMesocycle._count.planned_sessions > 0
+    ? await getWeekAdherence(
+        userId,
+        activeMesocycle.id,
+        weekStart,
+        weekEnd,
+        weekNumberFor(activeMesocycle.start_date, now)
+      )
+    : null
 
-  const recentText = recentWorkouts.length
-    ? serializeWorkoutLines(recentWorkouts.map(w => buildWorkoutData(w, true)))
+  const mesoBlock = activeMesocycle ? formatMesoBlock(activeMesocycle, now) : '- No hay ningún mesociclo activo.'
+  const focusBlock = focusMesocycle ? formatMesoBlock(focusMesocycle, now) : null
+
+  const last = recentWorkouts[0]
+  const older = recentWorkouts.slice(1)
+  const recentText = last
+    ? [
+        serializeWorkout(buildWorkoutData(last, true), { detail: 'sets' }),
+        older.length
+          ? 'anteriores (solo resumen):\n' + serializeWorkoutLines(older.map(w => buildWorkoutData(w, true)))
+          : null
+      ].filter(Boolean).join('\n\n')
     : 'No hay entrenamientos recientes registrados.'
 
-  const signals: string[] = []
+  const sessionsDone = weekWorkouts.length
+  const weekVolume = Math.round(weekWorkouts.reduce((s, w) => s + (w.total_volume ?? 0), 0))
+  const weekTarget = activeMesocycle?.target_sessions_weekly ?? null
+  const weekLine = weekTarget != null
+    ? `ESTA SEMANA: ${sessionsDone}/${weekTarget} entrenos · ${weekVolume} kg`
+    : `ESTA SEMANA: ${sessionsDone} entrenos · ${weekVolume} kg`
+  const adherenceLine = weekAdherence?.has_plan && weekAdherence.overall_pct != null
+    ? `ADHERENCIA ESTA SEMANA: ${weekAdherence.overall_pct}% de las series prescritas.`
+    : null
+
+  const thisWeekKey = localWeekKey(now)
+  const thisMuscleWeek = muscleReport.weeks.find(w => w.week === thisWeekKey)
+  const coverage = muscleReport.coverage.total_sets > 0
+    ? Math.round((muscleReport.coverage.classified_sets / muscleReport.coverage.total_sets) * 100)
+    : null
+  const muscleBits = (thisMuscleWeek?.muscles ?? [])
+    .filter(m => m.sets > 0)
+    .sort((a, b) => b.sets - a.sets)
+    .slice(0, 8)
+    .map(m => `${m.label} ${m.sets}`)
+  const muscleLine = muscleBits.length
+    ? `VOLUMEN ESTA SEMANA${coverage != null ? ` (cobertura ${coverage}%)` : ''}: ${muscleBits.join(' · ')}. Tendencia de varias semanas: get_volume_by_muscle_group.`
+    : `VOLUMEN ESTA SEMANA: sin series clasificadas todavía.${coverage != null && coverage < 80 ? ` Cobertura ${coverage}%.` : ''}`
+
+  const others = otherMesocycles.filter(m => m.id !== activeMesocycle?.id && m.id !== focusMesocycle?.id)
+  const othersBlock = others.length
+    ? others.map(m => {
+        const from = localDayKey(m.start_date)
+        const to = m.end_date ? localDayKey(m.end_date) : 'en curso'
+        return `- [${m.id}] ${m.name} · ${STATUS_ES[m.status] ?? m.status} · ${from} → ${to}`
+      }).join('\n') +
+      '\nPara uno de estos: get_previous_mesocycles, o get_active_plan / get_mesocycle_evaluations con su id.'
+    : '- No hay otros mesociclos.'
+
+  const signals: string[] = [weekLine]
+  if (adherenceLine) signals.push(adherenceLine)
+  signals.push(muscleLine)
   if (alerts.length) {
     signals.push(
       `ALERTAS (${alerts.length} activas): ${alerts.map(a =>
@@ -220,8 +315,16 @@ ${serializeAthlete(athlete)}
 
 ### MESOCICLO ACTIVO
 ${mesoBlock}
+${focusBlock ? `
+### MESOCICLO EN DISCUSIÓN
+El usuario acaba de abrir este bloque. NO lo sustituyas por el activo. get_active_plan y get_mesocycle_evaluations aceptan su id.
+${focusBlock}
+` : ''}
+### OTROS MESOCICLOS
+${othersBlock}
 
-### ÚLTIMOS 3 ENTRENAMIENTOS (ejercicios, sin series)
+### ÚLTIMOS ENTRENAMIENTOS
+El más reciente trae las series de trabajo. Los anteriores, solo el resumen.
 ${recentText}
 
 ### SEÑALES
@@ -244,11 +347,14 @@ Analiza los entrenamientos del usuario, compara con sus objetivos y da feedback 
 
 ## HERRAMIENTAS
 Tienes herramientas para consultar más datos bajo demanda. Úsalas solo cuando las necesites:
-- Lo que se responde con el contexto de abajo → responde directamente, sin herramientas. Los últimos entrenos listan ejercicios, no series: para juzgar una sesión llama a \`get_workout_detail\` (el id aparece junto al nombre).
+- Lo que se responde con el contexto de abajo → responde directamente, sin herramientas.
+- SEÑALES ya trae el recuento de ESTA semana (entrenos, volumen, series por músculo vs MEV/MRV, adherencia de series si hay plan). Para "¿cómo voy?" úsalo. Llama a \`get_volume_by_muscle_group\` solo si piden tendencia de varias semanas o el desglose.
+- El último entreno trae las series de trabajo. No hace falta \`get_workout_detail\` para juzgarlo. Sí para uno anterior (el id aparece junto al nombre) o para ver calentamientos.
+- Si hay MESOCICLO EN DISCUSIÓN, es el bloque que el usuario acaba de abrir: habla de ESE, no del activo. \`get_active_plan\` y \`get_mesocycle_evaluations\` aceptan su id.
 - Las alertas y la siguiente sesión aparecen como punteros. Si la pregunta va de eso, llama a \`get_training_alerts\` o \`get_next_planned_session\` — no inventes el detalle.
 - Comparaciones históricas, semanas concretas, progresión de un ejercicio, métricas corporales pasadas, mesociclos anteriores → invoca la herramienta correspondiente.
 - Para lo PLANIFICADO (qué toca hoy, qué ejercicios y series tiene prescritos, si está siguiendo el plan, qué cambiar) usa \`get_active_plan\` o \`get_next_planned_session\`. No deduzcas el plan a partir de los entrenamientos hechos: son cosas distintas.
-- Para las series detalladas de un entreno concreto usa \`get_workout_detail\`, no \`get_workouts_in_range\` con detail=full.
+- Para las series detalladas de un entreno que NO es el último usa \`get_workout_detail\`, no \`get_workouts_in_range\` con detail=full.
 - Encadena varias herramientas si hace falta, pero evita llamadas redundantes: cada una cuesta tiempo al usuario.
 - Si una herramienta devuelve un error o datos vacíos, dilo claramente en lugar de inventar cifras. Si te falta una herramienta para responder bien, dilo también.
 - Si el contexto no trae lo que necesitas y ninguna herramienta lo cubre, dilo: no lo supongas.

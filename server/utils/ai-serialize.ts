@@ -405,10 +405,13 @@ export function serializeNutrition(n: NutritionSnapshot): string {
   }
 
   if (n.days?.length) {
-    lines.push('por día (días idénticos agrupados):\n' + table(
+    lines.push('por día (días idénticos agrupados; la tabla cubre los 7):\n' + table(
       ['días', 'kcal', 'P_g', 'C_g', 'G_g'],
       n.days.map(d => [d.weekdays.join(', '), int(d.kcal), int(d.protein_g), int(d.carbs_g), int(d.fat_g)])
     ))
+    if (n.days.some(d => d.kcal == null)) {
+      lines.push('días con — : sin comidas planificadas. No son 0 kcal y no heredes el menú de otro día.')
+    }
   }
 
   if (n.targets_by_weekday?.length) {

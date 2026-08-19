@@ -1056,7 +1056,7 @@ export const AI_TOOLS: ToolDefinition[] = [
   },
   {
     name: 'get_personal_records',
-    description: 'Récords vigentes (peso máximo, 1RM estimado, volumen en sesión, reps a un peso) con la marca anterior y la fecha. Útil para contrastar una queja de estancamiento con lo que sí ha mejorado.',
+    description: 'Récords vigentes (peso máximo, 1RM estimado, volumen en sesión, reps a un peso) con la marca anterior y la fecha. Resuelve el nombre en cualquier idioma (título del catálogo o el que el atleta usa). Útil para contrastar una queja de estancamiento con lo que sí ha mejorado.',
     parameters: {
       type: 'object',
       properties: { exercise_name: { type: 'string', description: 'Limitar a un ejercicio (opcional)' } }

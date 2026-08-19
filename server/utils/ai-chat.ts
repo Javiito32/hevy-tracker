@@ -27,6 +27,11 @@ export interface ChatTurnOptions {
   userId: string
   /** Existing conversation to append to, or null to start a new one. */
   conversationId: string | null
+  /**
+   * Mesocycle the user opened the chat from. Stored on the new conversation
+   * so later turns still discuss that block, not only the active one.
+   */
+  mesocycleId?: string | null
   message: string
   keys: AiKeys
   /** Stream the reply as `delta` events instead of returning it in one piece. */
@@ -55,28 +60,33 @@ export interface ChatTurnResult {
  * falling back to the user's OLDEST conversation — is what made /chat reopen an
  * old thread and silently append new messages to it.
  */
-async function resolveConversation(userId: string, conversationId: string | null): Promise<string> {
+async function resolveConversation(
+  userId: string,
+  conversationId: string | null,
+  mesocycleId?: string | null
+): Promise<{ id: string; focusMesocycleId: string | null }> {
   if (conversationId) {
     const owned = await prisma.aiConversation.findFirst({
       where: { id: conversationId, user_id: userId, context_type: CHAT_CONTEXT_TYPE },
-      select: { id: true }
+      select: { id: true, context_id: true }
     })
     if (!owned) throw createError({ statusCode: 404, statusMessage: 'Conversación no encontrada' })
-    return owned.id
+    return { id: owned.id, focusMesocycleId: owned.context_id }
   }
 
   const created = await prisma.aiConversation.create({
-    data: { user_id: userId, context_type: CHAT_CONTEXT_TYPE },
-    select: { id: true }
+    data: { user_id: userId, context_type: CHAT_CONTEXT_TYPE, context_id: mesocycleId || null },
+    select: { id: true, context_id: true }
   })
-  return created.id
+  return { id: created.id, focusMesocycleId: created.context_id }
 }
 
 export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnResult> {
   const { userId, message, keys, stream = false, onEvent } = options
   const emit = async (event: ChatTurnEvent) => { await onEvent?.(event) }
 
-  const convoId = await resolveConversation(userId, options.conversationId)
+  const convo = await resolveConversation(userId, options.conversationId, options.mesocycleId)
+  const convoId = convo.id
 
   // History comes from the DB (the server owns the transcript), loaded BEFORE
   // persisting the incoming message so it isn't duplicated in the prompt.
@@ -98,7 +108,7 @@ export async function runChatTurn(options: ChatTurnOptions): Promise<ChatTurnRes
   })
 
   const provider = options.provider ?? createAiProvider(keys)
-  const systemPrompt = await buildLeanSystemPrompt(userId)
+  const systemPrompt = await buildLeanSystemPrompt(userId, { focusMesocycleId: convo.focusMesocycleId })
 
   // Chosen once, from this turn's message, and held for every round below: a
   // tool set that changed mid-turn would invalidate the cached prefix on each

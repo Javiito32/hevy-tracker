@@ -553,7 +553,7 @@ const c3 = computed(() => {
   // Last 30 days
   const cutoff = new Date()
   cutoff.setDate(cutoff.getDate() - 30)
-  const cutoffStr = cutoff.toISOString().slice(0, 10)
+  const cutoffStr = localDayKey(cutoff)
   const d = allData.filter(m => m.date >= cutoffStr)
   if (d.length < 2) return null
 
@@ -616,30 +616,37 @@ const hrvStatus = computed(() => {
   const hrvAll = metrics.value.filter(m => m.hrv != null)
   if (hrvAll.length < 2) return null
 
-  const vals = hrvAll.map(m => m.hrv as number)
+  const cutoff = Date.now() - 30 * 86_400_000
+  const window = hrvAll.filter(m => new Date(m.date).getTime() >= cutoff)
+  // Same 30-day window the chart uses. Fall back to the last few readings
+  // when the window is too thin to have a mean worth comparing against.
+  const series = window.length >= 4 ? window : hrvAll.slice(-8)
+  if (series.length < 2) return null
+
+  const vals = series.map(m => m.hrv as number)
   const mean = vals.reduce((a, b) => a + b, 0) / vals.length
   const todayHrv = vals[vals.length - 1]
-  const pct = (todayHrv - mean) / Math.abs(mean)
+  const pct = mean === 0 ? 0 : (todayHrv - mean) / Math.abs(mean)
 
   if (pct >= -0.05) return {
     level: 'optimal' as const,
-    label: '¡A darle caña!',
-    sublabel: 'Óptimo',
-    text: 'Tu sistema nervioso está al 100%. Hoy es el día para buscar récords o meter volumen máximo.',
+    label: 'Recuperado',
+    sublabel: 'En o por encima de tu media',
+    text: 'Tu HRV está en línea con tu media de 30 días. No es una orden de entrenar más fuerte: es que hoy no hay señal de fatiga acumulada.',
     hrv: todayHrv, mean, pct,
   }
   if (pct >= -0.15) return {
     level: 'caution' as const,
-    label: 'Precaución',
-    sublabel: 'Fatiga moderada',
-    text: 'Estás acumulando fatiga. Mantén el peso, pero quítale un par de series a tu rutina hoy. No llegues al fallo.',
+    label: 'Fatiga moderada',
+    sublabel: 'Por debajo de tu media',
+    text: 'Tu HRV está un poco por debajo de tu media de 30 días. Tiene sentido no forzar el volumen ni buscar el fallo hoy.',
     hrv: todayHrv, mean, pct,
   }
   return {
     level: 'fatigued' as const,
-    label: 'Fatigado, chill out',
-    sublabel: 'Simpático dominante',
-    text: 'Tu cuerpo necesita recuperación urgente. Toca descanso activo, movilidad o un paseo. Si entrenas, hazlo súper ligero.',
+    label: 'Baja recuperación',
+    sublabel: 'Claramente por debajo de tu media',
+    text: 'Tu HRV está claramente por debajo de tu media de 30 días. Prioriza recuperación; si entrenas, baja carga o volumen.',
     hrv: todayHrv, mean, pct,
   }
 })
@@ -715,7 +722,7 @@ FORM_FIELDS.forEach(k => (form[k] = ''))
 
 function openModal(entry: Metric | null) {
   editEntry.value = entry
-  form.date = entry?.date ?? new Date().toISOString().slice(0, 10)
+  form.date = entry?.date ?? localDayKey()
   FORM_FIELDS.forEach(k => {
     const v = entry ? (entry as any)[k] : null
     form[k] = v != null ? String(v) : ''

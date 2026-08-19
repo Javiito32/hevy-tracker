@@ -1,4 +1,5 @@
 import { prisma } from './prisma'
+import { localWeekKey } from './dates'
 import {
   PRIMARY_SET_WEIGHT, SECONDARY_SET_WEIGHT, VOLUME_LANDMARKS,
   classifyWeeklyVolume, muscleLabel, parseSecondaryMuscles, type VolumeVerdict
@@ -15,14 +16,7 @@ import {
 
 /** Monday-based week key in LOCAL time — "which week did this land in" is a question about the athlete's calendar, not UTC. */
 export function weekKey(date: Date): string {
-  const d = new Date(date)
-  const day = d.getDay()
-  d.setDate(d.getDate() - (day === 0 ? 6 : day - 1))
-  d.setHours(0, 0, 0, 0)
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const dd = String(d.getDate()).padStart(2, '0')
-  return `${y}-${m}-${dd}`
+  return localWeekKey(date)
 }
 
 export function weekKeysBetween(from: Date, to: Date): string[] {
@@ -112,10 +106,11 @@ export function buildMuscleResolver(
 
 export async function buildMuscleVolumeReport(
   userId: string,
-  weeksBack = 8
+  weeksBack = 8,
+  asOf: Date = new Date()
 ): Promise<MuscleVolumeReport> {
-  const to = new Date()
-  const from = new Date()
+  const to = asOf
+  const from = new Date(asOf)
   from.setDate(from.getDate() - weeksBack * 7)
   from.setHours(0, 0, 0, 0)
 

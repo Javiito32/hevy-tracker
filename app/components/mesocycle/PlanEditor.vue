@@ -334,7 +334,10 @@ const save = async () => {
     const res: any = await $fetch(`/api/mesocycles/${props.mesocycleId}/plan`, {
       method: 'PUT',
       body: {
-        sessions: draft.value.map(s => ({ ...s, day_of_week: s.day_of_week || null })),
+        sessions: draft.value.map(s => ({
+          ...s,
+          day_of_week: Number(s.day_of_week) >= 1 && Number(s.day_of_week) <= 7 ? Number(s.day_of_week) : null
+        })),
         weeks: weeks.value
       }
     })

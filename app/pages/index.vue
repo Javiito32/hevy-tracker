@@ -17,6 +17,10 @@
            should not sit below what is merely informative. -->
       <DashboardTrainingAlerts />
 
+      <div v-if="data.nextSession?.has_plan" class="mb-6">
+        <MesocycleNextSession :data="data.nextSession" @push="pushToHevy" />
+      </div>
+
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <UiCard eyebrow="Bloque" title="Mesociclo activo">
           <template v-if="data.activeMesocycle">
@@ -55,17 +59,22 @@
         </UiCard>
 
         <UiCard eyebrow="Adherencia" title="Esta semana">
-          <!-- The signature, in its plainest use: sessions done, measured
-               against the target this block prescribes. -->
           <UiTickScale
+            v-if="weekTarget != null"
             :value="data.thisWeekWorkouts.completed"
-            :max="Math.max(data.thisWeekWorkouts.target, data.thisWeekWorkouts.completed)"
+            :max="Math.max(weekTarget, data.thisWeekWorkouts.completed, 1)"
             :step="1"
-            :landmarks="[{ value: data.thisWeekWorkouts.target, label: 'Objetivo semanal', short: 'Objetivo' }]"
+            :landmarks="[{ value: weekTarget, label: 'Objetivo semanal', short: 'Objetivo' }]"
             :verdict="weekVerdict"
             :caption="weekCaption"
-            :unit="`/ ${data.thisWeekWorkouts.target} entrenos`"
+            :unit="`/ ${weekTarget} entrenos`"
             aria-label="Entrenos completados esta semana"
+          />
+          <UiStat
+            v-else
+            :value="data.thisWeekWorkouts.completed"
+            unit="entrenos"
+            hint="Sin objetivo semanal en el bloque activo."
           />
         </UiCard>
       </div>
@@ -112,7 +121,7 @@
 
       <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
         <div class="lg:col-span-2">
-          <DashboardRecentWorkouts :workouts="data.recentWorkouts" @sync="refresh" />
+          <DashboardRecentWorkouts :workouts="data.recentWorkouts" />
         </div>
         <DashboardWeightChart />
       </div>
@@ -124,6 +133,7 @@
 import { computed } from 'vue'
 
 const { data, pending, error, refresh } = useFetch('/api/dashboard')
+const toast = useToast()
 
 const maxWeekVolume = computed(() => {
   if (!data.value?.mesocycleWeeklyVolume?.length) return 1
@@ -137,16 +147,35 @@ const maxWeekVolume = computed(() => {
  */
 const weightPolarity = 'neutral' as const
 
+const weekTarget = computed(() => data.value?.thisWeekWorkouts?.target ?? null)
+
 const weekVerdict = computed(() => {
   const w = data.value?.thisWeekWorkouts
-  if (!w) return 'neutral' as const
+  if (!w || w.target == null) return 'neutral' as const
   return w.completed >= w.target ? ('positive' as const) : ('neutral' as const)
 })
 
 const weekCaption = computed(() => {
   const w = data.value?.thisWeekWorkouts
-  if (!w) return ''
+  if (!w || w.target == null) return ''
   const missing = w.target - w.completed
   return missing <= 0 ? 'Objetivo cumplido' : `Faltan ${missing}`
 })
+
+const pushToHevy = async () => {
+  const id = data.value?.activeMesocycle?.id
+  if (!id) return
+  const alreadyPushed = data.value?.nextSession?.has_plan
+  const question = alreadyPushed
+    ? '¿Actualizar en Hevy las rutinas de este mesociclo con las cargas de esta semana?'
+    : '¿Crear en tu cuenta de Hevy una carpeta con las rutinas de este mesociclo?'
+  if (!confirm(question)) return
+  try {
+    const res = await $fetch<{ message: string }>(`/api/mesocycles/${id}/push-to-hevy`, { method: 'POST' })
+    toast.success(res.message)
+    await refresh()
+  } catch (err: any) {
+    toast.error(err?.data?.message ?? 'No se pudieron enviar las rutinas a Hevy.')
+  }
+}
 </script>

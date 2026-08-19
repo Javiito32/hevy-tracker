@@ -21,9 +21,11 @@ export default defineEventHandler(async (event) => {
 
   const now = new Date()
   const msPerDay = 1000 * 60 * 60 * 24
-  // Shared with the chat prompt and the adherence report, which each had their
-  // own formula and disagreed on the boundary days.
-  const weekNumber = weekNumberFor(mesocycle.start_date, now)
+  // A finished block evaluated later is still "its last week", not week 20.
+  const asOfCap = mesocycle.end_date && new Date(mesocycle.end_date) < now
+    ? new Date(mesocycle.end_date)
+    : now
+  const weekNumber = weekNumberFor(mesocycle.start_date, asOfCap)
 
   const weekStart = new Date(new Date(mesocycle.start_date).getTime() + (weekNumber - 1) * 7 * msPerDay)
   const weekEnd = new Date(weekStart.getTime() + 7 * msPerDay)
@@ -74,7 +76,7 @@ export default defineEventHandler(async (event) => {
       orderBy: { date: 'asc' }
     }),
     getWeekAdherence(userId, id, weekStart, weekEnd, weekNumber),
-    buildMuscleVolumeReport(userId, 8),
+    buildMuscleVolumeReport(userId, 8, asOf),
     prisma.trainingAlert.findMany({
       where: { user_id: userId, status: 'active', detected_at: { lte: asOf } },
       orderBy: { detected_at: 'desc' },

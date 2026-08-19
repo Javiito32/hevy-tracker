@@ -29,9 +29,9 @@
       <div class="lg:col-span-1 flex flex-col">
         <CalendarWorkoutDetail
           :date="selectedDate"
-          :workout="selectedWorkout"
+          :workouts="selectedWorkouts"
           @notes-saved="handleNotesSaved"
-          class="sticky top-6 flex-grow"
+          class="sticky top-16 z-30 flex-grow"
         />
       </div>
     </div>
@@ -65,15 +65,14 @@ const handleMonthChange = (r: { from: Date; to: Date }) => {
   range.value = { from: r.from.toISOString(), to: r.to.toISOString() }
 }
 
-const selectedWorkout = computed(() => {
-  if (!selectedDate.value || !realWorkouts.value) return null
+const sameLocalDay = (a: Date, b: Date) =>
+  a.getDate() === b.getDate() && a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear()
 
-  return realWorkouts.value.find((w: any) => {
-    const wDate = new Date(w.start_time || w.date)
-    return wDate.getDate() === selectedDate.value!.getDate() &&
-           wDate.getMonth() === selectedDate.value!.getMonth() &&
-           wDate.getFullYear() === selectedDate.value!.getFullYear()
-  }) || null
+const selectedWorkouts = computed(() => {
+  if (!selectedDate.value || !realWorkouts.value) return []
+  return realWorkouts.value.filter((w: any) =>
+    sameLocalDay(new Date(w.start_time || w.date), selectedDate.value!)
+  )
 })
 
 const handleSelectDate = (date: Date) => {

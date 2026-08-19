@@ -212,7 +212,7 @@
                 Descartar
               </button>
               <button
-                @click="showPublishForm = true"
+                @click="openPublish"
                 :disabled="working"
                 class="px-5 py-2 bg-accent text-accent-ink hover:opacity-85 text-sm font-semibold rounded-lg transition disabled:opacity-60"
               >
@@ -431,6 +431,16 @@ const startEditing = async () => {
   }
 }
 
+const openPublish = () => {
+  const t = shown.value?.targets
+  publishForm.change_note = ''
+  publishForm.target_kcal = t?.kcal ?? ''
+  publishForm.target_protein_g = t?.protein_g ?? ''
+  publishForm.target_carbs_g = t?.carbs_g ?? ''
+  publishForm.target_fat_g = t?.fat_g ?? ''
+  showPublishForm.value = true
+}
+
 const publishDraft = async () => {
   working.value = true
   error.value = ''
@@ -495,13 +505,21 @@ const addMeal = async () => {
 
 const deleteMeal = async (meal: any) => {
   if (!confirm(`¿Eliminar "${meal.name}" del ${WEEKDAY_LABELS[meal.weekday]?.toLowerCase()} y todos sus alimentos?`)) return
-  await $fetch(`/api/nutrition/meals/${meal.id}`, { method: 'DELETE' })
-  await refresh()
+  try {
+    await $fetch(`/api/nutrition/meals/${meal.id}`, { method: 'DELETE' })
+    await refresh()
+  } catch {
+    toast.error('No se pudo eliminar la comida.')
+  }
 }
 
 const deleteItem = async (item: any) => {
-  await $fetch(`/api/nutrition/items/${item.id}`, { method: 'DELETE' })
-  await refresh()
+  try {
+    await $fetch(`/api/nutrition/items/${item.id}`, { method: 'DELETE' })
+    await refresh()
+  } catch {
+    toast.error('No se pudo quitar el alimento.')
+  }
 }
 
 const openAddFood = (meal: any) => {

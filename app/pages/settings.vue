@@ -28,6 +28,21 @@
               <option value="female">Femenino</option>
             </UiSelect>
           </UiField>
+          <div class="sm:col-span-2">
+            <UiField
+              v-slot="{ id }"
+              label="Lesiones y limitaciones"
+              hint="El coach las trata como restricción dura al recomendar ejercicios. Si está vacío, no puede respetarlas."
+            >
+              <UiInput
+                :id="id"
+                v-model="form.injuries_notes"
+                type="textarea"
+                :rows="3"
+                placeholder="Ej: tendinopatía en hombro derecho, evitar press por encima de la cabeza."
+              />
+            </UiField>
+          </div>
         </div>
       </UiCard>
 
@@ -118,6 +133,7 @@ const form = ref({
   height: null as number | null,
   sex: '',
   birth_date: '',
+  injuries_notes: '',
   hevy_api_key: '',
   current_password: '',
   new_password: '',
@@ -136,6 +152,7 @@ watch(settings, (val) => {
   form.value.height = s.height ?? null
   form.value.sex = s.sex ?? ''
   form.value.birth_date = s.birth_date ?? ''
+  form.value.injuries_notes = s.injuries_notes ?? ''
   form.value.hevy_api_key = s.hevy_api_key ?? ''
 }, { immediate: true })
 

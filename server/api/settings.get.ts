@@ -12,6 +12,7 @@ export default defineEventHandler(async (event) => {
     height: user.height ?? null,
     sex: user.sex ?? null,
     birth_date: user.birth_date ? user.birth_date.toISOString().slice(0, 10) : null,
+    injuries_notes: user.injuries_notes ?? null,
     hevy_api_key: user.hevy_api_key ? maskKey(user.hevy_api_key) : '',
     has_hevy_key: !!user.hevy_api_key,
   }

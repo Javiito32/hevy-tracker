@@ -67,7 +67,7 @@
         <!-- Macro header -->
         <div class="px-6 py-4 bg-surface-2 border-b border-line-strong flex items-start justify-between">
           <div>
-            <NuxtLink :to="`/macrocycles/${macro.id}`" class="text-lg font-bold text-ink-3 hover:text-ink transition">{{ macro.name }}</NuxtLink>
+            <NuxtLink :to="`/macrocycles/${macro.id}`" class="text-lg font-bold text-ink hover:text-ink transition">{{ macro.name }}</NuxtLink>
             <p class="text-ink-3 text-xs mt-0.5">
               {{ formatDate(macro.start_date) }}
               <span v-if="macro.end_date"> → {{ formatDate(macro.end_date) }}</span>

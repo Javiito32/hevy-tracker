@@ -1,4 +1,5 @@
 import { prisma } from './prisma'
+import { weekNumberFor } from './dates'
 import { buildMuscleVolumeReport } from './muscle-volume'
 import { muscleLabel, VOLUME_LANDMARKS } from './muscle-groups'
 
@@ -158,13 +159,20 @@ async function detectRpeDrift(userId: string): Promise<DetectedAlert[]> {
   const byExercise = new Map<string, Point[]>()
 
   for (const ex of rows) {
-    for (const s of ex.sets) {
-      if (s.set_type === 'warmup') continue
-      if (!s.weight_kg || !s.reps || !s.rpe) continue
-      const list = byExercise.get(ex.name) ?? []
-      list.push({ date: ex.date, weight: s.weight_kg, reps: s.reps, rpe: s.rpe })
-      byExercise.set(ex.name, list)
-    }
+    const working = ex.sets.filter(s =>
+      s.set_type !== 'warmup' && s.weight_kg && s.reps && s.rpe
+    )
+    if (!working.length) continue
+    // One point per session: the top working set. A drop or backoff at the
+    // end of the session is not the fatigue probe.
+    const top = working.reduce((best, s) => {
+      if ((s.weight_kg ?? 0) > (best.weight_kg ?? 0)) return s
+      if (s.weight_kg === best.weight_kg && (s.reps ?? 0) > (best.reps ?? 0)) return s
+      return best
+    })
+    const list = byExercise.get(ex.name) ?? []
+    list.push({ date: ex.date, weight: top.weight_kg!, reps: top.reps!, rpe: top.rpe! })
+    byExercise.set(ex.name, list)
   }
 
   const alerts: DetectedAlert[] = []
@@ -293,7 +301,7 @@ async function detectDeloadNeed(
 
   let weeksIn = 0
   if (mesocycle) {
-    weeksIn = Math.floor((Date.now() - new Date(mesocycle.start_date).getTime()) / (7 * 86_400_000))
+    weeksIn = weekNumberFor(mesocycle.start_date)
     payload.weeks_in_block = weeksIn
     if (weeksIn >= WEEKS_BEFORE_DELOAD) signals.push(`${weeksIn} semanas acumuladas de bloque`)
   }
@@ -340,8 +348,7 @@ export async function runDetectors(userId: string): Promise<{ active: number; re
     const prior = existingByKey.get(key)
 
     if (prior?.status === 'dismissed') {
-      // Leave it dismissed, but keep the evidence current so that if the
-      // athlete reopens it they see today's numbers, not the ones they dismissed.
+      // Still true: stay dismissed, but keep today's evidence.
       await prisma.trainingAlert.update({
         where: { id: prior.id },
         data: { detail: alert.detail, payload_json: JSON.stringify(alert.payload) }
@@ -357,7 +364,8 @@ export async function runDetectors(userId: string): Promise<{ active: number; re
         detail: alert.detail,
         payload_json: JSON.stringify(alert.payload),
         status: 'active',
-        resolved_at: null
+        resolved_at: null,
+        ...(prior?.status === 'resolved' ? { detected_at: new Date() } : {})
       },
       create: {
         user_id: userId,
@@ -373,7 +381,9 @@ export async function runDetectors(userId: string): Promise<{ active: number; re
     })
   }
 
-  const stale = existing.filter(a => a.status === 'active' && !detectedKeys.has(`${a.type}|${a.subject}`))
+  // Dismissed rows that no longer fire are resolved, so a later episode of the
+  // same (type, subject) can become active again instead of staying silenced forever.
+  const stale = existing.filter(a => a.status !== 'resolved' && !detectedKeys.has(`${a.type}|${a.subject}`))
   if (stale.length > 0) {
     await prisma.trainingAlert.updateMany({
       where: { id: { in: stale.map(a => a.id) } },

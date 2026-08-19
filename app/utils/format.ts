@@ -9,6 +9,20 @@
 /** Placeholder for values that genuinely cannot be computed — never "0". */
 export const NO_VALUE = '—'
 
+/** `YYYY-MM-DD` from local components. Never `toISOString()`. */
+export function localDayKey(date: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
+}
+
+function asLocalDate(d: string | Date): Date {
+  if (d instanceof Date) return d
+  if (/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+    return new Date(Number(d.slice(0, 4)), Number(d.slice(5, 7)) - 1, Number(d.slice(8, 10)))
+  }
+  return new Date(d)
+}
+
 export function formatTokens(n: number | null | undefined): string {
   if (n === null || n === undefined) return NO_VALUE
   return n.toLocaleString('es-ES')
@@ -37,5 +51,5 @@ export function formatDateTime(d: string | Date | null | undefined): string {
 
 export function formatDateShort(d: string | Date | null | undefined): string {
   if (!d) return NO_VALUE
-  return new Date(d).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' })
+  return asLocalDate(d).toLocaleDateString('es-ES', { day: '2-digit', month: 'short', year: 'numeric' })
 }

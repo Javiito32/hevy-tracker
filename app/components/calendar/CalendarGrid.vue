@@ -56,8 +56,8 @@
             v-for="workout in day.workouts"
             :key="workout.id"
             class="text-[11px] px-1.5 py-1 rounded truncate"
-            :class="intensityClass(workout.intensity)"
-            :title="`${workout.name} · intensidad ${intensityLabel(workout.intensity)}`"
+            :class="intensityClass(workout)"
+            :title="`${workout.name} · ${intensityLabel(workout)}`"
           >{{ workout.name }}</div>
         </div>
       </div>
@@ -118,9 +118,22 @@ const INTENSITY = {
   high: { class: 'bg-ink text-bg font-medium', label: 'alta' }
 } as const
 
-const intensityOf = (i: string) => INTENSITY[i as keyof typeof INTENSITY] ?? INTENSITY.low
-const intensityClass = (i: string) => intensityOf(i).class
-const intensityLabel = (i: string) => intensityOf(i).label
+/**
+ * Intensity is RPE, not a field the API never sent. Without RPE the chip
+ * stays neutral rather than claiming the session was easy.
+ */
+const intensityOf = (workout: { rpe_avg?: number | null }) => {
+  const rpe = workout.rpe_avg
+  if (rpe == null) return { class: 'bg-surface-2 text-ink-2', label: 'sin RPE' }
+  if (rpe >= 8.5) return INTENSITY.high
+  if (rpe >= 7) return INTENSITY.medium
+  return INTENSITY.low
+}
+const intensityClass = (workout: { rpe_avg?: number | null }) => intensityOf(workout).class
+const intensityLabel = (workout: { rpe_avg?: number | null }) => {
+  const band = intensityOf(workout)
+  return band.label === 'sin RPE' ? 'sin RPE' : `RPE ${workout.rpe_avg} · intensidad ${band.label}`
+}
 
 const previousMonth = () => {
   currentDate.value = new Date(currentDate.value.getFullYear(), currentDate.value.getMonth() - 1, 1)
@@ -180,7 +193,7 @@ const calendarDays = computed(() => {
 
 const createDayObject = (date: Date, isCurrentMonth: boolean) => {
   const dayWorkouts = props.workouts.filter(w => {
-    const wDate = new Date(w.date)
+    const wDate = new Date(w.start_time || w.date)
     return wDate.getDate() === date.getDate() &&
            wDate.getMonth() === date.getMonth() &&
            wDate.getFullYear() === date.getFullYear()

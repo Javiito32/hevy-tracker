@@ -1,7 +1,7 @@
 <template>
   <UiCard eyebrow="Registro" title="Entrenos recientes" flush>
     <template #actions>
-      <UiButton size="sm" variant="ghost" @click="$emit('sync')">Sincronizar</UiButton>
+      <UiLink to="/calendar" class="text-xs">Ver calendario</UiLink>
     </template>
 
     <UiEmptyState
@@ -44,8 +44,6 @@ import type { Workout } from '@prisma/client'
 defineProps<{
   workouts: Partial<Workout>[]
 }>()
-
-defineEmits(['sync'])
 
 const formatDate = (date: any) => {
   if (!date) return ''

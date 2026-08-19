@@ -15,7 +15,7 @@
           </div>
           <div class="overflow-y-auto custom-scrollbar max-h-[calc(100vh-280px)]">
             <p v-if="filteredExercises.length === 0" class="p-5 text-ink-3 text-sm text-center">
-              Ningún ejercicio coincide.
+              {{ search ? 'Ningún ejercicio coincide.' : 'Todavía no hay ejercicios sincronizados.' }}
             </p>
             <button
               v-for="ex in filteredExercises"
@@ -107,8 +107,8 @@
                         :title="`Récord: ${pt.records.map(recordLabel).join(', ')}`"
                       >★ récord</span>
                     </td>
-                    <td class="px-4 py-2.5 text-right font-data font-medium text-ink">{{ pt.estimated_1rm?.toFixed(1) ?? NO_VALUE }} kg</td>
-                    <td class="px-4 py-2.5 text-right font-data text-ink-2">{{ pt.max_weight ?? NO_VALUE }} kg</td>
+                    <td class="px-4 py-2.5 text-right font-data font-medium text-ink">{{ pt.estimated_1rm != null ? `${pt.estimated_1rm.toFixed(1)} kg` : NO_VALUE }}</td>
+                    <td class="px-4 py-2.5 text-right font-data text-ink-2">{{ pt.max_weight != null ? `${pt.max_weight} kg` : NO_VALUE }}</td>
                     <td class="px-4 py-2.5 text-right font-data text-ink-2">{{ pt.total_volume.toLocaleString('es-ES') }} kg</td>
                     <td class="px-4 py-2.5 text-right font-data text-ink-3">{{ pt.sets }}</td>
                   </tr>

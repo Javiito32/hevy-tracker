@@ -80,7 +80,7 @@
               <td class="px-4 py-2.5 text-right">
                 <button
                   @click.stop="removeFood(food)"
-                  class="opacity-0 group-hover:opacity-100 text-ink-3 hover:text-danger transition text-sm"
+                  class="opacity-100 md:opacity-0 md:group-hover:opacity-100 text-ink-3 hover:text-danger transition text-sm min-w-[2rem] min-h-[2rem]"
                   title="Eliminar"
                 >
                   🗑

@@ -5,13 +5,14 @@ import bcrypt from 'bcryptjs'
 export default defineEventHandler(async (event) => {
   const sessionUser = await getSessionUser(event)
   const body = await readBody(event)
-  const { name, height, sex, birth_date, hevy_api_key, email, current_password, new_password } = body
+  const { name, height, sex, birth_date, injuries_notes, hevy_api_key, email, current_password, new_password } = body
 
   const data: Record<string, any> = {}
   if (name !== undefined) data.name = name
   if (height !== undefined) data.height = height ? Number(height) : null
   if (sex !== undefined) data.sex = sex || null
   if (birth_date !== undefined) data.birth_date = birth_date ? new Date(birth_date) : null
+  if (injuries_notes !== undefined) data.injuries_notes = injuries_notes?.toString().trim() || null
   if (hevy_api_key && !hevy_api_key.includes('••••')) data.hevy_api_key = hevy_api_key
 
   // Email change

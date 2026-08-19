@@ -8,26 +8,51 @@ import { detectPersonalRecords } from './personal-records'
 import { runDetectors } from './plateau-detector'
 
 
+/** First finite number among aliases. Undefined means the payload omitted the field. */
+function pickMetric(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (value == null || value === '') continue
+    const n = Number(value)
+    if (Number.isFinite(n)) return n
+  }
+  return undefined
+}
+
+function bodyMetricFields(data: any) {
+  const fields: Record<string, number | undefined> = {
+    weight: pickMetric(data.weight_kg, data.weight),
+    lean_mass: pickMetric(data.lean_mass_kg, data.lean_mass),
+    body_fat_percentage: pickMetric(data.fat_percent, data.body_fat_percentage),
+    neck: pickMetric(data.neck_cm, data.neck),
+    shoulder: pickMetric(data.shoulder_cm, data.shoulder),
+    chest: pickMetric(data.chest_cm, data.chest),
+    left_bicep: pickMetric(data.left_bicep_cm, data.left_bicep),
+    right_bicep: pickMetric(data.right_bicep_cm, data.right_bicep),
+    left_bicep_relaxed: pickMetric(data.left_bicep_relaxed_cm, data.left_bicep_relaxed),
+    right_bicep_relaxed: pickMetric(data.right_bicep_relaxed_cm, data.right_bicep_relaxed),
+    left_forearm: pickMetric(data.left_forearm_cm, data.left_forearm),
+    right_forearm: pickMetric(data.right_forearm_cm, data.right_forearm),
+    abdomen: pickMetric(data.abdomen_cm, data.abdomen),
+    waist: pickMetric(data.waist_cm, data.waist),
+    hips: pickMetric(data.hips_cm, data.hips),
+    left_thigh: pickMetric(data.left_thigh_cm, data.left_thigh),
+    right_thigh: pickMetric(data.right_thigh_cm, data.right_thigh),
+    left_calf: pickMetric(data.left_calf_cm, data.left_calf),
+    right_calf: pickMetric(data.right_calf_cm, data.right_calf),
+    hrv: pickMetric(data.hrv, data.hrv_ms),
+    resting_hr: pickMetric(data.resting_hr, data.resting_heart_rate, data.resting_hr_bpm)
+  }
+  // Only write what the payload actually carried — a null from Hevy must not
+  // wipe a waist the athlete entered by hand that same day.
+  return Object.fromEntries(
+    Object.entries(fields).filter(([, value]) => value !== undefined)
+  ) as Record<string, number>
+}
+
 async function processAndSaveBodyMetric(userId: string, data: any) {
   if (!data || !data.date) return false
   const dateStr = data.date
-  const weight = data.weight_kg ?? null
-  const lean_mass = data.lean_mass_kg ?? null
-  const fat = data.fat_percent ?? null
-  const neck = data.neck_cm ?? null
-  const shoulder = data.shoulder_cm ?? null
-  const chest = data.chest_cm ?? null
-  const left_bicep = data.left_bicep_cm ?? null
-  const right_bicep = data.right_bicep_cm ?? null
-  const left_forearm = data.left_forearm_cm ?? null
-  const right_forearm = data.right_forearm_cm ?? null
-  const abdomen = data.abdomen ?? null
-  const waist = data.waist ?? null
-  const hips = data.hips ?? null
-  const left_thigh = data.left_thigh ?? null
-  const right_thigh = data.right_thigh ?? null
-  const left_calf = data.left_calf ?? null
-  const right_calf = data.right_calf ?? null
+  const fields = bodyMetricFields(data)
 
   const startOfDay = new Date(`${dateStr}T00:00:00.000Z`)
   const endOfDay = new Date(`${dateStr}T23:59:59.999Z`)
@@ -39,14 +64,14 @@ async function processAndSaveBodyMetric(userId: string, data: any) {
   if (existing) {
     await prisma.bodyMetric.update({
       where: { id: existing.id },
-      data: { weight, lean_mass, body_fat_percentage: fat, neck, shoulder, chest, left_bicep, right_bicep, left_forearm, right_forearm, abdomen, waist, hips, left_thigh, right_thigh, left_calf, right_calf, raw_data: JSON.stringify(data) }
+      data: { ...fields, raw_data: JSON.stringify(data) }
     })
   } else {
     await prisma.bodyMetric.create({
       data: {
         user_id: userId,
         date: new Date(`${dateStr}T12:00:00.000Z`),
-        weight, lean_mass, body_fat_percentage: fat, neck, shoulder, chest, left_bicep, right_bicep, left_forearm, right_forearm, abdomen, waist, hips, left_thigh, right_thigh, left_calf, right_calf,
+        ...fields,
         raw_data: JSON.stringify(data)
       }
     })
@@ -83,6 +108,9 @@ async function processAndSaveWorkout(
     update: {
       name: w.title,
       description: w.description || null,
+      date,
+      start_time: startTime,
+      end_time: endTime,
       total_volume: metrics.totalVolume,
       total_tonnage: metrics.totalTonnage,
       rpe_avg: metrics.rpeAvg,

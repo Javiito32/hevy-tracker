@@ -80,7 +80,7 @@
             </div>
             <button
               @click="$emit('delete-item', item)"
-              class="opacity-0 group-hover:opacity-100 text-ink-3 hover:text-danger text-sm transition"
+              class="opacity-100 md:opacity-0 md:group-hover:opacity-100 text-ink-3 hover:text-danger text-sm transition min-w-[2rem] min-h-[2rem]"
               title="Quitar"
             >×</button>
           </template>

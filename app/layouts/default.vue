@@ -111,7 +111,7 @@
             class="lg:hidden bg-surface-2 border border-line-strong hover:border-ink-3 rounded-lg w-9 h-9 flex items-center justify-center
                    text-ink-2 hover:text-ink transition"
             :aria-expanded="mobileNavOpen"
-            aria-label="Abrir menú de navegación"
+            :aria-label="mobileNavOpen ? 'Cerrar menú de navegación' : 'Abrir menú de navegación'"
             @click="mobileNavOpen = !mobileNavOpen"
           >
             <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" aria-hidden="true">
@@ -161,7 +161,7 @@
       <slot />
     </main>
 
-    <footer class="border-t border-line py-6">
+    <footer v-if="route.path !== '/chat'" class="border-t border-line py-6">
       <div class="container mx-auto px-4 flex items-center justify-between gap-4 text-xs text-ink-3 flex-wrap">
         <p>HevyTracker — tu analista de entrenamiento</p>
         <p class="font-data">&copy; 2026</p>
@@ -246,10 +246,21 @@ const onDocumentClick = (e: MouseEvent) => {
   }
 }
 
-onMounted(() => document.addEventListener('click', onDocumentClick))
-// The old version registered this listener and never removed it, so every
-// layout remount leaked another one.
-onBeforeUnmount(() => document.removeEventListener('click', onDocumentClick))
+const onDocumentKey = (e: KeyboardEvent) => {
+  if (e.key === 'Escape') {
+    userMenuOpen.value = false
+    mobileNavOpen.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', onDocumentClick)
+  document.addEventListener('keydown', onDocumentKey)
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocumentClick)
+  document.removeEventListener('keydown', onDocumentKey)
+})
 
 watch(() => route.fullPath, () => {
   mobileNavOpen.value = false

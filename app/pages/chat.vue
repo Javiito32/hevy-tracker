@@ -1,5 +1,5 @@
 <template>
-  <div class="h-[calc(100vh-140px)] flex flex-col">
+  <div class="h-[calc(100dvh-8.5rem)] md:h-[calc(100vh-10.5rem)] flex flex-col">
     <!-- Header with active context -->
     <div class="bg-surface border border-line rounded-t-card px-4 py-3 flex items-center justify-between gap-3">
       <div class="flex items-center gap-2.5 min-w-0">
@@ -27,8 +27,8 @@
     </div>
 
     <!-- Body: sidebar + chat -->
-    <div class="flex-grow flex overflow-hidden border-x border-line bg-bg">
-      <!-- Conversation sidebar -->
+    <div class="flex-grow flex overflow-hidden border-x border-line bg-bg relative">
+      <!-- Desktop sidebar -->
       <aside
         v-if="sidebarOpen"
         class="w-64 flex-shrink-0 border-r border-line hidden md:block"
@@ -43,6 +43,31 @@
           @rename="renameConversation"
         />
       </aside>
+
+      <!-- Phone: the same list as a drawer. The toggle already existed; the
+           list was hard-hidden below md, so history was unreachable in the gym. -->
+      <div
+        v-if="sidebarOpen"
+        class="md:hidden absolute inset-0 z-20 flex"
+      >
+        <aside class="w-[min(18rem,86vw)] h-full bg-bg border-r border-line shadow-lg">
+          <ChatConversationList
+            :conversations="conversations"
+            :active-id="conversationId"
+            :loading="listLoading"
+            @select="selectConversationMobile"
+            @new="startNewConversationMobile"
+            @delete="deleteConversation"
+            @rename="renameConversation"
+          />
+        </aside>
+        <button
+          type="button"
+          class="flex-1 bg-bg/60"
+          aria-label="Cerrar conversaciones"
+          @click="sidebarOpen = false"
+        />
+      </div>
 
       <!-- Main Chat Window -->
       <div class="flex-grow overflow-hidden flex flex-col relative min-w-0">
@@ -120,7 +145,7 @@
           rows="1"
           placeholder="Pregunta sobre tus entrenos, tu volumen o el mesociclo…"
           class="flex-grow bg-transparent border-none resize-none px-3 py-2.5 min-h-[44px] max-h-32 text-[15px] text-ink placeholder:text-ink-3 outline-none"
-          @keydown.enter.prevent="handleEnter"
+          @keydown.enter="handleEnter"
           @input="adjustTextareaHeight"
         />
 
@@ -144,7 +169,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import type { ConversationSummary } from '~/components/chat/ConversationList.vue'
 
 const toast = useToast()
@@ -157,6 +182,7 @@ const QUICK_PROMPTS = [
 ] as const
 
 const route = useRoute()
+const router = useRouter()
 const messageInput = ref<HTMLTextAreaElement | null>(null)
 const chatContainer = ref<HTMLDivElement | null>(null)
 
@@ -165,7 +191,7 @@ const isTyping = ref(false)
 const isStreamingReply = ref(false)
 const historyLoading = ref(true)
 const listLoading = ref(true)
-const sidebarOpen = ref(true)
+const sidebarOpen = ref(false)
 const conversationId = ref<string | null>(null)
 const conversations = ref<ConversationSummary[]>([])
 const activeTool = ref<string | null>(null)
@@ -194,6 +220,14 @@ const TOOL_LABELS: Record<string, string> = {
   get_mesocycle_evaluations: 'Leyendo las evaluaciones del mesociclo…',
   get_previous_mesocycles: 'Repasando mesociclos anteriores…',
   get_weekly_aggregates: 'Calculando tu volumen semanal…',
+  get_volume_by_muscle_group: 'Midiendo el volumen por músculo…',
+  get_training_alerts: 'Revisando tus avisos…',
+  get_personal_records: 'Consultando tus récords…',
+  get_active_plan: 'Leyendo tu plan…',
+  get_next_planned_session: 'Viendo qué toca ahora…',
+  get_diet: 'Leyendo tu dieta…',
+  get_diet_history: 'Repasando versiones de la dieta…',
+  search_foods: 'Buscando en tu catálogo…',
   save_user_note: 'Guardando una nota sobre ti…',
   deactivate_user_note: 'Actualizando tus notas…'
 }
@@ -204,19 +238,23 @@ const activityLabel = computed(() => {
 })
 
 onMounted(async () => {
+  sidebarOpen.value = window.matchMedia('(min-width: 768px)').matches
   await loadConversations()
-  // Open the most recently active conversation — the list is ordered by updated_at.
-  const latest = conversations.value[0]
-  if (latest) await selectConversation(latest.id)
-  historyLoading.value = false
 
-  // Hand-offs from another page always open a fresh thread rather than
-  // appending to whatever happened to be last used.
   const handOff = HAND_OFFS[route.query.context as string]
   if (handOff) {
     startNewConversation()
     sendQuickPrompt(handOff(route.query), false)
+    historyLoading.value = false
+    // Drop the query so a refresh does not prefill the same prompt again.
+    router.replace({ path: '/chat' })
+    return
   }
+
+  // Open the most recently active conversation — the list is ordered by updated_at.
+  const latest = conversations.value[0]
+  if (latest) await selectConversation(latest.id)
+  historyLoading.value = false
 })
 
 /**
@@ -227,12 +265,24 @@ onMounted(async () => {
  * otherwise land the coach on the wrong one.
  */
 const HAND_OFFS: Record<string, (q: Record<string, any>) => string> = {
-  workout: () => 'Analiza el rendimiento de mi último entrenamiento y sugiere ajustes para la próxima sesión.',
+  workout: (q) => q.name
+    ? `Analiza el rendimiento de "${q.name}" y sugiere ajustes para la próxima sesión.`
+    : 'Analiza el rendimiento de mi último entrenamiento y sugiere ajustes para la próxima sesión.',
   mesocycle: (q) => q.name
     ? `Hablemos del mesociclo "${q.name}". Revisa cómo está yendo y qué ajustarías.`
     : 'Revisa cómo está yendo mi mesociclo actual y qué ajustarías.',
   volume: () => 'Revisa mi volumen semanal por grupo muscular frente a los rangos MEV/MAV/MRV y dime qué debería ajustar.',
   alerts: () => 'Repasa los avisos de entrenamiento que tengo activos y dime en qué orden los atacarías.'
+}
+
+const selectConversationMobile = async (id: string) => {
+  await selectConversation(id)
+  sidebarOpen.value = false
+}
+
+const startNewConversationMobile = () => {
+  startNewConversation()
+  sidebarOpen.value = false
 }
 
 const loadConversations = async () => {
@@ -310,6 +360,7 @@ const deleteConversation = async (id: string) => {
 
 const handleEnter = (e: KeyboardEvent) => {
   if (e.shiftKey) return
+  e.preventDefault()
   sendMessage()
 }
 
@@ -364,9 +415,13 @@ const sendMessage = async () => {
     if (last?.streaming && !last.content) chatHistory.value.pop()
     else if (last?.streaming) last.streaming = false
 
+    const detail = error instanceof Error ? error.message : ''
+    const looksLikeKey = /api key|api_key|unauthoriz|503/i.test(detail)
     chatHistory.value.push({
       role: 'assistant',
-      content: '⚠️ Ocurrió un error consultando al AI Coach. Por favor, revisa tus API keys en Ajustes.',
+      content: looksLikeKey
+        ? '⚠️ No se pudo consultar al coach. Revisa las API keys en Ajustes.'
+        : `⚠️ No se pudo completar la respuesta.${detail ? ` ${detail}` : ' Inténtalo de nuevo.'}`,
       timestamp: new Date()
     })
   } finally {
@@ -376,7 +431,7 @@ const sendMessage = async () => {
     scrollToBottom()
     // Refresh so titles, previews and ordering reflect this turn.
     await loadConversations()
-    if (wasNew) sidebarOpen.value = true
+    if (wasNew && window.matchMedia('(min-width: 768px)').matches) sidebarOpen.value = true
   }
 }
 

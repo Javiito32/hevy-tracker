@@ -216,10 +216,10 @@ async function main() {
     check('calcula adherencia', adherence.has_plan && adherence.rows.length === 1, JSON.stringify(adherence).slice(0, 200))
     if (adherence.has_plan) {
       const row = adherence.rows[0]
-      // 1 session done x 1 working set = 1; planned 4 sets x 3 weeks = 12
+      // 1 working set done. Prescribed: 4 + 4 + 2 (week 3 is a 50% deload) = 10.
       check('cuenta series hechas, no sesiones', row.actual_sets === 1, `→ ${row.actual_sets}`)
-      check('compara contra lo prescrito a la fecha', row.planned_sets_to_date === 12, `→ ${row.planned_sets_to_date}`)
-      check('porcentaje coherente', row.adherence_pct === Math.round((1 / 12) * 100), `→ ${row.adherence_pct}`)
+      check('compara contra lo prescrito a la fecha', row.planned_sets_to_date === 10, `→ ${row.planned_sets_to_date}`)
+      check('porcentaje coherente', row.adherence_pct === Math.round((1 / 10) * 100), `→ ${row.adherence_pct}`)
     }
 
     console.log('\n── Editar el plan conserva el enlace con Hevy ──')

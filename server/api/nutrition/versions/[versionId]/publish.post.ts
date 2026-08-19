@@ -1,11 +1,11 @@
 import { getSessionUser } from '../../../../utils/session'
 import { publishDraft, loadVersionFull, serializeVersion } from '../../../../utils/diet-service'
 
-const optionalNumber = (raw: any): number | null | undefined => {
-  if (raw === undefined) return undefined
-  if (raw === '' || raw === null) return null
+/** Blank means "keep what the draft already has", not "clear the target". */
+const optionalNumber = (raw: any): number | undefined => {
+  if (raw === undefined || raw === '' || raw === null) return undefined
   const num = Number(raw)
-  return Number.isFinite(num) ? num : null
+  return Number.isFinite(num) ? num : undefined
 }
 
 export default defineEventHandler(async (event) => {
@@ -20,7 +20,7 @@ export default defineEventHandler(async (event) => {
       target_protein_g: optionalNumber(body.target_protein_g),
       target_carbs_g: optionalNumber(body.target_carbs_g),
       target_fat_g: optionalNumber(body.target_fat_g)
-    } as Record<string, number | null>
+    }
   })
 
   return serializeVersion(await loadVersionFull(published.id))

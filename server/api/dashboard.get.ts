@@ -1,6 +1,8 @@
 import { prisma } from '../utils/prisma';
 import { getSessionUser } from '../utils/session';
 import { startOfWeek, endOfWeek } from 'date-fns';
+import { weekNumberFor } from '../utils/dates';
+import { getNextSession } from '../utils/plan-service';
 
 export default defineEventHandler(async (event) => {
   const { id: userId } = await getSessionUser(event);
@@ -8,35 +10,44 @@ export default defineEventHandler(async (event) => {
   const weekStart = startOfWeek(now, { weekStartsOn: 1 });
   const weekEnd = endOfWeek(now, { weekStartsOn: 1 });
 
-  const [activeMesocycle, latestMetric, previousMetric, thisWeekCount, recentWorkouts] = await Promise.all([
+  const [activeMesocycle, weightRows, thisWeekCount, recentWorkouts] = await Promise.all([
     prisma.mesocycle.findFirst({ where: { user_id: userId, status: 'active' }, orderBy: { start_date: 'desc' } }),
-    prisma.bodyMetric.findFirst({ where: { user_id: userId }, orderBy: { date: 'desc' } }),
-    prisma.bodyMetric.findFirst({ where: { user_id: userId, date: { lt: now } }, orderBy: { date: 'desc' }, skip: 1 }),
+    prisma.bodyMetric.findMany({
+      where: { user_id: userId, weight: { not: null } },
+      orderBy: { date: 'desc' },
+      take: 2,
+      select: { weight: true, date: true }
+    }),
     prisma.workout.count({ where: { user_id: userId, date: { gte: weekStart, lte: weekEnd } } }),
     prisma.workout.findMany({ where: { user_id: userId }, take: 5, orderBy: { date: 'desc' } })
   ]);
 
-  const currentWeek = activeMesocycle
-    ? Math.max(1, Math.ceil((now.getTime() - new Date(activeMesocycle.start_date).getTime()) / (7 * 24 * 60 * 60 * 1000)))
-    : 0;
+  const latestMetric = weightRows[0] ?? null;
+  const previousMetric = weightRows[1] ?? null;
 
-  const weightDiff = latestMetric?.weight && previousMetric?.weight
+  const currentWeek = activeMesocycle ? weekNumberFor(activeMesocycle.start_date, now) : 0;
+
+  const weightDiff = latestMetric?.weight != null && previousMetric?.weight != null
     ? Number((latestMetric.weight - previousMetric.weight).toFixed(2))
-    : 0;
+    : null;
 
   let mesocycleWeeklyVolume: { week: number; volume: number; workoutCount: number; avgRpe: number | null }[] = [];
   let daysRemaining: number | null = null;
+  let nextSession: Awaited<ReturnType<typeof getNextSession>> = { has_plan: false };
 
   if (activeMesocycle) {
-    const mesoWorkouts = await prisma.workout.findMany({
-      where: { user_id: userId, mesocycle_id: activeMesocycle.id },
-      select: { date: true, total_volume: true, rpe_avg: true }
-    });
+    const [mesoWorkouts, next] = await Promise.all([
+      prisma.workout.findMany({
+        where: { user_id: userId, mesocycle_id: activeMesocycle.id },
+        select: { date: true, total_volume: true, rpe_avg: true }
+      }),
+      getNextSession(userId, activeMesocycle.id)
+    ]);
+    nextSession = next;
 
     const weekMap = new Map<number, { volume: number; count: number; rpes: number[] }>();
-    const msPerWeek = 7 * 24 * 60 * 60 * 1000;
     for (const w of mesoWorkouts) {
-      const week = Math.max(1, Math.ceil((new Date(w.date).getTime() - new Date(activeMesocycle.start_date).getTime()) / msPerWeek));
+      const week = weekNumberFor(activeMesocycle.start_date, w.date);
       if (!weekMap.has(week)) weekMap.set(week, { volume: 0, count: 0, rpes: [] });
       const entry = weekMap.get(week)!;
       entry.volume += w.total_volume ?? 0;
@@ -44,14 +55,17 @@ export default defineEventHandler(async (event) => {
       if (w.rpe_avg) entry.rpes.push(w.rpe_avg);
     }
 
-    mesocycleWeeklyVolume = Array.from(weekMap.entries())
-      .sort(([a], [b]) => a - b)
-      .map(([week, d]) => ({
+    const lastWeek = Math.max(currentWeek, ...weekMap.keys(), 1);
+    const firstWeek = lastWeek <= 16 ? 1 : Math.max(1, currentWeek - 8);
+    for (let week = firstWeek; week <= lastWeek; week++) {
+      const d = weekMap.get(week) ?? { volume: 0, count: 0, rpes: [] };
+      mesocycleWeeklyVolume.push({
         week,
         volume: Math.round(d.volume),
         workoutCount: d.count,
         avgRpe: d.rpes.length ? Math.round(d.rpes.reduce((a, b) => a + b) / d.rpes.length * 10) / 10 : null
-      }));
+      });
+    }
 
     if (activeMesocycle.end_date) {
       daysRemaining = Math.max(0, Math.ceil((new Date(activeMesocycle.end_date).getTime() - now.getTime()) / (24 * 60 * 60 * 1000)));
@@ -78,6 +92,7 @@ export default defineEventHandler(async (event) => {
     currentWeek,
     daysRemaining,
     mesocycleWeeklyVolume,
+    nextSession,
     weight: {
       current: latestMetric?.weight ?? null,
       diff: weightDiff,
@@ -85,7 +100,7 @@ export default defineEventHandler(async (event) => {
     },
     thisWeekWorkouts: {
       completed: thisWeekCount,
-      target: activeMesocycle?.target_sessions_weekly ?? 4
+      target: activeMesocycle?.target_sessions_weekly ?? null
     },
     recentWorkouts: formattedWorkouts
   };

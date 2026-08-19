@@ -8,6 +8,17 @@
     </div>
 
     <div v-if="workout" class="flex-grow overflow-y-auto custom-scrollbar p-5 space-y-6">
+      <div v-if="workouts.length > 1" class="flex flex-wrap gap-1.5">
+        <button
+          v-for="w in workouts"
+          :key="w.id"
+          type="button"
+          class="px-2.5 py-1 rounded-lg text-xs transition"
+          :class="w.id === workout.id ? 'bg-accent text-accent-ink' : 'bg-surface-2 text-ink-2 hover:text-ink'"
+          @click="selectedId = w.id"
+        >{{ w.name }}</button>
+      </div>
+
       <div>
         <div class="flex justify-between items-start gap-3 mb-3">
           <h3 class="text-sm font-medium text-ink min-w-0">{{ workout.name }}</h3>
@@ -99,10 +110,23 @@ import { ref, computed, watch } from 'vue'
 
 const props = defineProps<{
   date: Date | null
-  workout: any | null
+  workouts: any[]
 }>()
 
 const emit = defineEmits<{ 'notes-saved': [workoutId: string, notes: string | null] }>()
+
+const selectedId = ref<string | null>(null)
+
+const workout = computed(() => {
+  const list = props.workouts ?? []
+  return list.find(w => w.id === selectedId.value) ?? list[0] ?? null
+})
+
+watch(() => props.workouts, (list) => {
+  if (!list?.some(w => w.id === selectedId.value)) {
+    selectedId.value = list?.[0]?.id ?? null
+  }
+}, { immediate: true })
 
 const localNotes = ref('')
 const savedNotes = ref('')
@@ -110,7 +134,7 @@ const saveStatus = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
 
 const isDirty = computed(() => localNotes.value !== savedNotes.value)
 
-watch(() => props.workout, (w) => {
+watch(workout, (w) => {
   localNotes.value = w?.notes ?? ''
   savedNotes.value = w?.notes ?? ''
   saveStatus.value = 'idle'

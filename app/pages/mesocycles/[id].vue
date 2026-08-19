@@ -152,8 +152,14 @@
         </UiButton>
       </div>
 
-      <div v-if="nextSession?.has_plan" class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
-        <MesocycleNextSession :data="nextSession" @push="pushToHevy" />
+      <div v-if="planPending" class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <div class="bg-surface border border-line rounded-card h-48 flex items-center justify-center text-ink-3">
+          <UiSpinner />
+        </div>
+      </div>
+
+      <div v-else-if="nextSession?.has_plan || plan?.has_plan" class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <MesocycleNextSession v-if="nextSession?.has_plan" :data="nextSession" @push="pushToHevy" />
         <MesocyclePlanAdherence :adherence="plan?.adherence" />
       </div>
 
@@ -181,18 +187,15 @@
         <div class="lg:col-span-2 space-y-6">
           <!-- Stats row -->
           <div class="grid grid-cols-3 gap-4">
-            <div class="bg-surface rounded-card border border-line border-t-4 border-t-indigo-500 p-4">
-              <p class="text-xs text-ink-3 uppercase tracking-wide mb-1">Entrenamientos</p>
-              <p class="text-2xl font-bold text-ink">{{ mesocycle._count.workouts }}</p>
-            </div>
-            <div class="bg-surface rounded-card border border-line border-t-4 border-t-emerald-500 p-4">
-              <p class="text-xs text-ink-3 uppercase tracking-wide mb-1">Volumen total</p>
-              <p class="text-2xl font-bold text-ink">{{ totalVolume.toLocaleString() }}<span class="text-sm font-normal text-ink-3 ml-1">kg</span></p>
-            </div>
-            <div class="bg-surface rounded-card border border-line border-t-4 border-t-violet-500 p-4">
-              <p class="text-xs text-ink-3 uppercase tracking-wide mb-1">RPE promedio</p>
-              <p class="text-2xl font-bold text-ink">{{ avgRpe || 'N/A' }}</p>
-            </div>
+            <UiCard>
+              <UiStat label="Entrenamientos" :value="mesocycle._count.workouts" />
+            </UiCard>
+            <UiCard>
+              <UiStat label="Volumen total" :value="totalVolume" unit="kg" />
+            </UiCard>
+            <UiCard>
+              <UiStat label="RPE promedio" :value="avgRpe" :decimals="1" />
+            </UiCard>
           </div>
 
           <!-- Workouts list -->
@@ -296,7 +299,7 @@
                     'bg-surface-2 text-ink-3': ev.volume_trend === 'N/A'
                   }"
                 >
-                  {{ ev.volume_trend === 'increasing' ? '↑ Volumen' : ev.volume_trend === 'decreasing' ? '↓ Volumen' : '→ Estable' }}
+                  {{ ev.volume_trend === 'increasing' ? '↑ Volumen' : ev.volume_trend === 'decreasing' ? '↓ Volumen' : ev.volume_trend === 'N/A' ? 'Sin tendencia' : '→ Estable' }}
                 </span>
               </div>
               <span class="text-ink-3 text-xs">{{ expandedEvals.has(ev.id) ? '▲' : '▼' }}</span>
@@ -441,7 +444,7 @@ const isAdmin = computed(() => (session.value?.user as any)?.role === 'admin')
 const toast = useToast()
 
 const { data: mesocycle, pending, refresh } = useFetch(`/api/mesocycles/${mesocycleId}`)
-const { data: plan, refresh: refreshPlan } = useFetch<any>(`/api/mesocycles/${mesocycleId}/plan`)
+const { data: plan, pending: planPending, refresh: refreshPlan } = useFetch<any>(`/api/mesocycles/${mesocycleId}/plan`)
 const { data: nextSession, refresh: refreshNext } = useFetch<any>(`/api/mesocycles/${mesocycleId}/next-session`)
 
 /**
@@ -545,7 +548,7 @@ const evalError = ref<string | null>(null)
 const expandedEvals = ref(new Set<string>())
 const showNoteForm = ref(false)
 const savingNote = ref(false)
-const noteForm = ref({ date: new Date().toISOString().slice(0, 10), content: '', tagsRaw: '' })
+const noteForm = ref({ date: localDayKey(), content: '', tagsRaw: '' })
 const generatingSummary = ref(false)
 const summaryError = ref<string | null>(null)
 const freshSummaryModel = ref('')
@@ -591,7 +594,7 @@ const avgRpe = computed(() => {
   const workoutsWithRpe = mesocycle.value.workouts.filter((w: any) => w.rpe_avg)
   if (!workoutsWithRpe.length) return null
   const avg = workoutsWithRpe.reduce((sum: number, w: any) => sum + w.rpe_avg, 0) / workoutsWithRpe.length
-  return avg.toFixed(1)
+  return Math.round(avg * 10) / 10
 })
 
 const formatDate = (dateStr: string) => {
@@ -642,7 +645,7 @@ const toggleEval = (id: string) => {
 }
 
 const resetNoteForm = () => {
-  noteForm.value = { date: new Date().toISOString().slice(0, 10), content: '', tagsRaw: '' }
+  noteForm.value = { date: localDayKey(), content: '', tagsRaw: '' }
 }
 
 const saveNote = async () => {

@@ -1,4 +1,5 @@
 import { prisma } from './prisma'
+import { localDayKey } from './dates'
 import {
   computeVersionTotals,
   macroSplit,
@@ -26,12 +27,14 @@ import {
 
 /** Day-keyed dates are anchored at UTC noon so a timezone shift can't move them. */
 export const dayAnchor = (date: Date | string = new Date()): Date => {
-  const iso = typeof date === 'string' ? date : date.toISOString()
-  return new Date(`${iso.slice(0, 10)}T12:00:00.000Z`)
+  const key = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(date)
+    ? date.slice(0, 10)
+    : localDayKey(date instanceof Date ? date : new Date())
+  return new Date(`${key}T12:00:00.000Z`)
 }
 
 export const toDateKey = (date: Date | null | undefined): string | null =>
-  date ? date.toISOString().slice(0, 10) : null
+  date ? localDayKey(date) : null
 
 /**
  * The single ordering source for every read path. Meals sort by weekday first,
@@ -233,7 +236,7 @@ export const recalcVersionTotals = async (versionId: string) => {
 export const publishDraft = async (
   userId: string,
   versionId: string,
-  options: { change_note?: string | null; targets?: Record<string, number | null> } = {}
+  options: { change_note?: string | null; targets?: Record<string, number | null | undefined> } = {}
 ) => {
   const version = await requireOwnedVersion(userId, versionId)
   assertDraft(version)

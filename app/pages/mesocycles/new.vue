@@ -196,7 +196,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
-const today = new Date().toISOString().split('T')[0]
+const today = localDayKey()
 
 const { session } = useUserSession()
 const isAdmin = computed(() => (session.value?.user as any)?.role === 'admin')
@@ -324,9 +324,12 @@ const applyPlan = (result: { plan: any; warning?: string }) => {
   // Taken from the plan the model actually returned, not from the form field:
   // on a resumed generation the field holds its default, not what was asked for.
   const weeks = Array.isArray(plan.weeks) && plan.weeks.length ? plan.weeks.length : aiWeeks.value
-  const end = new Date(form.value.start_date)
+  const start = form.value.start_date
+  const end = /^\d{4}-\d{2}-\d{2}$/.test(start)
+    ? new Date(Number(start.slice(0, 4)), Number(start.slice(5, 7)) - 1, Number(start.slice(8, 10)))
+    : new Date(start)
   end.setDate(end.getDate() + weeks * 7)
-  form.value.end_date = end.toISOString().split('T')[0]
+  form.value.end_date = localDayKey(end)
 }
 
 /** Shared by a fresh generation and by one resumed after a reload. */

@@ -1,5 +1,5 @@
 import { prisma } from './prisma'
-import { weekNumberFor } from './dates'
+import { isoWeekday, weekNumberFor } from './dates'
 import { calcE1RMWithRPE } from './volume-calculator'
 import { loadTemplateTitles, normalizeExerciseName, resolveTitle } from './exercise-aliases'
 
@@ -46,6 +46,13 @@ export interface WeekInput {
 }
 
 const DAY_NAMES = ['', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
+
+/** 1–7 or null. A select value arrives as `"3"`; an out-of-range number is not a day. */
+function parseDayOfWeek(value: unknown): number | null {
+  const n = Number(value)
+  if (!Number.isInteger(n) || n < 1 || n > 7) return null
+  return n
+}
 
 /**
  * Renders the structure back into `split_description`.
@@ -141,7 +148,7 @@ export async function savePlan(
         mesocycle_id: mesocycleId,
         name: session.name,
         order_index: index,
-        day_of_week: session.day_of_week ?? null,
+        day_of_week: parseDayOfWeek(session.day_of_week),
         notes: session.notes ?? null,
         hevy_routine_id: carried?.hevy_routine_id ?? null,
         pushed_at: carried?.pushed_at ?? null,
@@ -493,7 +500,7 @@ async function pickNextPlannedSession(userId: string, mesocycleId: string) {
   if (!plan.has_plan) return null
 
   const today = new Date()
-  const isoDay = today.getDay() === 0 ? 7 : today.getDay()
+  const isoDay = isoWeekday(today)
 
   const last = await findLastTrainedSession(userId, mesocycleId, plan.sessions)
   const trainedToday = last ? isSameLocalDay(last.date, today) : false
@@ -598,7 +605,22 @@ export async function getAdherence(userId: string, mesocycleId: string) {
   const plan = await loadPlan(mesocycleId, userId)
   if (!plan.has_plan) return { has_plan: false as const }
 
-  const weeksElapsed = Math.max(1, weekNumberFor(plan.start_date, new Date()))
+  const asOf = plan.end_date && new Date(plan.end_date) < new Date()
+    ? new Date(plan.end_date)
+    : new Date()
+  const weeksElapsed = Math.max(1, weekNumberFor(plan.start_date, asOf))
+  const lastPlannedWeek = plan.weeks.length
+    ? Math.max(...plan.weeks.map(w => w.week_number))
+    : weeksElapsed
+  const weeksCounted = Math.min(weeksElapsed, lastPlannedWeek || weeksElapsed)
+  const plannedSetsThrough = (targetSets: number) => {
+    let total = 0
+    for (let week = 1; week <= weeksCounted; week++) {
+      const multiplier = plan.weeks.find(w => w.week_number === week)?.volume_multiplier ?? 1
+      total += Math.max(1, Math.round(targetSets * multiplier))
+    }
+    return total
+  }
 
   // Grouped by template id *and* name so both keys are available below. Matching
   // on the name alone is what this used to do, and it only ever worked for
@@ -635,7 +657,7 @@ export async function getAdherence(userId: string, mesocycleId: string) {
       // resolved, on either side.
       const done = (e.exercise_template_id ? byTemplate.get(e.exercise_template_id) : undefined)
         ?? byName.get(normalizeExerciseName(e.name))
-      const plannedSets = e.target_sets * weeksElapsed
+      const plannedSets = plannedSetsThrough(e.target_sets)
       const actualSets = done?.sets ?? 0
       return {
         session: s.name,
@@ -656,7 +678,7 @@ export async function getAdherence(userId: string, mesocycleId: string) {
 
   return {
     has_plan: true as const,
-    weeks_elapsed: weeksElapsed,
+    weeks_elapsed: weeksCounted,
     overall_pct: totalPlanned > 0 ? Math.round((totalActual / totalPlanned) * 100) : null,
     rows: rows.sort((a, b) => (a.adherence_pct ?? 0) - (b.adherence_pct ?? 0))
   }

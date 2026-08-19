@@ -6,7 +6,10 @@
       subtitle="Series efectivas semanales frente a los rangos de referencia. El calentamiento no cuenta."
     >
       <template #actions>
-        <UiTabs v-model="weeksTab" :tabs="WEEK_TABS" />
+        <div class="flex items-center gap-3">
+          <UiLink :to="{ path: '/chat', query: { context: 'volume' } }" class="text-xs hidden sm:inline">Preguntar al coach</UiLink>
+          <UiTabs v-model="weeksTab" :tabs="WEEK_TABS" />
+        </div>
       </template>
     </UiPageHeader>
 

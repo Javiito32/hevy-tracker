@@ -120,7 +120,7 @@
             <p v-if="isAdmin && displayedModel" class="font-data text-[10px] text-ink-3 mt-3">Modelo: {{ displayedModel }}</p>
 
             <template #footer>
-              <UiLink to="/chat">Continuar en el chat →</UiLink>
+              <UiLink :to="{ path: '/chat', query: { context: 'workout', name: workout.name } }">Continuar en el chat →</UiLink>
             </template>
           </UiCard>
 
@@ -192,7 +192,7 @@ const { data: workout, pending } = useFetch(`/api/workouts/${workoutId}`)
 const formattedDate = computed(() => {
   if (!workout.value) return ''
   const dateStr = workout.value.start_time || workout.value.date
-  return new Date(dateStr).toLocaleString(undefined, {
+  return new Date(dateStr).toLocaleString('es-ES', {
     weekday: 'long',
     year: 'numeric',
     month: 'long',

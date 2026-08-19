@@ -1,7 +1,7 @@
 <template>
   <UiCard eyebrow="Composición" title="Evolución del peso" flush>
     <template #actions>
-      <span v-if="metrics?.length" class="font-data text-xs text-ink-3">{{ metrics.length }} registros</span>
+      <span v-if="weighted.length" class="font-data text-xs text-ink-3">{{ weighted.length }} registros</span>
     </template>
 
     <div v-if="pending" class="flex items-center justify-center h-48 text-ink-3">
@@ -9,7 +9,7 @@
     </div>
 
     <UiEmptyState
-      v-else-if="!metrics?.length"
+      v-else-if="!weighted.length"
       title="Sin datos de peso"
       description="Registra tu peso en Hevy y sincroniza para verlo aquí."
     />
@@ -49,27 +49,28 @@ import { computed } from 'vue'
 
 const { data: metrics, pending } = useFetch('/api/metrics')
 
-const chartPoints = computed(() => {
-  if (!metrics.value) return []
-  return (metrics.value as { date: string; weight: number }[]).map(m => ({
-    date: m.date,
-    value: m.weight
-  }))
-})
+const weighted = computed(() =>
+  ((metrics.value ?? []) as { date: string; weight: number | null }[])
+    .filter((m): m is { date: string; weight: number } => m.weight != null)
+)
+
+const chartPoints = computed(() =>
+  weighted.value.map(m => ({ date: m.date, value: m.weight }))
+)
 
 const minWeight = computed(() => {
-  if (!metrics.value?.length) return 0
-  return Math.min(...(metrics.value as any[]).map(m => m.weight)).toFixed(1)
+  if (!weighted.value.length) return 0
+  return Math.min(...weighted.value.map(m => m.weight)).toFixed(1)
 })
 
 const maxWeight = computed(() => {
-  if (!metrics.value?.length) return 0
-  return Math.max(...(metrics.value as any[]).map(m => m.weight)).toFixed(1)
+  if (!weighted.value.length) return 0
+  return Math.max(...weighted.value.map(m => m.weight)).toFixed(1)
 })
 
 const totalChange = computed(() => {
-  if (!metrics.value || (metrics.value as any[]).length < 2) return 0
-  const arr = metrics.value as any[]
+  if (weighted.value.length < 2) return 0
+  const arr = weighted.value
   return Number((arr[arr.length - 1].weight - arr[0].weight).toFixed(1))
 })
 </script>

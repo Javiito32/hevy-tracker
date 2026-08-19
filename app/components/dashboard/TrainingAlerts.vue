@@ -5,7 +5,10 @@
         <p class="font-display text-[10px] font-semibold uppercase tracking-eyebrow text-ink-3 mb-1">Detectado</p>
         <h2 class="font-display text-sm font-semibold tracking-tight text-ink">Avisos de entrenamiento</h2>
       </div>
-      <UiLink to="/volume" class="text-xs">Ver volumen por músculo</UiLink>
+      <div class="flex items-center gap-3">
+        <UiLink to="/volume" class="text-xs">Ver volumen</UiLink>
+        <UiLink :to="{ path: '/chat', query: { context: 'alerts' } }" class="text-xs">Preguntar al coach</UiLink>
+      </div>
     </div>
 
     <ul class="space-y-2">

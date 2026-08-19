@@ -662,7 +662,7 @@ export function buildWorkoutData(w: any, includeExercises = true): Workout {
         const exercise: Exercise = {
           name: ex.name,
           type: isCardio ? (ex.type as 'cardio' | 'duration') : 'strength',
-          sets: ex.sets,
+          sets: ex.working_sets ?? ex.sets,
           sets_detail: (ex.sets_details || []).map((s: any, i: number): SetDetail => {
             const detail: SetDetail = { set: i + 1 }
             if (s.type && s.type !== 'normal') detail.type = s.type

@@ -146,7 +146,9 @@ const COLUMN: Record<string, string> = {
 const totalFor = (version: any, key: string) => version[COLUMN[key]] ?? null
 
 const chartPoints = computed(() =>
-  chronological.value.map((v: any) => ({ date: v.start_date, value: totalFor(v, metric.value) ?? 0 }))
+  chronological.value
+    .map((v: any) => ({ date: v.start_date, value: totalFor(v, metric.value) }))
+    .filter((p): p is { date: string; value: number } => p.value != null)
 )
 
 const formatY = (value: number) => formatNutrientValue(value, metric.value)

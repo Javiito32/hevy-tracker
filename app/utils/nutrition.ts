@@ -197,6 +197,36 @@ export const WEEKDAY_SHORT: Record<number, string> = {
 export const todayWeekday = (date = new Date()): Weekday =>
   (((date.getDay() + 6) % 7) + 1) as Weekday
 
+/**
+ * Minutes from midnight for a `time_of_day` label ("08:00"). Null when the
+ * field is empty or isn't a clock time. Mirrors `minutesFromTimeOfDay` in
+ * nutrition-calculator.ts.
+ */
+export const minutesFromTimeOfDay = (value: string | null | undefined): number | null => {
+  if (!value) return null
+  const match = /^([01]?\d|2[0-3]):([0-5]\d)/.exec(String(value).trim())
+  if (!match) return null
+  return Number(match[1]) * 60 + Number(match[2])
+}
+
+/**
+ * Draft editor order: clock time first, then `order_index` for meals without
+ * a time. Mirrors `compareMealsByTime` on the server.
+ */
+export const compareMealsByTime = (
+  a: { weekday?: number; time_of_day?: string | null; order_index?: number },
+  b: { weekday?: number; time_of_day?: string | null; order_index?: number }
+): number => {
+  const day = (a.weekday ?? 0) - (b.weekday ?? 0)
+  if (day) return day
+  const ta = minutesFromTimeOfDay(a.time_of_day)
+  const tb = minutesFromTimeOfDay(b.time_of_day)
+  if (ta != null && tb != null && ta !== tb) return ta - tb
+  if (ta != null && tb == null) return -1
+  if (ta == null && tb != null) return 1
+  return (a.order_index ?? 0) - (b.order_index ?? 0)
+}
+
 /** "lun", "lun y mar", "lun, mar y mié" — for captions and group headings. */
 export const formatWeekdayList = (days: number[], long = false): string => {
   const names = days.map(d => (long ? WEEKDAY_LABELS[d] : WEEKDAY_SHORT[d])?.toLowerCase()).filter(Boolean)

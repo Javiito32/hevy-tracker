@@ -299,7 +299,41 @@ async function main() {
     check('y avisa de que omite los demás', (aiRep as any).meals_other_days_omitted === true,
       'sin esto el modelo responde del sábado con el menú del lunes')
 
-    // ── 10. Weekly PDF ───────────────────────────────────────────────────────
+    // ── 10. Meals ordered by clock time ──────────────────────────────────────
+    console.log('\nOrden de comidas por hora')
+    const vTime = await makeVersion(9)
+    for (const meal of [
+      { name: 'Cena', order_index: 0, time_of_day: '21:00' },
+      { name: 'Desayuno', order_index: 1, time_of_day: '08:00' },
+      { name: 'Comida', order_index: 2, time_of_day: '14:00' },
+      { name: 'Snack', order_index: 3, time_of_day: null as string | null }
+    ]) {
+      await prisma.dietMeal.create({
+        data: {
+          diet_version_id: vTime.id,
+          weekday: 1,
+          ...meal,
+          items: {
+            create: [{
+              food_id: fullFood.id,
+              food_name: fullFood.name,
+              quantity_g: 100,
+              order_index: 0,
+              nutrients_snapshot: buildSnapshot(fullFood)
+            }]
+          }
+        }
+      })
+    }
+    const timed = serializeVersion(await loadVersionFull(vTime.id))
+    const mondayNames = timed.meals.filter((m: any) => m.weekday === 1).map((m: any) => m.name)
+    check('la hora gana al order_index', mondayNames.join(',') === 'Desayuno,Comida,Cena,Snack',
+      `fue ${mondayNames.join(',')}`)
+    check('el grupo del día usa el mismo orden',
+      timed.day_groups[0]?.meals.map((m: any) => m.name).join(',') === 'Desayuno,Comida,Cena,Snack',
+      `fue ${timed.day_groups[0]?.meals.map((m: any) => m.name).join(',')}`)
+
+    // ── 11. Weekly PDF ───────────────────────────────────────────────────────
     console.log('\nPDF de la semana')
     const pdfVersion = serializeVersion(await loadVersionFull(v4.id))
     const pdfInput = {

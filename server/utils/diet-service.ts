@@ -8,6 +8,7 @@ import {
   WEEKDAYS,
   WEEKDAY_LABELS_ES,
   MICRO_KEYS,
+  sortMealsByTime,
   type VersionTotals,
   type Weekday
 } from './nutrition-calculator'
@@ -37,9 +38,11 @@ export const toDateKey = (date: Date | null | undefined): string | null =>
   date ? localDayKey(date) : null
 
 /**
- * The single ordering source for every read path. Meals sort by weekday first,
- * then by their position within that day — `order_index` is scoped to a day, not
- * to the version — so a consumer can group by weekday without re-sorting.
+ * Prisma's load order: weekday, then write-path position within the day.
+ * `order_index` is what a new meal appends to, and the tie-breaker when two
+ * meals share a time (or have none). Display order is chronological — see
+ * `sortMealsByTime` in `serializeVersion`, which is what the editor, the
+ * history card, the PDF and the AI all actually read.
  */
 const MEAL_INCLUDE = {
   meals: {
@@ -518,7 +521,7 @@ export const buildDayGroups = (meals: any[]) => {
 
   const groups: Array<{ weekdays: Weekday[]; signature: string; meals: any[] }> = []
   for (const weekday of WEEKDAYS) {
-    const dayMeals = byDay.get(weekday)!
+    const dayMeals = sortMealsByTime(byDay.get(weekday)!)
     // A day with no food is not "the same as" another empty day in any useful
     // sense — grouping them would produce a "Sáb · Dom" heading over nothing.
     if (dayMeals.every(m => (m.items ?? []).length === 0)) continue
@@ -542,7 +545,8 @@ export const buildDayGroups = (meals: any[]) => {
  * the 4/4/9 arithmetic per weekday.
  */
 export const serializeVersion = (version: any, options: { weightKg?: number | null } = {}) => {
-  const totals = parseTotals(version.totals_json) ?? computeVersionTotals(version.meals ?? [])
+  const meals = sortMealsByTime(version.meals ?? [])
+  const totals = parseTotals(version.totals_json) ?? computeVersionTotals(meals)
   const weightKg = options.weightKg ?? null
 
   return {
@@ -578,8 +582,8 @@ export const serializeVersion = (version: any, options: { weightKg?: number | nu
         target: effectiveTarget(version, weekday)
       }
     }),
-    day_groups: buildDayGroups(version.meals ?? []),
-    meals: (version.meals ?? []).map(serializeMeal)
+    day_groups: buildDayGroups(meals),
+    meals: meals.map(serializeMeal)
   }
 }
 

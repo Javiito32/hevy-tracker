@@ -259,6 +259,43 @@ export const WEEKDAY_SHORT_ES: Record<Weekday, string> = {
   7: 'Dom'
 }
 
+/**
+ * Minutes from midnight for a `time_of_day` label ("08:00"). Null when the
+ * field is empty or isn't a clock time — it is free text on the plan, and a
+ * label like "por la mañana" has no position on the clock.
+ */
+export const minutesFromTimeOfDay = (value: string | null | undefined): number | null => {
+  if (!value) return null
+  const match = /^([01]?\d|2[0-3]):([0-5]\d)/.exec(String(value).trim())
+  if (!match) return null
+  return Number(match[1]) * 60 + Number(match[2])
+}
+
+export type MealForTimeSort = {
+  weekday?: number
+  time_of_day?: string | null
+  order_index?: number
+}
+
+/**
+ * Within a day, meals with a clock time come first in chronological order;
+ * meals without a parseable time keep their relative `order_index` after them.
+ * Across days, weekday wins so a flat list stays groupable without a second pass.
+ */
+export const compareMealsByTime = (a: MealForTimeSort, b: MealForTimeSort): number => {
+  const day = (a.weekday ?? 0) - (b.weekday ?? 0)
+  if (day) return day
+  const ta = minutesFromTimeOfDay(a.time_of_day)
+  const tb = minutesFromTimeOfDay(b.time_of_day)
+  if (ta != null && tb != null && ta !== tb) return ta - tb
+  if (ta != null && tb == null) return -1
+  if (ta == null && tb != null) return 1
+  return (a.order_index ?? 0) - (b.order_index ?? 0)
+}
+
+export const sortMealsByTime = <T extends MealForTimeSort>(meals: T[]): T[] =>
+  [...meals].sort(compareMealsByTime)
+
 /** A meal shaped as the totals code needs it: a weekday and scaled items. */
 export interface MealForTotals {
   weekday: number

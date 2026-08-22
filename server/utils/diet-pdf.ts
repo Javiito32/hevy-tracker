@@ -10,6 +10,7 @@ import {
   WEEKDAYS,
   WEEKDAY_LABELS_ES,
   WEEKDAY_SHORT_ES,
+  compareMealsByTime,
   type NutrientKey,
   type Nutrients,
   type Weekday
@@ -322,7 +323,7 @@ function drawDay(c: Cursor, version: DietPdfVersion, weekday: Weekday, now: Date
   const day = version.days.find(d => d.weekday === weekday)
   const meals = version.meals
     .filter(m => m.weekday === weekday)
-    .sort((a, b) => a.order_index - b.order_index)
+    .sort(compareMealsByTime)
 
   const date = dateForWeekday(weekday, now)
   const title = `${WEEKDAY_LABELS_ES[weekday]} ${date.getDate()} ${monthShort(date)}`

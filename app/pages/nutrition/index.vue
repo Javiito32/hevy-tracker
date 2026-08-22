@@ -369,7 +369,10 @@ const selectedWeekday = computed<number>({
 })
 
 const mealsOfDay = computed(() =>
-  (shown.value?.meals ?? []).filter((m: any) => m.weekday === selectedWeekday.value)
+  (shown.value?.meals ?? [])
+    .filter((m: any) => m.weekday === selectedWeekday.value)
+    .slice()
+    .sort(compareMealsByTime)
 )
 
 const currentDay = computed(() =>

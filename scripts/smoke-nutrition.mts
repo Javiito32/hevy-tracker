@@ -461,7 +461,11 @@ async function main() {
     check('los decimales llevan coma', formatDietPdfNumber(5.3, 1) === '5,3')
 
     const loadedPdf = await PDFDocument.load(bytes)
-    check('tiene al menos una página', loadedPdf.getPageCount() >= 1, `fueron ${loadedPdf.getPageCount()}`)
+    // Una hoja, apaisada: es un cartel para la cocina, no un informe.
+    check('cabe en una sola página', loadedPdf.getPageCount() === 1, `fueron ${loadedPdf.getPageCount()}`)
+    const sheet = loadedPdf.getPage(0)
+    check('la hoja es apaisada', sheet.getWidth() > sheet.getHeight(),
+      `${sheet.getWidth().toFixed(0)}x${sheet.getHeight().toFixed(0)}`)
     check('el título lleva el nombre de la dieta',
       loadedPdf.getTitle()?.includes('Volumen invierno 2026') === true,
       `fue ${loadedPdf.getTitle()}`)
@@ -481,7 +485,29 @@ async function main() {
       generatedAt: new Date('2026-08-19T12:00:00')
     })
     check('una dieta a medio rellenar también genera PDF',
-      (await PDFDocument.load(emptyPdf)).getPageCount() >= 1)
+      (await PDFDocument.load(emptyPdf)).getPageCount() === 1)
+
+    // Una semana imposible de meter entera: sigue siendo una hoja, y lo dice.
+    const heavyVersion = JSON.parse(JSON.stringify(pdfVersion))
+    heavyVersion.meals = []
+    for (let weekday = 1; weekday <= 7; weekday++) {
+      for (let i = 0; i < 8; i++) {
+        heavyVersion.meals.push({
+          name: `Comida ${i + 1}`,
+          weekday,
+          order_index: i,
+          time_of_day: null,
+          items: Array.from({ length: 8 }, (_, k) => ({
+            food_name: 'Yogur griego natural sin azúcar añadido',
+            quantity_g: 100 + k,
+            nutrients_snapshot: buildSnapshot(fullFood)
+          }))
+        })
+      }
+    }
+    const heavy = await buildDietPdf({ ...pdfInput, version: heavyVersion })
+    check('una semana saturada no se convierte en dos hojas',
+      (await PDFDocument.load(heavy)).getPageCount() === 1)
 
     const weird = await buildDietPdf({
       plan: { name: 'Dieta™ con — rayas y μgramos', goal: 'cut', notes: 'Café ≥ 2 tazas… “sí”' },
@@ -489,7 +515,7 @@ async function main() {
       generatedAt: new Date('2026-08-19T12:00:00')
     })
     check('caracteres fuera de WinAnsi no tiran la generación',
-      (await PDFDocument.load(weird)).getPageCount() >= 1)
+      (await PDFDocument.load(weird)).getPageCount() === 1)
     check('el slug del archivo pierde marcas y acentos',
       dietPdfFilename({
         plan: { name: 'Dieta™ con — rayas y μgramos', goal: 'cut' },

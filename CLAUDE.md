@@ -473,6 +473,18 @@ It replaced a `day_type` of `all | training | rest` that **no part of the UI cou
 
 **Partial totals ship with their coverage.** `sumNutrients` returns the sum of whatever foods have the data and is null only when none do; `sumCoverage` records `{known, total}` per nutrient. Returning null as soon as one food lacked a micro was tried and is wrong — food databases carry micros for a minority of products, so one gap would blank the nutrient for the whole diet. A partial figure is a legitimate lower bound; what makes it honest is that it is **never shipped bare**: the UI prefixes it with `≥`, and the AI payload/tool add `micronutrients_partial` saying how many foods backed it. Never present a partial total as complete, and never fill a gap with 0.
 
+#### The kitchen sheet — `server/utils/diet-pdf.ts`
+
+`GET /api/nutrition/versions/:id/pdf` renders the week as **one landscape A4 page**: the seven days as columns, the meals as rows, and each day's kcal and macros in a band along the bottom. It is a wall chart, not a report — it gets printed once and lived with — so the two constraints that shape it are *one sheet* and *readable from a step back*.
+
+- **The type size is fitted, not chosen.** The layout is measured at descending body sizes (`BODY_SIZES`, 11 → 5 pt) and the largest one that fits the remaining height is drawn, then leftover height is spread over the rows (capped at `MAX_ROW_STRETCH`) so the grid reaches the summary instead of floating above it. A sparse week prints big; a dense one prints small; neither prints a second page.
+- **A week that cannot fit is cut visibly.** Past the smallest size the rows are shrunk in proportion and each cell reports what it dropped (`+3 alimentos más`). Silently losing a food off a menu is the one failure that would matter here.
+- **The row axis is derived, not read.** Every weekday holds its own independent meal list, so rows are built by grouping meals by name (a name repeated within one day gets its own row) and ordering them by their mean position in the day. A meal that only some days have leaves the other cells *blank* — that is the truthful reading, and the alternative (forcing seven identical rows) would invent meals.
+- Grams lead each food line and are set bold, because the quantity is what you are checking while cooking; the name wraps after it.
+- A day with no food is greyed in its column heading and reads `—` across the summary, never `0` — the file's "null is not zero" rule reaches the print too.
+- `Objetivo` is a row only when some day actually has a target, and it carries the delta (`2.800 (-100)`).
+- Helvetica is WinAnsi, so `pdfText` folds the handful of characters outside it (dashes, curly quotes, `µ`, `™`) rather than letting `drawText` throw mid-document and turn a finished plan into a 502. Numbers go through `formatDietPdfNumber`, not `toLocaleString`: the process locale on a slim container is often C, which prints `1918` where a Spanish readout needs `1.918`.
+
 **Open Food Facts** (`server/utils/openfoodfacts-client.ts`, no API key, descriptive `User-Agent` required):
 - An unknown barcode returns **HTTP 200 with `{"status":0}`** — a try/catch on the status code never fires, so `fetchOffProduct` checks `status === 1` and returns `null`.
 - Search (`search.openfoodfacts.org/search`) returns **kcal and macros only, no micronutrients**, so importing always re-fetches the full product by code. Never import from a search payload.

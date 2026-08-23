@@ -27,3 +27,6 @@ dev.db
 *.db
 prisma/dev.db
 prisma/*.db
+# SQLite deja estos dos al lado de la base en modo WAL.
+prisma/*.db-shm
+prisma/*.db-wal

@@ -1,15 +1,8 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib'
 import { localDayKey, localWeekKey } from './dates'
 import {
-  computeMealTotals,
-  isComplete,
-  MACRO_KEYS,
-  MICRO_KEYS,
-  NUTRIENT_LABELS_ES,
-  NUTRIENT_UNITS,
   WEEKDAYS,
   WEEKDAY_LABELS_ES,
-  WEEKDAY_SHORT_ES,
   compareMealsByTime,
   type NutrientKey,
   type Nutrients,
@@ -17,25 +10,50 @@ import {
 } from './nutrition-calculator'
 
 /**
- * Printable weekly menu. The designer is one day at a time; this is the
- * artefact you take to the kitchen: every weekday, every meal, every gram.
+ * The kitchen sheet: **one landscape page**, the seven days as columns, the
+ * meals as rows, and each day's kcal and macros along the bottom.
+ *
+ * It is a wall chart, not a report. Everything it shows has to be readable
+ * from a step back while cooking, and everything it cannot show on one page
+ * is worth less than the second page would cost — a sheet you have to turn
+ * over is a sheet you stop using. So the type size is *fitted*: the layout is
+ * measured at descending sizes and the largest one that fits is drawn.
  *
  * Built with pdf-lib (standard fonts only). Helvetica's WinAnsi set covers
  * Spanish; anything outside it is folded to ASCII so a food named with a
  * stray symbol cannot take the whole download down.
  */
 
-const A4: [number, number] = [595.28, 841.89]
-const MARGIN = 40
-const PAGE_W = A4[0]
-const PAGE_H = A4[1]
+const LANDSCAPE_A4: [number, number] = [841.89, 595.28]
+const MARGIN = 26
+const PAGE_W = LANDSCAPE_A4[0]
+const PAGE_H = LANDSCAPE_A4[1]
 const CONTENT_W = PAGE_W - MARGIN * 2
+
+/** Row-label gutter. Narrow: meal names are short, food names are not. */
+const LABEL_W = 62
+const DAY_W = (CONTENT_W - LABEL_W) / 7
+const CELL_PAD = 4
+
+const HEADER_H = 46
+const FOOTER_H = 14
+
+/**
+ * Descending, because the largest that fits is the one we want: this is read
+ * from a step back, so a sparse week should print big rather than print small
+ * and leave the page half empty.
+ */
+const BODY_SIZES = [11, 10, 9, 8.5, 8, 7.5, 7, 6.5, 6, 5.5, 5]
+const MIN_ROW_H = 20
+/** How far a row may be stretched to fill leftover height before it just ends. */
+const MAX_ROW_STRETCH = 1.9
 
 const INK = rgb(0.11, 0.11, 0.12)
 const INK2 = rgb(0.38, 0.38, 0.39)
 const INK3 = rgb(0.55, 0.55, 0.56)
 const LINE = rgb(0.8, 0.8, 0.78)
-const BAND = rgb(0.945, 0.945, 0.938)
+const LINE_STRONG = rgb(0.62, 0.62, 0.6)
+const BAND = rgb(0.955, 0.955, 0.948)
 const WARN = rgb(0.55, 0.38, 0.08)
 
 const GOAL_LABELS: Record<string, string> = {
@@ -97,21 +115,21 @@ export interface DietPdfInput {
   generatedAt?: Date
 }
 
-interface OpenDay {
-  title: string
-  kcalLabel: string
-  planned: boolean
+type Meal = DietPdfVersion['meals'][number]
+type Day = DietPdfVersion['days'][number]
+
+/** One printed row: a meal slot, and which meal fills it on each weekday. */
+interface MealRow {
+  label: string
+  time: string | null
+  /** Indexed 1..7; index 0 unused so `cells[weekday]` reads directly. */
+  cells: Array<Meal | null>
 }
 
-interface Cursor {
-  doc: PDFDocument
+interface Fonts {
   page: PDFPage
   font: PDFFont
   bold: PDFFont
-  y: number
-  pages: PDFPage[]
-  /** Day currently being written, so a page break can reprint its heading. */
-  openDay: OpenDay | null
 }
 
 const dash = (s: string) => s.normalize('NFD').replace(/\p{M}/gu, '')
@@ -152,382 +170,491 @@ export async function buildDietPdf(input: DietPdfInput): Promise<Uint8Array> {
   doc.setCreationDate(now)
   doc.setModificationDate(now)
 
-  const cursor: Cursor = { doc, page: null as unknown as PDFPage, font, bold, y: 0, pages: [], openDay: null }
-  newPage(cursor)
-  drawDocumentHeader(cursor, input, now)
-  drawAverage(cursor, input.version)
-  drawWeekTable(cursor, input.version, now)
+  const page = doc.addPage(LANDSCAPE_A4)
+  const f: Fonts = { page, font, bold }
 
-  for (const weekday of WEEKDAYS) {
-    drawDay(cursor, input.version, weekday, now)
-  }
+  drawHeader(f, input, now)
+  drawFooter(f, input, now)
 
-  stampFooters(cursor, input, now)
+  const rows = buildMealRows(input.version)
+  const summaryRows = buildSummaryRows(input.version)
+  const summaryH = summaryRows.length * SUMMARY_ROW_H + SUMMARY_HEAD_H
+
+  const gridTop = PAGE_H - MARGIN - HEADER_H
+  const gridBottom = MARGIN + FOOTER_H + summaryH
+  const columnsTop = gridTop - COLUMN_HEAD_H
+
+  drawColumnHeads(f, input.version, gridTop, now)
+  const fitted = fitRows(rows, f, columnsTop - gridBottom)
+  drawMealGrid(f, rows, fitted, columnsTop)
+  drawSummary(f, input.version, summaryRows, gridBottom)
+  drawColumnRules(f, gridTop)
+
   return doc.save()
 }
 
-// ── Header / summary ──────────────────────────────────────────────────────────
+// ── Rows: the meal axis ───────────────────────────────────────────────────────
 
-function drawDocumentHeader(c: Cursor, input: DietPdfInput, now: Date) {
+/**
+ * Every weekday holds its own independent meal list, so the row axis has to be
+ * *derived* rather than read: meals are grouped by name (a repeated name within
+ * one day gets its own row) and ordered by their mean position in the day. A
+ * meal that only exists on some days simply leaves the other cells blank, which
+ * is the truthful reading — those days don't have it.
+ */
+function buildMealRows(version: DietPdfVersion): MealRow[] {
+  const groups = new Map<string, { row: MealRow; positions: number[] }>()
+
+  for (const weekday of WEEKDAYS) {
+    const meals = (version.meals ?? [])
+      .filter(m => m.weekday === weekday)
+      .sort(compareMealsByTime)
+    const seen = new Map<string, number>()
+
+    meals.forEach((meal, index) => {
+      const name = (meal.name || 'Comida').trim() || 'Comida'
+      const base = dash(name).toLowerCase()
+      const repeat = seen.get(base) ?? 0
+      seen.set(base, repeat + 1)
+      const key = `${base}#${repeat}`
+
+      let group = groups.get(key)
+      if (!group) {
+        group = { row: { label: name, time: meal.time_of_day ?? null, cells: Array(8).fill(null) }, positions: [] }
+        groups.set(key, group)
+      }
+      if (!group.row.time && meal.time_of_day) group.row.time = meal.time_of_day
+      group.row.cells[weekday] = meal
+      group.positions.push(index)
+    })
+  }
+
+  return [...groups.values()]
+    .sort((a, b) => {
+      const meanA = a.positions.reduce((s, v) => s + v, 0) / a.positions.length
+      const meanB = b.positions.reduce((s, v) => s + v, 0) / b.positions.length
+      if (meanA !== meanB) return meanA - meanB
+      const timeA = a.row.time ?? '99:99'
+      const timeB = b.row.time ?? '99:99'
+      if (timeA !== timeB) return timeA < timeB ? -1 : 1
+      return a.row.label.localeCompare(b.row.label, 'es')
+    })
+    .map(g => g.row)
+}
+
+// ── Header ────────────────────────────────────────────────────────────────────
+
+function drawHeader(f: Fonts, input: DietPdfInput, now: Date) {
   const { plan, version } = input
-  const isDraft = version.status === 'draft'
+  const top = PAGE_H - MARGIN
 
-  text(c, 'DIETA', MARGIN, 8, { color: INK3, font: c.bold })
-  c.y -= 20
-  text(c, plan.name || 'Sin nombre', MARGIN, 18, { font: c.bold })
+  draw(f, 'DIETA', MARGIN, top - 7, 6.5, f.bold, INK3)
+  draw(f, plan.name || 'Sin nombre', MARGIN, top - 22, 14, f.bold, INK)
 
   const meta = [
     `v${version.version_number}`,
     version.status === 'active' ? 'Activa' : version.status === 'draft' ? 'Borrador' : 'Histórica',
     plan.goal ? (GOAL_LABELS[plan.goal] ?? plan.goal) : null,
-    input.athleteName || null
+    input.athleteName || null,
+    plan.notes?.trim() || null
   ].filter(Boolean).join('  ·  ')
+  draw(f, clip(meta, f.font, 7.5, CONTENT_W * 0.5), MARGIN, top - 33, 7.5, f.font, INK2)
 
-  const week = currentWeekLabel(now)
-  c.y -= 14
-  text(c, `${week}  ·  ${meta}`, MARGIN, 9, { color: INK2 })
-
-  if (plan.notes?.trim()) {
-    c.y -= 13
-    for (const line of wrap(pdfText(plan.notes.trim()), c.font, 8, CONTENT_W).slice(0, 3)) {
-      text(c, line, MARGIN, 8, { color: INK3 })
-      c.y -= 11
-    }
-  }
-
-  c.y -= 10
-  rule(c)
-
-  if (isDraft) {
-    c.y -= 6
-    c.page.drawRectangle({
-      x: MARGIN,
-      y: c.y - 16,
-      width: CONTENT_W,
-      height: 18,
-      color: rgb(0.96, 0.93, 0.86)
-    })
-    text(c, 'BORRADOR  ·  esta no es la dieta vigente hasta que la publiques', MARGIN + 8, 8, { color: WARN, font: c.bold })
-    c.y -= 22
-    rule(c)
-  }
-}
-
-function drawAverage(c: Cursor, version: DietPdfVersion) {
-  ensure(c, 78)
-  c.y -= 16
-  text(c, 'MEDIA SEMANAL', MARGIN, 8, { color: INK3, font: c.bold })
-  c.y -= 18
+  // Right: the week, and the average day it plans for.
+  const right = PAGE_W - MARGIN
+  drawRight(f, currentWeekLabel(now), right, top - 9, 9, f.bold, INK)
 
   const avg = version.totals.average
-  const kcal = fmt(avg.kcal, 'kcal')
-  text(c, kcal, MARGIN, 16, { font: c.bold })
-  const kcalW = c.bold.widthOfTextAtSize(pdfText(kcal), 16)
-  text(c, 'kcal', MARGIN + kcalW + 5, 9, { color: INK3 })
-
-  const macros: Array<{ key: NutrientKey; short: string }> = [
-    { key: 'protein_g', short: 'prot' },
-    { key: 'carbs_g', short: 'carbs' },
-    { key: 'fat_g', short: 'grasa' }
-  ]
-  let x = MARGIN + 150
-  for (const { key, short } of macros) {
-    const value = `${fmt(avg[key], key)} g`
-    text(c, value, x, 11, { font: c.bold })
-    const w = c.bold.widthOfTextAtSize(pdfText(value), 11)
-    text(c, short, x + w + 4, 8, { color: INK3 })
-    x += 110
-  }
-
-  c.y -= 16
   const planned = version.planned_days.length
-  const captionParts = [
-    planned
-      ? `Media de ${planned} ${planned === 1 ? 'día' : 'días'} con comidas (${formatWeekdayList(version.planned_days)})`
-      : 'Ningún día tiene comidas todavía',
+  const avgLine = [
+    `Media de ${planned || 'ningún'} ${planned === 1 ? 'día' : 'días'} con comidas`,
+    `${fmt(avg.kcal, 'kcal')} kcal`,
+    `P ${fmt(avg.protein_g, 'protein_g')} g`,
+    `C ${fmt(avg.carbs_g, 'carbs_g')} g`,
+    `G ${fmt(avg.fat_g, 'fat_g')} g`,
     version.protein_g_per_kg != null
-      ? `${version.protein_g_per_kg.toLocaleString('es-ES', { maximumFractionDigits: 2 })} g proteína / kg`
+      ? `${formatDietPdfNumber(version.protein_g_per_kg, 2)} g prot/kg`
       : null
-  ].filter(Boolean)
-  text(c, captionParts.join('  ·  '), MARGIN, 8, { color: INK3 })
+  ].filter(Boolean).join('  ·  ')
+  drawRight(f, avgLine, right, top - 22, 8, f.font, INK2)
 
-  const microTokens = formatMicroTokens(avg, version.totals.average_coverage)
-  if (microTokens.length) {
-    c.y -= 12
-    for (const line of wrapTokens(microTokens, c.font, 8, CONTENT_W)) {
-      text(c, line, MARGIN, 8, { color: INK3 })
-      c.y -= 11
-    }
-  } else {
-    c.y -= 4
+  if (version.status === 'draft') {
+    const label = 'BORRADOR  ·  no es la dieta vigente'
+    const w = f.bold.widthOfTextAtSize(pdfText(label), 7) + 10
+    f.page.drawRectangle({ x: right - w, y: top - 36, width: w, height: 12, color: rgb(0.96, 0.93, 0.86) })
+    drawRight(f, label, right - 5, top - 33, 7, f.bold, WARN)
   }
-
-  c.y -= 8
-  rule(c)
 }
 
-function drawWeekTable(c: Cursor, version: DietPdfVersion, now: Date) {
-  const cols = [
-    { key: 'day', label: 'Día', width: 118, align: 'left' as const },
-    { key: 'kcal', label: 'kcal', width: 64, align: 'right' as const },
-    { key: 'protein_g', label: 'Prot.', width: 56, align: 'right' as const },
-    { key: 'carbs_g', label: 'Carbs', width: 56, align: 'right' as const },
-    { key: 'fat_g', label: 'Grasa', width: 56, align: 'right' as const },
-    { key: 'target', label: 'Objetivo', width: 165, align: 'right' as const }
-  ]
-  const rowH = 16
-  ensure(c, 28 + rowH * 8)
+// ── The grid ──────────────────────────────────────────────────────────────────
 
-  c.y -= 16
-  text(c, 'SEMANA', MARGIN, 8, { color: INK3, font: c.bold })
-  c.y -= 8
+const COLUMN_HEAD_H = 20
 
-  const headerY = c.y - 12
-  let x = MARGIN
-  for (const col of cols) {
-    drawAligned(c, col.label, x, headerY, col.width, 8, c.font, INK3, col.align)
-    x += col.width
-  }
-  c.y = headerY - 4
-  rule(c)
-  c.y -= 2
+function columnX(weekday: Weekday): number {
+  return MARGIN + LABEL_W + (weekday - 1) * DAY_W
+}
+
+function drawColumnHeads(f: Fonts, version: DietPdfVersion, top: number, now: Date) {
+  f.page.drawLine({
+    start: { x: MARGIN, y: top },
+    end: { x: PAGE_W - MARGIN, y: top },
+    thickness: 0.8,
+    color: LINE_STRONG
+  })
 
   for (const weekday of WEEKDAYS) {
     const day = version.days.find(d => d.weekday === weekday)
     const date = dateForWeekday(weekday, now)
-    const label = `${WEEKDAY_SHORT_ES[weekday]} ${date.getDate()} ${monthShort(date)}`
-    const kcal = day?.planned ? fmt(day.totals?.kcal ?? null, 'kcal') : NO_VALUE
-    const protein = day?.planned ? fmt(day.totals?.protein_g ?? null, 'protein_g') : NO_VALUE
-    const carbs = day?.planned ? fmt(day.totals?.carbs_g ?? null, 'carbs_g') : NO_VALUE
-    const fat = day?.planned ? fmt(day.totals?.fat_g ?? null, 'fat_g') : NO_VALUE
-    const target = formatTargetCell(day)
-
-    const y = c.y - 12
-    const values = [label, kcal, protein, carbs, fat, target]
-    x = MARGIN
-    cols.forEach((col, i) => {
-      const useBold = col.key === 'day' || (col.key === 'kcal' && day?.planned)
-      drawAligned(c, values[i], x, y, col.width, 9, useBold ? c.bold : c.font, day?.planned ? INK : INK3, col.align)
-      x += col.width
-    })
-    c.y -= rowH
+    const x = columnX(weekday)
+    if (!day?.planned) {
+      f.page.drawRectangle({ x, y: top - COLUMN_HEAD_H, width: DAY_W, height: COLUMN_HEAD_H, color: BAND })
+    }
+    drawCentered(f, WEEKDAY_LABELS_ES[weekday].toUpperCase(), x, DAY_W, top - 10, 9, f.bold, day?.planned ? INK : INK3)
+    const sub = day?.planned ? `${date.getDate()} ${monthShort(date)}` : `${date.getDate()} ${monthShort(date)}  ·  sin comidas`
+    drawCentered(f, sub, x, DAY_W, top - 18, 6.5, f.font, INK3)
   }
 
-  c.y -= 6
-  rule(c)
-}
-
-// ── Days ──────────────────────────────────────────────────────────────────────
-
-function drawDay(c: Cursor, version: DietPdfVersion, weekday: Weekday, now: Date) {
-  const day = version.days.find(d => d.weekday === weekday)
-  const meals = version.meals
-    .filter(m => m.weekday === weekday)
-    .sort(compareMealsByTime)
-
-  const date = dateForWeekday(weekday, now)
-  const title = `${WEEKDAY_LABELS_ES[weekday]} ${date.getDate()} ${monthShort(date)}`
-  const kcalLabel = day?.planned ? `${fmt(day.totals?.kcal ?? null, 'kcal')} kcal` : 'sin comidas'
-  const openDay: OpenDay = { title, kcalLabel, planned: !!day?.planned }
-
-  // Header + first line of content travel together. The rest of the day may
-  // split, but then `ensure` reprints this heading so a page never starts
-  // with a stray "Comida" and no weekday.
-  ensure(c, 56)
-  c.openDay = openDay
-  drawDayBand(c, openDay, false)
-
-  const targetLine = formatDayTargetLine(day)
-  if (targetLine) {
-    c.y -= 12
-    text(c, targetLine, MARGIN + 8, 8, { color: INK3 })
-  }
-
-  if (!meals.length) {
-    c.y -= 14
-    text(c, 'Este día no tiene comidas.', MARGIN + 8, 9, { color: INK3 })
-    c.y -= 8
-    c.openDay = null
-    return
-  }
-
-  for (const meal of meals) {
-    drawMeal(c, meal)
-  }
-  c.y -= 4
-  c.openDay = null
-}
-
-function drawDayBand(c: Cursor, day: OpenDay, continued: boolean) {
-  c.y -= continued ? 8 : 10
-  c.page.drawRectangle({
-    x: MARGIN,
-    y: c.y - 16,
-    width: CONTENT_W,
-    height: 20,
-    color: BAND
+  f.page.drawLine({
+    start: { x: MARGIN, y: top - COLUMN_HEAD_H },
+    end: { x: PAGE_W - MARGIN, y: top - COLUMN_HEAD_H },
+    thickness: 0.8,
+    color: LINE_STRONG
   })
-  const title = continued ? `${day.title}  (sigue)` : day.title
-  text(c, title, MARGIN + 8, 10, { font: c.bold })
-  const kcalW = c.bold.widthOfTextAtSize(pdfText(day.kcalLabel), 10)
-  text(c, day.kcalLabel, MARGIN + CONTENT_W - 8 - kcalW, 10, {
-    font: c.bold,
-    color: day.planned ? INK : INK3
-  })
-  c.y -= 18
 }
 
-function drawMeal(c: Cursor, meal: DietPdfVersion['meals'][number]) {
+interface Fit {
+  size: number
+  leading: number
+  heights: number[]
+}
+
+/**
+ * Pick the largest body size whose rows fit the space that is left, and only
+ * if none does, shrink the rows proportionally and let the cells report what
+ * they cut. Silently dropping a food off a menu is the one failure that would
+ * matter here, so a clipped cell always says how many it is hiding.
+ */
+function fitRows(rows: MealRow[], f: Fonts, available: number): Fit {
+  if (!rows.length) return { size: BODY_SIZES[0], leading: BODY_SIZES[0] + 1.6, heights: [] }
+
+  let last: Fit = { size: 5, leading: 6.6, heights: [] }
+  for (const size of BODY_SIZES) {
+    const leading = size + 1.6
+    const heights = rows.map(row => measureRow(row, f, size, leading))
+    const total = heights.reduce((s, h) => s + h, 0)
+    last = { size, leading, heights }
+    if (total <= available) return { ...last, heights: stretch(heights, total, available) }
+  }
+
+  // Nothing fit: keep the smallest size and share the space out in proportion,
+  // so a heavy day loses lines before a light one does.
+  const total = last.heights.reduce((s, h) => s + h, 0)
+  const floor = Math.min(MIN_ROW_H, available / last.heights.length)
+  const scaled = last.heights.map(h => Math.max(floor, (h / total) * available))
+  const scaledTotal = scaled.reduce((s, h) => s + h, 0)
+  const correction = scaledTotal > available ? available / scaledTotal : 1
+  return { ...last, heights: scaled.map(h => h * correction) }
+}
+
+/**
+ * Spreads leftover height over the rows so the grid reaches the summary
+ * instead of floating above it, capped so a two-meal diet doesn't print two
+ * enormous bands. Proportional, so the day with most food keeps most room.
+ */
+function stretch(heights: number[], total: number, available: number): number[] {
+  if (total <= 0 || total >= available) return heights
+  const factor = Math.min(available / total, MAX_ROW_STRETCH)
+  return heights.map(h => h * factor)
+}
+
+function measureRow(row: MealRow, f: Fonts, size: number, leading: number): number {
+  let lines = 1
+  for (const weekday of WEEKDAYS) {
+    const meal = row.cells[weekday]
+    if (!meal) continue
+    lines = Math.max(lines, cellLines(meal, f, size).length)
+  }
+  const labelLines = wrap(row.label, f.bold, size, LABEL_W - CELL_PAD * 2).length + (row.time ? 1 : 0)
+  return Math.max(MIN_ROW_H, CELL_PAD * 2 + Math.max(lines, labelLines) * leading)
+}
+
+/** One drawable line of a cell: the grams token is bold, the food name is not. */
+interface CellLine {
+  grams: string | null
+  name: string
+}
+
+function cellLines(meal: Meal, f: Fonts, size: number): CellLine[] {
   const items = meal.items ?? []
-  const mealKcal = computeMealTotals(meal).kcal
-  // Only the heading + first food must stay together. Reserving the whole
-  // meal used to shove "Comida" onto the next page and leave a hole.
-  ensure(c, 36)
+  if (!items.length) return [{ grams: null, name: 'Sin alimentos' }]
 
-  c.y -= 15
-  const name = meal.time_of_day ? `${meal.name}  ·  ${meal.time_of_day}` : meal.name
-  text(c, name, MARGIN + 8, 10, { font: c.bold })
-  if (items.length && mealKcal != null) {
-    const right = `${fmt(mealKcal, 'kcal')} kcal`
-    const w = c.font.widthOfTextAtSize(pdfText(right), 9)
-    text(c, right, MARGIN + CONTENT_W - 8 - w, 9, { color: INK2 })
+  const width = DAY_W - CELL_PAD * 2
+  const out: CellLine[] = []
+  for (const item of items) {
+    const grams = formatGrams(item.quantity_g)
+    const gw = f.bold.widthOfTextAtSize(pdfText(grams), size) + 3
+    const name = item.food_name || 'Alimento'
+    // A grams token wide enough to leave no room for the name gets its own line.
+    const firstWidth = gw > width * 0.55 ? 0 : width - gw
+    const lines = wrapVar(name, f.font, size, firstWidth, width)
+    if (firstWidth === 0) {
+      out.push({ grams, name: '' })
+      for (const line of lines) out.push({ grams: null, name: line })
+    } else {
+      out.push({ grams, name: lines[0] ?? '' })
+      for (const line of lines.slice(1)) out.push({ grams: null, name: line })
+    }
   }
+  return out
+}
 
-  if (!items.length) {
-    c.y -= 13
-    text(c, 'Sin alimentos', MARGIN + 16, 9, { color: INK3 })
+function drawMealGrid(f: Fonts, rows: MealRow[], fit: Fit, top: number) {
+  if (!rows.length) {
+    drawCentered(f, 'Esta dieta todavía no tiene comidas.', MARGIN, CONTENT_W, top - 24, 9, f.font, INK3)
     return
   }
 
-  const gramsCol = 72
-  const nameWidth = CONTENT_W - 32 - gramsCol
-  for (const item of items) {
-    const lines = wrap(pdfText(item.food_name || 'Alimento'), c.font, 9, nameWidth)
-    ensure(c, 4 + lines.length * 12)
-    c.y -= 13
-    text(c, lines[0], MARGIN + 16, 9)
-    const grams = formatGrams(item.quantity_g)
-    const gw = c.font.widthOfTextAtSize(pdfText(grams), 9)
-    text(c, grams, MARGIN + CONTENT_W - 8 - gw, 9, { color: INK2 })
-    for (const extra of lines.slice(1)) {
-      c.y -= 11
-      text(c, extra, MARGIN + 16, 9)
+  let y = top
+  rows.forEach((row, index) => {
+    const height = fit.heights[index]
+    if (index % 2 === 1) {
+      f.page.drawRectangle({ x: MARGIN, y: y - height, width: CONTENT_W, height, color: BAND })
+    }
+    drawRow(f, row, fit, y, height)
+    y -= height
+    if (index < rows.length - 1) {
+      f.page.drawLine({
+        start: { x: MARGIN, y },
+        end: { x: PAGE_W - MARGIN, y },
+        thickness: 0.4,
+        color: LINE
+      })
+    }
+  })
+
+  f.page.drawLine({
+    start: { x: MARGIN, y },
+    end: { x: PAGE_W - MARGIN, y },
+    thickness: 0.8,
+    color: LINE_STRONG
+  })
+}
+
+function drawRow(f: Fonts, row: MealRow, fit: Fit, top: number, height: number) {
+  const { size, leading } = fit
+  const maxLines = Math.max(1, Math.floor((height - CELL_PAD * 2) / leading))
+
+  let labelY = top - CELL_PAD - size
+  for (const line of wrap(row.label, f.bold, size, LABEL_W - CELL_PAD * 2)) {
+    draw(f, line, MARGIN + CELL_PAD, labelY, size, f.bold, INK)
+    labelY -= leading
+  }
+  if (row.time) draw(f, row.time, MARGIN + CELL_PAD, labelY, size - 1, f.font, INK3)
+
+  for (const weekday of WEEKDAYS) {
+    const meal = row.cells[weekday]
+    if (!meal) continue
+    const x = columnX(weekday) + CELL_PAD
+    const lines = cellLines(meal, f, size)
+    const shown = lines.length > maxLines ? lines.slice(0, Math.max(1, maxLines - 1)) : lines
+    let y = top - CELL_PAD - size
+
+    for (const line of shown) {
+      let tx = x
+      if (line.grams) {
+        draw(f, line.grams, tx, y, size, f.bold, INK)
+        tx += f.bold.widthOfTextAtSize(pdfText(line.grams), size) + 3
+      }
+      if (line.name) draw(f, line.name, tx, y, size, f.font, INK)
+      y -= leading
+    }
+    if (shown.length < lines.length) {
+      const hidden = (meal.items ?? []).length - shown.filter(l => l.grams).length
+      draw(f, `+${hidden} alimento${hidden === 1 ? '' : 's'} más`, x, y, size - 0.5, f.font, INK3)
     }
   }
 }
 
+/**
+ * The seven column rules run the whole height of the sheet, summary included:
+ * a day is one column from its heading to its kcal, and a rule that stopped
+ * above the totals would leave the reader matching numbers to headings by eye.
+ */
+function drawColumnRules(f: Fonts, top: number) {
+  for (const weekday of WEEKDAYS) {
+    const x = columnX(weekday)
+    f.page.drawLine({ start: { x, y: top }, end: { x, y: MARGIN + FOOTER_H }, thickness: 0.4, color: LINE })
+  }
+  f.page.drawLine({
+    start: { x: MARGIN + LABEL_W, y: top },
+    end: { x: MARGIN + LABEL_W, y: MARGIN + FOOTER_H },
+    thickness: 0.8,
+    color: LINE_STRONG
+  })
+  f.page.drawLine({
+    start: { x: PAGE_W - MARGIN, y: top },
+    end: { x: PAGE_W - MARGIN, y: MARGIN + FOOTER_H },
+    thickness: 0.4,
+    color: LINE
+  })
+  f.page.drawLine({
+    start: { x: MARGIN, y: top },
+    end: { x: MARGIN, y: MARGIN + FOOTER_H },
+    thickness: 0.4,
+    color: LINE
+  })
+}
+
+// ── The day summary ───────────────────────────────────────────────────────────
+
+const SUMMARY_ROW_H = 14
+const SUMMARY_HEAD_H = 12
+
+interface SummaryRow {
+  label: string
+  value: (day: Day | undefined) => string
+  strong?: boolean
+}
+
+function buildSummaryRows(version: DietPdfVersion): SummaryRow[] {
+  const macro = (key: Exclude<NutrientKey, 'kcal'>): SummaryRow['value'] => (day) =>
+    day?.planned ? `${fmt(day.totals?.[key] ?? null, key)} g` : NO_VALUE
+
+  const rows: SummaryRow[] = [
+    {
+      label: 'kcal',
+      strong: true,
+      value: (day) => (day?.planned ? fmt(day.totals?.kcal ?? null, 'kcal') : NO_VALUE)
+    },
+    { label: 'Proteína', value: macro('protein_g') },
+    { label: 'Carbohidratos', value: macro('carbs_g') },
+    { label: 'Grasa', value: macro('fat_g') }
+  ]
+
+  // The objective only earns a row when there is one to compare against.
+  if (version.days.some(d => d.target.kcal != null)) {
+    rows.push({ label: 'Objetivo', value: (day) => formatTargetCell(day) })
+  }
+  return rows
+}
+
+function drawSummary(f: Fonts, version: DietPdfVersion, rows: SummaryRow[], top: number) {
+  const height = rows.length * SUMMARY_ROW_H + SUMMARY_HEAD_H
+  f.page.drawRectangle({ x: MARGIN, y: top - height, width: CONTENT_W, height, color: BAND })
+  f.page.drawLine({
+    start: { x: MARGIN, y: top },
+    end: { x: PAGE_W - MARGIN, y: top },
+    thickness: 0.8,
+    color: LINE_STRONG
+  })
+
+  draw(f, 'RESUMEN DEL DÍA', MARGIN + CELL_PAD, top - 8.5, 6.5, f.bold, INK3)
+
+  let y = top - SUMMARY_HEAD_H
+  for (const row of rows) {
+    const baseline = y - SUMMARY_ROW_H + 4
+    draw(f, row.label, MARGIN + CELL_PAD, baseline, 7.5, f.font, INK2)
+    for (const weekday of WEEKDAYS) {
+      const day = version.days.find(d => d.weekday === weekday)
+      const planned = !!day?.planned
+      drawCentered(
+        f,
+        row.value(day),
+        columnX(weekday),
+        DAY_W,
+        baseline,
+        row.strong ? 10 : 8,
+        row.strong ? f.bold : f.font,
+        planned ? (row.strong ? INK : INK2) : INK3
+      )
+    }
+    y -= SUMMARY_ROW_H
+    if (row !== rows[rows.length - 1]) {
+      f.page.drawLine({ start: { x: MARGIN, y }, end: { x: PAGE_W - MARGIN, y }, thickness: 0.3, color: LINE })
+    }
+  }
+
+  f.page.drawLine({
+    start: { x: MARGIN, y: top - height },
+    end: { x: PAGE_W - MARGIN, y: top - height },
+    thickness: 0.8,
+    color: LINE_STRONG
+  })
+}
+
 // ── Footer ────────────────────────────────────────────────────────────────────
 
-function stampFooters(c: Cursor, input: DietPdfInput, now: Date) {
-  const total = c.pages.length
+function drawFooter(f: Fonts, input: DietPdfInput, now: Date) {
+  const y = MARGIN
   const left = [
     input.version.status === 'draft' ? 'BORRADOR' : null,
     input.plan.name,
     `v${input.version.version_number}`,
     currentWeekLabel(now)
   ].filter(Boolean).join('  ·  ')
+  draw(f, clip(left, f.font, 7, CONTENT_W * 0.7), MARGIN, y, 7, f.font, INK3)
 
-  for (const [i, page] of c.pages.entries()) {
-    page.drawLine({
-      start: { x: MARGIN, y: MARGIN - 8 },
-      end: { x: PAGE_W - MARGIN, y: MARGIN - 8 },
-      thickness: 0.4,
-      color: LINE
-    })
-    page.drawText(pdfText(left).slice(0, 90), {
-      x: MARGIN,
-      y: MARGIN - 20,
-      size: 7,
-      font: c.font,
-      color: INK3
-    })
-    const right = `${i + 1} / ${total}`
-    const w = c.font.widthOfTextAtSize(right, 7)
-    page.drawText(right, {
-      x: PAGE_W - MARGIN - w,
-      y: MARGIN - 20,
-      size: 7,
-      font: c.font,
-      color: INK3
-    })
-  }
+  const stamp = `Generado ${now.toLocaleDateString('es-ES')} ${now.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}`
+  drawRight(f, stamp, PAGE_W - MARGIN, y, 7, f.font, INK3)
 }
 
 // ── Drawing primitives ────────────────────────────────────────────────────────
 
-function newPage(c: Cursor) {
-  const page = c.doc.addPage(A4)
-  c.page = page
-  c.pages.push(page)
-  c.y = PAGE_H - MARGIN
-}
-
-function ensure(c: Cursor, needed: number) {
-  if (c.y - needed >= MARGIN + 18) return
-  newPage(c)
-  if (c.openDay) drawDayBand(c, c.openDay, true)
-}
-
-function rule(c: Cursor) {
-  c.page.drawLine({
-    start: { x: MARGIN, y: c.y },
-    end: { x: PAGE_W - MARGIN, y: c.y },
-    thickness: 0.5,
-    color: LINE
-  })
-}
-
-function text(
-  c: Cursor,
-  value: string,
-  x: number,
-  size: number,
-  opts: { font?: PDFFont; color?: ReturnType<typeof rgb> } = {}
-) {
+function draw(f: Fonts, value: string, x: number, y: number, size: number, font: PDFFont, color: ReturnType<typeof rgb>) {
   const drawn = pdfText(value)
   if (!drawn) return
-  c.page.drawText(drawn, {
-    x,
-    y: c.y,
-    size,
-    font: opts.font ?? c.font,
-    color: opts.color ?? INK
-  })
+  f.page.drawText(drawn, { x, y, size, font, color })
 }
 
-function drawAligned(
-  c: Cursor,
-  value: string,
-  x: number,
-  y: number,
-  width: number,
-  size: number,
-  font: PDFFont,
-  color: ReturnType<typeof rgb>,
-  align: 'left' | 'right'
-) {
+function drawRight(f: Fonts, value: string, right: number, y: number, size: number, font: PDFFont, color: ReturnType<typeof rgb>) {
   const drawn = pdfText(value)
   if (!drawn) return
-  const w = font.widthOfTextAtSize(drawn, size)
-  const tx = align === 'right' ? x + width - w : x
-  c.page.drawText(drawn, { x: tx, y, size, font, color })
+  f.page.drawText(drawn, { x: right - font.widthOfTextAtSize(drawn, size), y, size, font, color })
+}
+
+function drawCentered(f: Fonts, value: string, x: number, width: number, y: number, size: number, font: PDFFont, color: ReturnType<typeof rgb>) {
+  const drawn = pdfText(value)
+  if (!drawn) return
+  f.page.drawText(drawn, { x: x + (width - font.widthOfTextAtSize(drawn, size)) / 2, y, size, font, color })
+}
+
+/** Cuts a single line to width, with an ellipsis so the cut is visible. */
+function clip(value: string, font: PDFFont, size: number, maxWidth: number): string {
+  const drawn = pdfText(value)
+  if (font.widthOfTextAtSize(drawn, size) <= maxWidth) return drawn
+  let out = ''
+  for (const ch of drawn) {
+    if (font.widthOfTextAtSize(`${out}${ch}...`, size) > maxWidth) break
+    out += ch
+  }
+  return `${out.trimEnd()}...`
 }
 
 function wrap(value: string, font: PDFFont, size: number, maxWidth: number): string[] {
+  return wrapVar(value, font, size, maxWidth, maxWidth)
+}
+
+/**
+ * Wraps with a first line narrower than the rest — which is what a food line
+ * needs, since the grams token sits in front of the name.
+ */
+function wrapVar(value: string, font: PDFFont, size: number, firstWidth: number, restWidth: number): string[] {
   const textValue = pdfText(value)
   if (!textValue) return []
-  const words = textValue.split(/\s+/)
+  const widthAt = (index: number) => (index === 0 ? firstWidth : restWidth)
+  const words = textValue.split(/\s+/).filter(Boolean)
   const lines: string[] = []
   let current = ''
-  const pushChunk = (word: string) => {
-    if (font.widthOfTextAtSize(word, size) <= maxWidth) {
-      current = word
-      return
-    }
+
+  const flush = () => {
+    lines.push(current)
+    current = ''
+  }
+  const hardBreak = (word: string) => {
     let chunk = ''
     for (const ch of word) {
       const next = chunk + ch
-      if (font.widthOfTextAtSize(next, size) <= maxWidth) chunk = next
+      if (font.widthOfTextAtSize(next, size) <= widthAt(lines.length)) chunk = next
       else {
         if (chunk) lines.push(chunk)
         chunk = ch
@@ -535,13 +662,16 @@ function wrap(value: string, font: PDFFont, size: number, maxWidth: number): str
     }
     current = chunk
   }
+
   for (const word of words) {
     const next = current ? `${current} ${word}` : word
-    if (font.widthOfTextAtSize(next, size) <= maxWidth) current = next
-    else {
-      if (current) lines.push(current)
-      pushChunk(word)
+    if (font.widthOfTextAtSize(next, size) <= widthAt(lines.length)) {
+      current = next
+      continue
     }
+    if (current) flush()
+    if (font.widthOfTextAtSize(word, size) <= widthAt(lines.length)) current = word
+    else hardBreak(word)
   }
   if (current) lines.push(current)
   return lines.length ? lines : ['']
@@ -560,21 +690,21 @@ function pdfText(value: string): string {
     if (code <= 255) return ch
     return (
       ({
-        '\u2013': '-',
-        '\u2014': '-',
-        '\u2212': '-',
-        '\u2022': '-',
-        '\u2026': '...',
-        '\u2018': "'",
-        '\u2019': "'",
-        '\u201C': '"',
-        '\u201D': '"',
-        '\u2265': '>=',
-        '\u2264': '<=',
-        '\u2248': '~',
-        '\u03BC': 'u',
-        '\u2122': '',
-        '\u00A0': ' '
+        '–': '-',
+        '—': '-',
+        '−': '-',
+        '•': '-',
+        '…': '...',
+        '‘': "'",
+        '’': "'",
+        '“': '"',
+        '”': '"',
+        '≥': '>=',
+        '≤': '<=',
+        '≈': '~',
+        'μ': 'u',
+        '™': '',
+        ' ': ' '
       } as Record<string, string>)[ch] ?? ''
     )
   }).join('').replace(/ {2,}/g, ' ')
@@ -610,68 +740,13 @@ function formatGrams(grams: number | null | undefined): string {
   return `${formatDietPdfNumber(grams, decimals)} g`
 }
 
-function formatTargetCell(day: DietPdfVersion['days'][number] | undefined): string {
+function formatTargetCell(day: Day | undefined): string {
   if (!day?.target.kcal) return NO_VALUE
   const target = fmt(day.target.kcal, 'kcal')
   if (!day.planned || day.totals?.kcal == null) return target
   const delta = Math.round(day.totals.kcal - day.target.kcal)
   if (delta === 0) return `${target} (=)`
   return `${target} (${delta > 0 ? '+' : ''}${formatDietPdfNumber(delta, 0)})`
-}
-
-function formatDayTargetLine(day: DietPdfVersion['days'][number] | undefined): string | null {
-  if (!day) return null
-  const bits: string[] = []
-  if (day.target.kcal) bits.push(`Objetivo ${fmt(day.target.kcal, 'kcal')} kcal`)
-  const macros = MACRO_KEYS.filter((k): k is Exclude<typeof k, 'kcal'> => k !== 'kcal')
-    .map((key) => {
-      const value = day.target[key]
-      if (value == null) return null
-      const short = key === 'protein_g' ? 'P' : key === 'carbs_g' ? 'C' : 'G'
-      return `${short} ${fmt(value, key)} g`
-    })
-    .filter(Boolean)
-  if (macros.length) bits.push(macros.join('  ·  '))
-  if (day.target.overridden) bits.push('propio de este día')
-  return bits.length ? bits.join('  ·  ') : null
-}
-
-function formatMicroTokens(
-  nutrients: Nutrients,
-  coverage?: Partial<Record<string, { known: number; total: number }>>
-): string[] {
-  const parts: string[] = []
-  for (const key of MICRO_KEYS) {
-    const value = nutrients[key]
-    if (value == null) continue
-    const unit = NUTRIENT_UNITS[key] === 'µg' ? 'ug' : NUTRIENT_UNITS[key]
-    const prefix = isComplete(coverage, key) ? '' : 'mín. '
-    parts.push(`${NUTRIENT_LABELS_ES[key]} ${prefix}${fmt(value, key)} ${unit}`)
-  }
-  return parts
-}
-
-/** Packs "Fibra mín. 12 g" tokens so a unit never wraps away from its number. */
-function wrapTokens(tokens: string[], font: PDFFont, size: number, maxWidth: number): string[] {
-  const lines: string[] = []
-  let current = ''
-  for (const token of tokens) {
-    const next = current ? `${current}  ·  ${token}` : token
-    if (font.widthOfTextAtSize(pdfText(next), size) <= maxWidth) current = next
-    else {
-      if (current) lines.push(current)
-      current = token
-    }
-  }
-  if (current) lines.push(current)
-  return lines
-}
-
-function formatWeekdayList(days: number[]): string {
-  const names = days.map(d => WEEKDAY_SHORT_ES[d as Weekday]?.toLowerCase()).filter(Boolean)
-  if (names.length === 0) return ''
-  if (names.length === 1) return names[0]
-  return `${names.slice(0, -1).join(', ')} y ${names[names.length - 1]}`
 }
 
 function mondayOf(date: Date): Date {

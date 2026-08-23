@@ -6,7 +6,7 @@
       subtitle="Tu catálogo. Todos los valores están expresados por 100 g."
     >
       <template #actions>
-        <UiButton variant="secondary" size="sm" @click="searchModalOpen = true">Open Food Facts</UiButton>
+        <UiButton variant="secondary" size="sm" @click="searchModalOpen = true">Buscar producto</UiButton>
         <UiButton size="sm" @click="openCreate">Nuevo alimento</UiButton>
       </template>
     </UiPageHeader>
@@ -64,7 +64,10 @@
                   <span v-if="food.brand">{{ food.brand }}</span>
                   <span v-if="food.brand && food.serving_size_g"> · </span>
                   <span v-if="food.serving_size_g">{{ food.serving_label || 'ración' }} = {{ formatGrams(food.serving_size_g) }}</span>
-                  <span v-if="food.source === 'openfoodfacts'" class="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-ink-3">OFF</span>
+                  <span
+                    v-if="food.source === 'openfoodfacts' || food.source === 'nutriinfo'"
+                    class="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-surface-2 text-ink-3"
+                  >{{ food.source === 'nutriinfo' ? 'Nutriinfo' : 'OFF' }}</span>
                 </div>
               </td>
               <td class="px-4 py-2.5 text-right font-data text-ink-2">{{ formatNutrientValue(food.kcal, 'kcal') }}</td>

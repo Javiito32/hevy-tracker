@@ -9,8 +9,8 @@
         <div class="bg-surface border border-line-strong rounded-card w-full max-w-2xl max-h-[90vh] flex flex-col">
           <div class="flex items-center justify-between px-5 py-3.5 border-b border-line flex-shrink-0">
             <div>
-              <h3 class="font-semibold text-ink">Buscar en Open Food Facts</h3>
-              <p class="text-xs text-ink-3 mt-0.5">Base de datos abierta de productos alimentarios</p>
+              <h3 class="font-semibold text-ink">Buscar producto</h3>
+              <p class="text-xs text-ink-3 mt-0.5">Open Food Facts, y Nutriinfo si el código no está ahí</p>
             </div>
             <button @click="$emit('close')" class="text-ink-3 hover:text-ink-2 text-2xl leading-none transition">×</button>
           </div>
@@ -44,8 +44,9 @@
                 @keydown.enter.prevent="runSearch"
               />
               <p class="text-xs text-ink-3">
-                Los resultados muestran sólo kcal y macros. Los micronutrientes se
-                descargan al añadir el alimento al catálogo.
+                Búsqueda por nombre en Open Food Facts. Los resultados muestran
+                sólo kcal y macros; los micronutrientes se descargan al añadir
+                el alimento al catálogo.
               </p>
 
               <div v-if="searching" class="flex justify-center py-8">
@@ -102,6 +103,9 @@
                     Buscar
                   </button>
                 </div>
+                <p class="text-xs text-ink-3 mt-1.5">
+                  Si Open Food Facts no tiene el código, se consulta Nutriinfo.
+                </p>
               </div>
               <NutritionBarcodeScanner @detected="onDetected" />
             </template>
@@ -118,13 +122,14 @@
                   <div class="text-ink font-medium">{{ candidate.name }}</div>
                   <div class="text-xs text-ink-3">
                     <span v-if="candidate.brand">{{ candidate.brand }} · </span>{{ candidate.barcode }}
+                    <span v-if="candidateSourceLabel"> · {{ candidateSourceLabel }}</span>
                     <span v-if="candidate.serving_size_g"> · {{ candidate.serving_label || 'ración' }} = {{ formatGrams(candidate.serving_size_g) }}</span>
                   </div>
                 </div>
               </div>
 
               <div v-if="alreadyInCatalog" class="text-xs text-warn">
-                Este alimento ya está en tu catálogo. Al añadirlo se actualizarán sus valores con los de Open Food Facts.
+                Este alimento ya está en tu catálogo. Al añadirlo se actualizarán sus valores.
               </div>
 
               <div class="grid grid-cols-4 gap-2 text-center">
@@ -189,6 +194,13 @@ const error = ref('')
 const microCount = computed(
   () => MICRO_KEYS.filter(k => candidate.value?.[k] !== null && candidate.value?.[k] !== undefined).length
 )
+
+const candidateSourceLabel = computed(() => {
+  const source = candidate.value?.source
+  if (source === 'nutriinfo') return 'Nutriinfo'
+  if (source === 'openfoodfacts') return 'Open Food Facts'
+  return ''
+})
 
 watch(
   () => props.open,

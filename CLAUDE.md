@@ -27,9 +27,10 @@ DATABASE_URL="file:./dev.db"
 HEVY_API_KEY=your_hevy_api_key_here
 OPENROUTER_API_KEY=your_openrouter_api_key_here   # default AI provider
 OPENAI_API_KEY=your_openai_api_key_here           # only if AI_PROVIDER=openai
+NUTRIINFO_API_KEY=your_nutriinfo_api_key_here     # barcode fallback when Open Food Facts misses
 ```
 
-Keys are exposed to server-side code via `useRuntimeConfig()` as `config.hevyApiKey`, `config.openrouterApiKey`, and `config.openaiApiKey`. They are declared in `nuxt.config.ts` under `runtimeConfig` (server-only, not `public`).
+Keys are exposed to server-side code via `useRuntimeConfig()` as `config.hevyApiKey`, `config.openrouterApiKey`, `config.openaiApiKey`, and `config.nutriinfoApiKey`. They are declared in `nuxt.config.ts` under `runtimeConfig` (server-only, not `public`).
 
 ## Architecture
 
@@ -46,7 +47,8 @@ server/
                               exercise-search, exercise-aliases, muscle-groups, muscle-volume,
                               plateau-detector, personal-records, plan-service
                    Infra:     prisma, dates, hevy-client, sync-user, maintenance
-                   Nutrition: openfoodfacts-client, nutrition-calculator, diet-service, food-input
+                   Nutrition: openfoodfacts-client, nutriinfo-client, barcode-lookup,
+                              nutrition-calculator, diet-service, food-input
   plugins/      ← Nitro plugins (cron job)
 prisma/
   schema.prisma ← SQLite schema
@@ -478,6 +480,14 @@ It replaced a `day_type` of `all | training | rest` that **no part of the UI cou
 - Imports are **rejected, not clamped**, when energy is unresolvable or a value is implausible (`NUTRIENT_MAX`) — contributor data really does contain 85 g of sodium per 100 g. A clamped number still reads as authoritative while being wrong.
 - OFF rate-limits search (~10 req/min per IP): the client caches for 10 min and the UI debounces 500 ms. Never call it in a loop.
 - Camera scanning needs `BarcodeDetector` + a secure context, which plain-HTTP LAN deployments don't have — **manual code entry is the primary path**, the camera is progressive enhancement.
+
+**Barcode lookup** (`server/utils/barcode-lookup.ts`) is OFF first, Nutriinfo second. Preview and import share this function so a Nutriinfo hit cannot 404 on save because import still spoke only to OFF. Name search stays on OFF: Nutriinfo's 20 req/hour cap cannot support typeahead.
+
+**Nutriinfo** (`server/utils/nutriinfo-client.ts`, key `NUTRIINFO_API_KEY` / `config.nutriinfoApiKey`, header `x-api-key`):
+- Called **only** when OFF doesn't know the barcode or its nutrition is unusable (no energy / implausible). A missing key skips the fallback; the 404 then mentions OFF only.
+- `GET /api/public/v1/products?ean=` — HTTP 404 is a miss (`null`); `nutrition: null` is "they have the product but not the table" and is rejected like an OFF row with no energy.
+- Macros + fibre / sugars / sat fat / salt only. Sodium is derived as `salt_g × 400` (mg), the same conversion OFF uses when only salt is present. The other micros stay `null`, never 0.
+- **20 requests per hour.** Hits and misses are cached for an hour; 429 / auth / network errors are not cached as misses (a rate-limit is not "the product does not exist"). Never call it in a loop, and never from name search.
 
 ### Visual system — «Instrumento»
 

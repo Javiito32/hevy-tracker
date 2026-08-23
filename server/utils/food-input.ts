@@ -9,9 +9,9 @@ import {
 } from './nutrition-calculator'
 
 /**
- * Validation for food input, shared by the manual CRUD routes and the Open Food
- * Facts importer. It lives outside nutrition-calculator.ts because that file is
- * pure arithmetic and knows nothing about HTTP.
+ * Validation for food input, shared by the manual CRUD routes and the external
+ * importers (Open Food Facts, Nutriinfo). It lives outside nutrition-calculator.ts
+ * because that file is pure arithmetic and knows nothing about HTTP.
  *
  * Both entry points must reject the same values: a food imported with an
  * impossible sodium figure is exactly as poisonous to totals and AI analyses as

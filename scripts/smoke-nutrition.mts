@@ -55,6 +55,117 @@ const FULL_FOOD = {
 const NO_POTASSIUM_FOOD = { kcal: 100, protein_g: 10, carbs_g: 5, fat_g: 3 }
 
 async function main() {
+  // h3's `createError` is a Nitro auto-import; the Nutriinfo mapper throws
+  // through it and this script runs outside the server runtime.
+  if (!(globalThis as any).createError) {
+    ;(globalThis as any).createError = (input: any) => {
+      const error: any = new Error(input?.statusMessage ?? input?.message ?? 'error')
+      Object.assign(error, input)
+      return error
+    }
+  }
+  const { mapNutriinfoToFood } = await import('../server/utils/nutriinfo-client')
+
+  console.log('\nMapeo Nutriinfo')
+  const leche = mapNutriinfoToFood({
+    id: '12345',
+    ean: '8410000000000',
+    name: 'Leche entera 1L',
+    nutrition: {
+      per100g: {
+        energy_kcal: 64,
+        energy_kj: 268,
+        fats_g: 3.6,
+        saturated_fats_g: 2.3,
+        carbs_g: 4.8,
+        sugars_g: 4.8,
+        fiber_g: 0,
+        proteins_g: 3.1,
+        salt_g: 0.1
+      }
+    }
+  }, '8410000000000')
+  check('kcal y macros', leche.kcal === 64 && leche.protein_g === 3.1 && leche.carbs_g === 4.8 && leche.fat_g === 3.6)
+  check('sodio derivado de la sal (×400 mg)', leche.sodium_mg === 40)
+  check('fibra 0 es 0, no desconocido', leche.fiber_g === 0)
+  check('un micro que Nutriinfo no publica queda null', leche.calcium_mg == null && leche.vitamin_c_mg == null)
+  check('source e id del proveedor', leche.source === 'nutriinfo' && leche.external_id === '12345')
+  check('el código buscado es el que se guarda', leche.barcode === '8410000000000')
+
+  const fromKj = mapNutriinfoToFood({
+    id: '1',
+    ean: '1',
+    name: 'Sólo kJ',
+    nutrition: { per100g: { energy_kj: 268, proteins_g: 0, carbs_g: 0, fats_g: 0 } }
+  }, '1')
+  check('kcal desde kJ (268 kJ → 64,1)', fromKj.kcal === 64.1)
+
+  let noEnergy = false
+  try {
+    mapNutriinfoToFood({ id: '1', ean: '1', name: 'Sin tabla', nutrition: null }, '1')
+  } catch (err: any) {
+    noEnergy = err?.statusCode === 422
+  }
+  check('nutrition null se rechaza (422), no se importa como 0 kcal', noEnergy)
+
+  let implausible = false
+  try {
+    mapNutriinfoToFood({
+      id: '1',
+      ean: '1',
+      name: 'Sal pura mal etiquetada',
+      nutrition: { per100g: { energy_kcal: 0, salt_g: 200 } }
+    }, '1')
+  } catch (err: any) {
+    implausible = err?.statusCode === 422
+  }
+  check('valores imposibles se rechazan, no se recortan', implausible)
+
+  console.log('\nLookup de código de barras (OFF → Nutriinfo)')
+  const fetchCalls: string[] = []
+  ;(globalThis as any).useRuntimeConfig = () => ({ nutriinfoApiKey: 'nk_test' })
+  ;(globalThis as any).$fetch = async (url: string) => {
+    const href = String(url)
+    fetchCalls.push(href)
+    if (href.includes('openfoodfacts.org')) {
+      if (href.includes('9990000000001')) {
+        return {
+          status: 1,
+          product: {
+            code: '9990000000001',
+            product_name: 'Avena OFF',
+            nutriments: { 'energy-kcal_100g': 370, proteins_100g: 14, carbohydrates_100g: 60, fat_100g: 7 }
+          }
+        }
+      }
+      return { status: 0 }
+    }
+    if (href.includes('nutriinfo.es')) {
+      return {
+        ok: true,
+        data: {
+          id: 'ni-1',
+          ean: '9990000000002',
+          name: 'Leche Nutriinfo',
+          nutrition: { per100g: { energy_kcal: 64, proteins_g: 3.1, carbs_g: 4.8, fats_g: 3.6, salt_g: 0.1 } }
+        }
+      }
+    }
+    throw new Error(`URL inesperada: ${href}`)
+  }
+  const { lookupExternalFood } = await import('../server/utils/barcode-lookup')
+
+  fetchCalls.length = 0
+  const offHit = await lookupExternalFood('9990000000001')
+  check('OFF gana cuando el producto existe', offHit.source === 'openfoodfacts' && offHit.food.name === 'Avena OFF')
+  check('Nutriinfo no se llama si OFF acierta', fetchCalls.every(u => !u.includes('nutriinfo.es')))
+
+  fetchCalls.length = 0
+  const niHit = await lookupExternalFood('9990000000002')
+  check('cae a Nutriinfo cuando OFF no lo tiene', niHit.source === 'nutriinfo' && niHit.food.name === 'Leche Nutriinfo')
+  check('sodio de Nutriinfo en el fallback', niHit.food.sodium_mg === 40)
+  check('consulta OFF y Nutriinfo en el miss', fetchCalls.some(u => u.includes('openfoodfacts.org')) && fetchCalls.some(u => u.includes('nutriinfo.es')))
+
   const user = await prisma.user.create({
     data: { name: 'SmokeNut', email: `smokenut-${Date.now()}@test.local`, password_hash: 'x' }
   })

@@ -573,7 +573,7 @@ model Food {
   name           String
   brand          String?
   barcode        String?
-  /// manual | openfoodfacts
+  /// manual | openfoodfacts | nutriinfo
   source         String  @default("manual")
   /// Provider-side id. Equal to `barcode` for Open Food Facts, but kept separate
   /// so a second provider can be added without a migration.

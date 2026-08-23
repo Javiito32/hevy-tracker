@@ -1,13 +1,16 @@
 import { prisma } from '../../../utils/prisma'
 import { getSessionUser } from '../../../utils/session'
-import { fetchOffProduct, mapOffToFood, normalizeBarcode } from '../../../utils/openfoodfacts-client'
+import { lookupExternalFood } from '../../../utils/barcode-lookup'
+import { normalizeBarcode } from '../../../utils/openfoodfacts-client'
 
 /**
- * Imports an Open Food Facts product into the user's catalogue by barcode.
+ * Imports an external product into the user's catalogue by barcode.
  *
- * Always re-fetches the full product rather than trusting anything the client
- * sends: the search index returns kcal and macros only, so importing from a
- * search hit's payload would silently drop every micronutrient.
+ * Always re-fetches rather than trusting anything the client sends: the OFF
+ * search index returns kcal and macros only, so importing from a search hit's
+ * payload would silently drop every micronutrient. The re-fetch goes through
+ * the same lookup as the preview (OFF, then Nutriinfo) so a Nutriinfo hit
+ * cannot 404 here.
  *
  * Idempotent — re-importing the same code refreshes the existing row instead of
  * failing on @@unique([user_id, barcode]).
@@ -19,16 +22,10 @@ export default defineEventHandler(async (event) => {
 
   if (!code) throw createError({ statusCode: 400, statusMessage: 'Código de barras no válido' })
 
-  const product = await fetchOffProduct(code)
-  if (!product) {
-    throw createError({
-      statusCode: 404,
-      statusMessage: `El código ${code} no está en Open Food Facts. Puedes añadir el alimento manualmente.`
-    })
-  }
+  const { food } = await lookupExternalFood(code)
 
   // `image_url` is useful in the preview but is not a Food column.
-  const { image_url, ...data } = mapOffToFood(product)
+  const { image_url, ...data } = food
 
   return prisma.food.upsert({
     where: { user_id_barcode: { user_id: userId, barcode: code } },

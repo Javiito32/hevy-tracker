@@ -56,7 +56,7 @@
 
               <div class="border-t border-line pt-4">
                 <NuxtLink to="/nutrition/foods" class="text-sm text-ink-3 hover:text-ink transition">
-                  Gestionar catálogo y buscar en Open Food Facts →
+                  Gestionar catálogo y buscar productos →
                 </NuxtLink>
               </div>
             </template>

@@ -32,6 +32,7 @@ export default defineNuxtConfig({
   runtimeConfig: {
     openaiApiKey: process.env.OPENAI_API_KEY,
     openrouterApiKey: process.env.OPENROUTER_API_KEY,
+    nutriinfoApiKey: process.env.NUTRIINFO_API_KEY,
     session: {
       password: process.env.NUXT_SESSION_PASSWORD || 'change-me-in-production-min-32-chars!!',
     }

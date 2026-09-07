@@ -210,6 +210,6 @@ Before exposing an instance publicly:
 
 ## License
 
-No open-source license has been selected yet. All rights are reserved unless a license is added.
+HevyTracker is licensed under the [GNU General Public License v3.0](LICENSE).
 
 <img src="https://em-content.zobj.net/source/microsoft-teams/363/keyboard_2328-fe0f.png" height="22" /> with <img src="https://em-content.zobj.net/source/microsoft-teams/363/red-heart_2764-fe0f.png" height="22" /> by [Javiito32](https://github.com/Javiito32) <img src="https://em-content.zobj.net/source/microsoft-teams/363/smiling-face-with-smiling-eyes_1f60a.png" height="22" />

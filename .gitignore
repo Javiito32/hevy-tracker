@@ -23,10 +23,22 @@ logs
 .env.*
 !.env.example
 
-dev.db
+# Local databases and persisted Docker data
+db_data/
 *.db
-prisma/dev.db
-prisma/*.db
-# SQLite deja estos dos al lado de la base en modo WAL.
-prisma/*.db-shm
-prisma/*.db-wal
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+
+# Database exports and local credentials
+*.dump
+*.bak
+*.pem
+*.key
+*.p12
+*.pfx
